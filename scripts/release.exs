@@ -10,6 +10,7 @@ defmodule BundlerRelease do
     %{
       version: version,
       source_sha: sha,
+      source_dirty: ReleaseSupport.source_dirty?(),
       mix_lock_sha256: ReleaseSupport.digest("mix.lock"),
       bun_lock_sha256: ReleaseSupport.digest("bun.lock"),
       package_order: ReleaseSupport.dependency_order!(manifests),
@@ -29,6 +30,7 @@ defmodule BundlerRelease do
   end
 
   def preflight(version, sha) do
+    ReleaseSupport.clean_source!()
     plan = plan(version, sha)
     tag = "v#{version}"
 
@@ -84,6 +86,7 @@ defmodule BundlerRelease do
   end
 
   def prepare(version, sha, assets, output) do
+    ReleaseSupport.clean_source!()
     provenance = plan(version, sha)
     output = Path.expand(output)
 
@@ -151,6 +154,7 @@ defmodule BundlerRelease do
   end
 
   def publish(version, sha, assets, output, packages?) do
+    ReleaseSupport.clean_source!()
     current = plan(version, sha)
     state = Path.join(output, "release-provenance.json") |> File.read!() |> JSON.decode!()
 

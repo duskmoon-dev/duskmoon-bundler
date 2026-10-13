@@ -25,6 +25,8 @@ jobs:
     timeout-minutes: 60
     env:
       DUSKMOON_NATIVE_MODE: source
+    outputs:
+      reuse_native: ${{ steps.reuse.outputs.reusable }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -55,6 +57,18 @@ jobs:
           elixir scripts/release.exs plan "$VERSION" "$SOURCE_SHA"
           elixir scripts/release.exs preflight "$VERSION" "$SOURCE_SHA"
           elixir -r .github/scripts/release_support.exs -e 'ReleaseSupport.sha!(System.fetch_env!("UI_SHA"))'
+      - name: Reuse only verified complete public native assets on retries
+        id: reuse
+        env:
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: elixir .github/scripts/reuse_release.exs "$VERSION" "$SOURCE_SHA" "$RUNNER_TEMP/reused-native-assets"
+      - uses: actions/upload-artifact@v6
+        if: steps.reuse.outputs.reusable == 'true'
+        with:
+          name: native-reused
+          path: ${{ runner.temp }}/reused-native-assets/*.tar.gz
+          if-no-files-found: error
       - name: Standalone source, packaging and policy checks
         env:
           CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
@@ -65,6 +79,7 @@ jobs:
           elixir scripts/package-stage-test.exs
           elixir scripts/native-policy-test.exs
           mix compile --warnings-as-errors
+          elixir scripts/native-download-failure-test.exs
           mix test
           bun test test/js
   candidate-ui:
@@ -104,12 +119,14 @@ jobs:
         run: scripts/candidate-integration.sh "$GITHUB_WORKSPACE/toolchain"
   native:
     needs: [validate, candidate-ui]
+    if: needs.validate.outputs.reuse_native != 'true'
     uses: ./.github/workflows/native-prebuild.yml
     with:
       version: ${{ inputs.version }}
       source_sha: ${{ inputs.source_sha }}
   stage:
-    needs: native
+    needs: [validate, candidate-ui, native]
+    if: ${{ always() && needs.validate.result == 'success' && needs.candidate-ui.result == 'success' && (needs.native.result == 'success' || (needs.validate.outputs.reuse_native == 'true' && needs.native.result == 'skipped')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -169,7 +186,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: elixir scripts/release.exs publish-assets "$VERSION" "$SOURCE_SHA" "$RUNNER_TEMP/native-assets" "$RUNNER_TEMP/packages"
       - name: Exact staged packages outside either repository using final precompiled artifacts
-        run: elixir scripts/package-consumer-smoke.exs --stage "$RUNNER_TEMP/packages" --mode precompiled
+        run: |
+          elixir .github/scripts/prepare_tar_consumer.exs "$RUNNER_TEMP/packages" "$RUNNER_TEMP/consumer-packages"
+          elixir scripts/package-consumer-smoke.exs --stage "$RUNNER_TEMP/consumer-packages" --mode precompiled
       - name: Publish Hex packages in derived manifest order
         env:
           VERSION: ${{ inputs.version }}

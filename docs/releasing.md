@@ -34,7 +34,10 @@ UI repository tags remain the source for earlier toolchains.
    Validate existing digests and anonymously download every final asset. A draft
    or authenticated download is insufficient. Run staged package consumers
    outside both repositories using strict precompiled mode and those public
-   artifacts. Only then publish the eight registry packages in dependency order.
+   artifacts. The consumer inputs are extracted from the exact Hex tarballs into
+   a disposable cohort, so downloaded/generated NIF resources never modify the
+   verified publish stage. Only then publish the eight registry packages in
+   dependency order.
 6. Run cold installed-registry native/bundling/Tailwind smoke checks on glibc and
    Alpine amd64/arm64, with no Rust/Zig compiler. The runtime-only manifest-v1
    consumer regression also checks that build modules remain absent.
@@ -52,6 +55,8 @@ elixir scripts/release.exs prepare B FULL_TOOLCHAIN_SHA /tmp/final-native-assets
 elixir .github/scripts/runtime_consumer.exs B /tmp/staged-b
 ```
 
+Dry plans record `source_dirty`; formal preflight, preparation and publication
+reject source dirt. Explicit candidate transformations remain isolated and labelled.
 `prepare` needs all actual target artifacts; dummy hashes never substitute for
 release validation. Its output directory must not exist. `publish-assets` and
 `publish-packages` are side-effecting release operations and require explicit
@@ -72,7 +77,12 @@ See `upgrade-ui.md` for the separately scoped cross-repository GitHub App/token.
 ## Partial release recovery
 
 Preserve the failed run's native/package workflow artifacts and public
-`release-provenance.json`. Retry the same B/SHA only with identical outputs;
+`release-provenance.json`. For a partial run before a complete public provenance
+record exists, use `gh run rerun FAILED_RUN_ID --failed --repo duskmoon-dev/duskmoon-bundler`
+so successful native matrix outputs are retained. A new formal dispatch with a
+complete public record downloads and verifies all47 immutable native assets and
+skips the matrix explicitly; staging/publication still revalidate exact hashes.
+Retry the same B/SHA only with identical outputs;
 existing matching tags/assets/registry tarballs are reused. Existing conflicting
 bytes fail clearly. There is no `--replace`, asset clobber, moving a tag, registry
 rollback, or deletion. A rebuilt nonidentical artifact requires inspection and
@@ -88,8 +98,8 @@ or public consumer installation. Those remain actual release-run evidence.
 
 On 2026-10-13, `actionlint` v1.7.11 accepted all destination workflows, including
 the full 5x8 Rust and seven-target QuickBEAM matrix. Release script tests passed
-6/6: stable refs/versions, manifest order/cycle rejection, immutable retry,
-partial-cohort adoption rejection, exact47 checksum generation and missing-asset
+7/7: stable refs/versions, manifest order/cycle rejection, immutable retry,
+partial-cohort adoption rejection, full native retry validation, exact47 checksum generation and missing-asset
 failure. The checksum tests use clearly synthetic temporary fixture bytes and
 provide no cross-platform binary evidence. B=9.16.17's side-effect-free plan
 listed all eight packages in manifest-derived order; read-only preflight found
