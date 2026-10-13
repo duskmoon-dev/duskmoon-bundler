@@ -1,8 +1,8 @@
 defmodule OXC.MixProject do
   use Mix.Project
 
-  @version "9.16.16"
-  @source_url "https://github.com/duskmoon-dev/phoenix-duskmoon-ui"
+  @version "9.16.17"
+  @source_url "https://github.com/duskmoon-dev/duskmoon-bundler"
   @upstream_url "https://github.com/elixir-volt/oxc_ex"
 
   def project do

@@ -2,17 +2,21 @@ defmodule Oxide.Native do
   @moduledoc false
 
   native_version = Mix.Project.config()[:version]
-  local_dev? = Mix.Project.config()[:build_path] == "../../_build"
 
   build_from_source =
-    local_dev? or System.get_env("DUSKMOON_BUILD_NATIVE_FROM_SOURCE") in ["1", "true"]
+    Oxide.NativePolicy.force_build!(
+      :duskmoon_oxide,
+      "OXIDE_EX_BUILD",
+      native_version,
+      :rustler_precompiled
+    )
 
   use RustlerPrecompiled,
     otp_app: :duskmoon_oxide,
     crate: "oxide_ex_nif",
     base_url:
-      "https://github.com/duskmoon-dev/phoenix-duskmoon-ui/releases/download/v#{native_version}",
-    force_build: build_from_source or System.get_env("OXIDE_EX_BUILD") in ["1", "true"],
+      "https://github.com/duskmoon-dev/duskmoon-bundler/releases/download/v#{native_version}",
+    force_build: build_from_source,
     targets: ~w(
       aarch64-apple-darwin
       aarch64-unknown-linux-gnu

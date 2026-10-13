@@ -1,0 +1,16 @@
+{
+  "name": "duskmoon-toolchain-workspace",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/duskmoon_bundler"
+  ],
+  "scripts": {
+    "test": "bun test test/js"
+  },
+  "devDependencies": {
+    "phoenix": "1.8.15",
+    "phoenix_html": "4.3.0",
+    "phoenix_live_view": "1.2.12"
+  }
+}

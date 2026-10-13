@@ -1,8 +1,8 @@
 defmodule DuskmoonHexSolver.MixProject do
   use Mix.Project
 
-  @version "9.16.16"
-  @source_url "https://github.com/duskmoon-dev/phoenix-duskmoon-ui"
+  @version "9.16.17"
+  @source_url "https://github.com/duskmoon-dev/duskmoon-bundler"
 
   def project do
     [
@@ -40,7 +40,7 @@ defmodule DuskmoonHexSolver.MixProject do
     [
       licenses: ["Apache-2.0"],
       links: %{"GitHub" => @source_url},
-      files: ~w[lib mix.exs README.md CHANGELOG.md]
+      files: ~w[lib mix.exs README.md CHANGELOG.md LICENSE]
     ]
   end
 

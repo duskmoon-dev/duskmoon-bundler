@@ -1,0 +1,59 @@
+{
+  "scope": "Candidate host-only Hex package integrity; not full native release or published registry proof",
+  "platform": "x86_64-linux-gnu",
+  "version": "9.16.17",
+  "packages": [
+    {
+      "app": "duskmoon_bundler",
+      "tar_sha256": "e18628c412ffa07e44766113641d334378ca703d6e835cf765021e10b9da666f",
+      "files": 130
+    },
+    {
+      "app": "duskmoon_bundler_runtime",
+      "tar_sha256": "c4634bc85fc89a1cb2fc3852ea5136d7f32acde3901c1cc98e4a5fb0ca3c25b5",
+      "files": 13
+    },
+    {
+      "app": "duskmoon_hex_solver",
+      "tar_sha256": "57f7f2f39eb23f86bf9ebbb61248ce075b949b11278ef819df35f3de671d8acf",
+      "files": 23
+    },
+    {
+      "app": "duskmoon_npm",
+      "tar_sha256": "d8f32aab62979a79eaf69e45183cd04e3374a11a2a9e2c9d68c98397a3590fc6",
+      "files": 213
+    },
+    {
+      "app": "duskmoon_oxc",
+      "tar_sha256": "00d64e79190016d26caf4feae5617864479d11352adfeadf8be58e7bf6d54d44",
+      "files": 39
+    },
+    {
+      "app": "duskmoon_oxide",
+      "tar_sha256": "b1704d7de9f395da3df1e965da264ae8eb61445f352ad890af3b5fbb5e3ebd20",
+      "files": 12
+    },
+    {
+      "app": "duskmoon_quickbeam",
+      "tar_sha256": "085c740e651363abde63f647390d9de6a4bb7c1315f5eeba4e3b2da40be19198",
+      "files": 787
+    },
+    {
+      "app": "duskmoon_vize",
+      "tar_sha256": "08e059e7dcd58f4de0fb0e0c12dbe94e13253d2bd3cd8c99291b1bde55553153",
+      "files": 26
+    }
+  ],
+  "tests": {
+    "source_compile": "passed warnings-as-errors",
+    "source_elixir_tests": 655,
+    "source_doctests": 2,
+    "native_policy_tests": 4,
+    "stage_tests": 2,
+    "js_preload_tests": 2
+  },
+  "notes": [
+    "Six real source-built host NIF archives hashed into isolated staged checksum files; no active repository checksum edits",
+    "Full 47 native artifact release and registry/musl proof require authorized release execution"
+  ]
+}

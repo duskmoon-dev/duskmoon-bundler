@@ -165,8 +165,7 @@ config :duskmoon_bundler, :my_app_web,
   ]
 ```
 
-Use this repository as a local example: `config/config.exs` defines the
-`:phoenix_duskmoon` and `:duskmoon_storybook` profiles.
+Define named profiles in the consuming application. The separate `phoenix-duskmoon-ui` repository demonstrates UI and Storybook profiles; this toolchain repository owns generic compiler fixtures.
 
 ## Dev Server
 
@@ -335,12 +334,11 @@ For named profiles, validate the profile explicitly:
 mix duskmoon_bundler.build my_app_web --tailwind
 ```
 
-When editing this umbrella repository, run commands from the repository root and
+When editing a consuming umbrella, run commands from its repository root and
 scope builds to the touched profile when possible, for example:
 
 ```bash
-mix duskmoon_bundler.build phoenix_duskmoon
-mix duskmoon_bundler.build duskmoon_storybook
+mix duskmoon_bundler.build my_app_web
 ```
 
 ## Troubleshooting

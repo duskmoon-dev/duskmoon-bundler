@@ -1,16 +1,20 @@
 defmodule OXC.Native do
   native_version = Mix.Project.config()[:version]
-  local_dev? = Mix.Project.config()[:build_path] == "../../_build"
 
   build_from_source =
-    local_dev? or System.get_env("DUSKMOON_BUILD_NATIVE_FROM_SOURCE") in ["1", "true"]
+    OXC.NativePolicy.force_build!(
+      :duskmoon_oxc,
+      "OXC_EX_BUILD",
+      native_version,
+      :rustler_precompiled
+    )
 
   use RustlerPrecompiled,
     otp_app: :duskmoon_oxc,
     crate: "oxc_ex_nif",
     base_url:
-      "https://github.com/duskmoon-dev/phoenix-duskmoon-ui/releases/download/v#{native_version}",
-    force_build: build_from_source or System.get_env("OXC_EX_BUILD") in ["1", "true"],
+      "https://github.com/duskmoon-dev/duskmoon-bundler/releases/download/v#{native_version}",
+    force_build: build_from_source,
     targets: ~w(
       aarch64-apple-darwin
       aarch64-unknown-linux-gnu

@@ -89,7 +89,7 @@ defmodule DuskmoonBundler.Integration.PhoenixExampleTest do
       DuskmoonBundler.DevServer.init(
         root: @assets_root,
         prefix: "/assets",
-        resolve_dirs: [Path.expand("../../deps", @app_dir)]
+        resolve_dirs: [Path.expand("../../node_modules", @app_dir)]
       )
 
     conn(:get, path) |> DuskmoonBundler.DevServer.call(opts)
@@ -222,7 +222,7 @@ defmodule DuskmoonBundler.Integration.PhoenixExampleBuildTest do
       "--tailwind-source",
       Path.join(@example_dir, "lib"),
       "--resolve-dir",
-      Path.expand("../../deps", @app_dir),
+      Path.expand("../../node_modules", @app_dir),
       "--hash",
       "--no-minify"
     ]

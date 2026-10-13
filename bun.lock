@@ -1,0 +1,43 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "duskmoon-toolchain-workspace",
+      "devDependencies": {
+        "phoenix": "1.8.15",
+        "phoenix_html": "4.3.0",
+        "phoenix_live_view": "1.2.12",
+      },
+    },
+    "apps/duskmoon_bundler": {
+      "name": "duskmoon-bundler",
+      "devDependencies": {
+        "oxlint-tsgolint": "7.0.2004",
+      },
+    },
+  },
+  "packages": {
+    "@oxlint-tsgolint/darwin-arm64": ["@oxlint-tsgolint/darwin-arm64@7.0.2004", "https://npm.gsmlg.dev/@oxlint-tsgolint/darwin-arm64/-/darwin-arm64-7.0.2004.tgz", { "os": "darwin", "cpu": "arm64" }, "sha512-uJk3ttju7Lz+Nv8WG4CsLyewoL1qf/Ny8S8OksJ7Bm/F14Tc9gMfW6arM1PCc57IzH/X/I79YsCWTgxX1FKibQ=="],
+
+    "@oxlint-tsgolint/darwin-x64": ["@oxlint-tsgolint/darwin-x64@7.0.2004", "https://npm.gsmlg.dev/@oxlint-tsgolint/darwin-x64/-/darwin-x64-7.0.2004.tgz", { "os": "darwin", "cpu": "x64" }, "sha512-0BFfHTzDxNDFPcu0UZAXT6CyCJHAXM0dZveyDb4KEHa2qF/DSnOKOrmvK/wFuFol9kvijbGM9JfuOsor+zWXRw=="],
+
+    "@oxlint-tsgolint/linux-arm64": ["@oxlint-tsgolint/linux-arm64@7.0.2004", "https://npm.gsmlg.dev/@oxlint-tsgolint/linux-arm64/-/linux-arm64-7.0.2004.tgz", { "os": "linux", "cpu": "arm64" }, "sha512-TAehQc+qdRXyDN3nl/r/3/oPrBVrbtrDeGMkFyG6mf+XphpoJ2lAMVFLclyvrVZCw02RbKROjyw8h72XwQQHcw=="],
+
+    "@oxlint-tsgolint/linux-x64": ["@oxlint-tsgolint/linux-x64@7.0.2004", "https://npm.gsmlg.dev/@oxlint-tsgolint/linux-x64/-/linux-x64-7.0.2004.tgz", { "os": "linux", "cpu": "x64" }, "sha512-LPunZvm6ZbWPfHMAyfZf9ci3HHvNEzLejO8zdqO3GoVGoSEHqqufHUD7+OgeatVSaJP7uXDJ2HaNOHIoH7go4Q=="],
+
+    "@oxlint-tsgolint/win32-arm64": ["@oxlint-tsgolint/win32-arm64@7.0.2004", "https://npm.gsmlg.dev/@oxlint-tsgolint/win32-arm64/-/win32-arm64-7.0.2004.tgz", { "os": "win32", "cpu": "arm64" }, "sha512-FVWplzDImWhiuawnIZVETaQecv4GWom6Jv4Fx2xj7hhXXDZ5okEgiw1gTCImHTIQsi2ycC5oSxVwrn69bMh7iw=="],
+
+    "@oxlint-tsgolint/win32-x64": ["@oxlint-tsgolint/win32-x64@7.0.2004", "https://npm.gsmlg.dev/@oxlint-tsgolint/win32-x64/-/win32-x64-7.0.2004.tgz", { "os": "win32", "cpu": "x64" }, "sha512-7PsxuUx11Ry9DYTWcljTzRbmZY9B6O9fFFfZV+aodQEMy6pfRT3fhoQRv9PtGN/89z1pPz3nFKrsFm6WqNtX7w=="],
+
+    "duskmoon-bundler": ["duskmoon-bundler@workspace:apps/duskmoon_bundler"],
+
+    "oxlint-tsgolint": ["oxlint-tsgolint@7.0.2004", "https://npm.gsmlg.dev/oxlint-tsgolint/-/oxlint-tsgolint-7.0.2004.tgz", { "optionalDependencies": { "@oxlint-tsgolint/darwin-arm64": "7.0.2004", "@oxlint-tsgolint/darwin-x64": "7.0.2004", "@oxlint-tsgolint/linux-arm64": "7.0.2004", "@oxlint-tsgolint/linux-x64": "7.0.2004", "@oxlint-tsgolint/win32-arm64": "7.0.2004", "@oxlint-tsgolint/win32-x64": "7.0.2004" }, "bin": { "tsgolint": "./bin/tsgolint.js" } }, "sha512-vQ9WDF3fiZJvRdSDosNOflerOCOpwol6vWzVDxW76RcU19cjTh7engvkHLvmv+tzedR8fAiJUVUGr6IVZdkzXQ=="],
+
+    "phoenix": ["phoenix@1.8.15", "", {}, "sha512-AU2t9smrLcSy7DF1ic3VKDVNmjnhcsOgdeXBiVrR29BgFLmO4EN+tyGx/lRY3naxl7eJtyLrnlBOfJu8gYvXdQ=="],
+
+    "phoenix_html": ["phoenix_html@4.3.0", "", {}, "sha512-6vnR2Y7KxEPX1DdN59AuO98TTFtsYBqfUiUOo3NY6vyVp3o94RTawdaKtELFOKfiUD7LCEclBcpCltJM2GWuKw=="],
+
+    "phoenix_live_view": ["phoenix_live_view@1.2.12", "", {}, "sha512-MmJSXZrqThk4mTzyvxSujzdRj6OHdVf5P5IS+qLPKdquCzHBYC7YXCkltBPCaom4uKS1cBKGahU7fGhU3Vyo4w=="],
+  }
+}

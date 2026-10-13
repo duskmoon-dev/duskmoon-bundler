@@ -2,9 +2,12 @@ defmodule QuickBEAM.Native do
   @moduledoc false
 
   @native_version Mix.Project.config()[:version]
-  @local_dev Mix.Project.config()[:build_path] == "../../_build"
-  @build_from_source @local_dev or
-                       System.get_env("DUSKMOON_BUILD_NATIVE_FROM_SOURCE") in ["1", "true"]
+  @build_from_source QuickBEAM.NativePolicy.force_build!(
+                       :duskmoon_quickbeam,
+                       "QUICKBEAM_BUILD",
+                       @native_version,
+                       :zigler_precompiled
+                     )
 
   @c_src_dir Application.app_dir(:duskmoon_quickbeam, "priv/c_src")
   @hidden_cflags ["-fvisibility=hidden"]
@@ -126,7 +129,7 @@ defmodule QuickBEAM.Native do
 
   @quickjs_cflags @quickjs_cflags ++ @hidden_cflags
 
-  if System.get_env("QUICKBEAM_BUILD") in ["1", "true"] and
+  if @build_from_source and
        is_nil(System.get_env("ZIG_LOCAL_CACHE_DIR")) do
     zig_local_cache_dir = Path.expand(Path.join(Mix.Project.build_path(), "zig-cache"))
     File.mkdir_p!(zig_local_cache_dir)
@@ -136,9 +139,9 @@ defmodule QuickBEAM.Native do
   use ZiglerPrecompiled,
     otp_app: :duskmoon_quickbeam,
     base_url:
-      "https://github.com/duskmoon-dev/phoenix-duskmoon-ui/releases/download/v#{@native_version}",
+      "https://github.com/duskmoon-dev/duskmoon-bundler/releases/download/v#{@native_version}",
     version: @native_version,
-    force_build: @build_from_source or System.get_env("QUICKBEAM_BUILD") in ["1", "true"],
+    force_build: @build_from_source,
     targets: ~w(
       aarch64-linux-gnu
       aarch64-linux-musl

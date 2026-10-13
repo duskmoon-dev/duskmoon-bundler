@@ -1,9 +1,9 @@
 defmodule QuickBEAM.MixProject do
   use Mix.Project
 
-  @version "9.16.16"
+  @version "9.16.17"
 
-  @source_url "https://github.com/duskmoon-dev/phoenix-duskmoon-ui"
+  @source_url "https://github.com/duskmoon-dev/duskmoon-bundler"
   @upstream_url "https://github.com/elixir-volt/quickbeam"
 
   def project do
@@ -96,7 +96,7 @@ defmodule QuickBEAM.MixProject do
         "Upstream" => @upstream_url
       },
       files: ~w[
-        lib priv/c_src priv/ts
+        lib priv/c_src priv/ts docs
         mix.exs README.md LICENSE CHANGELOG.md
         checksum-QuickBEAM.Native.exs
         .formatter.exs

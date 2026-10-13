@@ -47,3 +47,6 @@ package-lock.json
 /apps/duskmoon_oxide/target/
 /apps/duskmoon_vize/priv/native/
 /apps/duskmoon_vize/target/
+
+# Application-local scratch fixtures created by tests.
+/apps/*/tmp/
