@@ -32,7 +32,9 @@ defmodule GenerateNativeChecksums do
     x86_64-macos-none
   )
 
-  def main([version, assets_dir]) do
+  def main([version, assets_dir]), do: main([version, assets_dir, "apps"])
+
+  def main([version, assets_dir, package_root]) do
     Version.parse!(version)
 
     asset_paths = load_asset_paths!(assets_dir)
@@ -42,6 +44,7 @@ defmodule GenerateNativeChecksums do
     checksum_groups =
       Enum.map(expected_groups, fn {{_type, _name, output_path, format}, names} ->
         checksums = Enum.map(names, &{&1, asset_paths |> Map.fetch!(&1) |> digest()})
+        output_path = Path.join(package_root, String.replace_prefix(output_path, "apps/", ""))
         {output_path, format, checksums}
       end)
 
@@ -55,7 +58,7 @@ defmodule GenerateNativeChecksums do
   def main(_args) do
     IO.puts(
       :stderr,
-      "usage: elixir generate_native_checksums.exs <version> <assets-directory>"
+      "usage: elixir generate_native_checksums.exs <version> <assets-directory> <staged-package-root>"
     )
 
     System.halt(2)

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-version=${1:?usage: alpine_native_smoke.sh VERSION}
+version=${1:?usage: alpine_native_smoke.sh B}
 case "$version" in
   *[!0-9.]*|'') echo "Expected a stable numeric release version" >&2; exit 2 ;;
 esac
@@ -25,6 +25,7 @@ consumer_dir=$(mktemp -d)
 trap 'rm -rf "$consumer_dir"' EXIT
 cd "$consumer_dir"
 export MIX_ENV=prod
+export DUSKMOON_NATIVE_MODE=precompiled
 mix local.hex --force
 mix local.rebar --force
 cat > mix.exs <<EOF
@@ -32,7 +33,12 @@ defmodule AlpineNativeSmoke.MixProject do
   use Mix.Project
   def project do
     [app: :alpine_native_smoke, version: "0.1.0", elixir: ">= 1.18.0",
-     deps: [{:duskmoon_bundler, "== $version"}, {:phoenix_duskmoon, "== $version"}]]
+     deps: [
+       {:duskmoon_bundler, "== $version"},
+       {:duskmoon_bundler_runtime, "== $version"},
+       {:duskmoon_oxc, "== $version"}, {:duskmoon_oxide, "== $version"},
+       {:duskmoon_vize, "== $version"}, {:duskmoon_quickbeam, "== $version"},
+       {:duskmoon_npm, "== $version"}, {:duskmoon_hex_solver, "== $version"}]]
   end
   def application, do: [extra_applications: [:logger]]
 end

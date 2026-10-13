@@ -1,0 +1,40 @@
+name: Toolchain Alpine Registry Consumer
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      source_sha:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        required: true
+        type: string
+      source_sha:
+        description: Validation scripts immutable source SHA
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  musl:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+      - name: Clean published cohort on musl without native source compilers
+        env:
+          BUNDLER_VERSION: ${{ inputs.version }}
+        run: |
+          docker run --rm --volume "$PWD/.github/scripts:/validation:ro" \
+            --env REQUIRE_MUSL=1 elixir:1.18-otp-28-alpine \
+            sh /validation/alpine_native_smoke.sh "$BUNDLER_VERSION"
