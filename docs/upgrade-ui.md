@@ -9,6 +9,11 @@ Hex lock entries, and records release URL/toolchain SHA in
 checkouts and mismatching publication provenance. Retries reuse matching branches
 and PRs, including closed/merged PRs, without force pushes or duplicate commits.
 Conflicting outputs stop. The workflow never writes directly to main or merges.
+When main has already adopted B and its upgrade branch was deleted, a retry
+verifies the existing pin, matching release metadata and all eight actual Hex
+lock entries before any branch operation. It completes without a new branch,
+commit, push or PR. Missing, stale or non-Hex cohort entries fail instead of
+accepting the pin alone.
 
 Prefer a GitHub App installed **only on the UI repository**, with Contents
 read/write, Pull requests read/write and Metadata read permissions. Configure

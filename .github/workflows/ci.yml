@@ -46,6 +46,7 @@ jobs:
       - name: Pure release, package and native-policy contracts
         run: |
           elixir .github/scripts/release_test.exs
+          elixir scripts/upgrade-ui-test.exs
           elixir scripts/package-stage-test.exs
           elixir scripts/native-policy-test.exs
       - run: mix format --check-formatted

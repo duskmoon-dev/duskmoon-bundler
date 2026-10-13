@@ -83,6 +83,14 @@ defmodule UpgradeUI do
       "repository" => @bundler
     }
 
+    if current == version and File.exists?(metadata_path) do
+      ReleaseSupport.immutable_action(JSON.decode!(File.read!(metadata_path)), metadata)
+      {lock, _} = Code.eval_file("mix.lock")
+      check_lock!(lock, version)
+      IO.puts("UI already pins verified toolchain #{version}; no upgrade needed")
+      throw(:reused)
+    end
+
     if push? do
       refs =
         ReleaseSupport.cmd!("git", ["ls-remote", "--heads", "origin", "refs/heads/#{branch}"])
@@ -119,24 +127,14 @@ defmodule UpgradeUI do
       ReleaseSupport.cmd!("git", ["checkout", "-b", branch])
     end
 
-    if current == version and File.exists?(metadata_path) do
-      ReleaseSupport.immutable_action(JSON.decode!(File.read!(metadata_path)), metadata)
-    else
-      File.write!("BUNDLER_VERSION", version <> "\n")
-      ReleaseSupport.cmd!("mix", ["deps.get"]) |> IO.write()
-      ReleaseSupport.cmd!("elixir", ["scripts/check-toolchain.exs"]) |> IO.write()
-      {lock, _} = Code.eval_file("mix.lock")
+    File.write!("BUNDLER_VERSION", version <> "\n")
+    ReleaseSupport.cmd!("mix", ["deps.get"]) |> IO.write()
+    ReleaseSupport.cmd!("elixir", ["scripts/check-toolchain.exs"]) |> IO.write()
+    {lock, _} = Code.eval_file("mix.lock")
+    check_lock!(lock, version)
 
-      for app <- ReleaseSupport.cohort() do
-        case lock[app] || lock[String.to_atom(app)] do
-          {:hex, _, ^version, _, _, _, _, _} -> :ok
-          other -> raise("actual lock cohort mismatch #{app}: #{inspect(other)}")
-        end
-      end
-
-      File.mkdir_p!(Path.dirname(metadata_path))
-      File.write!(metadata_path, JSON.encode!(metadata) <> "\n")
-    end
+    File.mkdir_p!(Path.dirname(metadata_path))
+    File.write!(metadata_path, JSON.encode!(metadata) <> "\n")
 
     if push? do
       ReleaseSupport.cmd!("git", ["config", "user.name", "duskmoon-bundler[bot]"])
@@ -156,6 +154,17 @@ defmodule UpgradeUI do
     end
   catch
     :reused -> :ok
+  end
+
+  defp check_lock!(lock, version) do
+    for app <- ReleaseSupport.cohort() do
+      package = String.to_atom(app)
+
+      case lock[app] || lock[package] do
+        {:hex, ^package, ^version, _, _, _, "hexpm", _} -> :ok
+        other -> raise("actual lock cohort mismatch #{app}: #{inspect(other)}")
+      end
+    end
   end
 
   defp ensure_pr(branch, version) do
