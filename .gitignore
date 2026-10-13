@@ -1,0 +1,49 @@
+# The directory Mix will write compiled artifacts to.
+/_build/
+
+# If you run "mix test --cover", coverage assets end up here.
+/cover/
+
+# The directory Mix downloads your dependencies sources to.
+/deps/
+
+# Where 3rd-party dependencies like ExDoc output generated docs.
+/doc/
+
+# Ignore .fetch files in case you like to edit your project deps locally.
+/.fetch
+
+# If the VM crashes, it generates a dump, let's ignore it too.
+erl_crash.dump
+
+# Also ignore archive artifacts (built via "mix archive.build").
+*.ez
+
+# Temporary files, for example, from tests.
+/tmp
+
+# Native prebuild output.
+/artifacts/
+
+
+node_modules
+package-lock.json
+
+/.devenv*
+
+/.playwright-mcp/
+
+# Generated icon bundles (built by mix icons.bundle)
+*.etf.gz
+
+# Generated QuickBEAM precompiled NIF copied during local compiles.
+/apps/duskmoon_quickbeam/priv/lib/
+
+# Generated Rust NIF output copied during local compiles.
+/apps/duskmoon_oxc/priv/native/
+/apps/duskmoon_oxc/target/
+/apps/duskmoon_oxc/native/*/target/
+/apps/duskmoon_oxide/priv/native/
+/apps/duskmoon_oxide/target/
+/apps/duskmoon_vize/priv/native/
+/apps/duskmoon_vize/target/
