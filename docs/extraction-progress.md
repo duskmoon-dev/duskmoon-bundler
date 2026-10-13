@@ -12,4 +12,14 @@ Completed checks: warnings-as-errors standalone source compile; full standalone 
 
 Package integrity fixes: standalone registry staging removes Hex-forbidden override flags while retaining optional/runtime/environment semantics. QuickBEAM referenced absent documentation; the actual two documentation files now ship. HexSolver receives its declared canonical Apache-2.0 license. Generic Phoenix JS fixtures explicitly install the same package versions as the source lock using Bun, without requiring the UI's Hex dependencies. Bun lock files require explicit git add -f on this host because of a global ignore.
 
-Remaining: isolated staged consumer helper verification; full cross-platform matrix and final47 checksum proof are release gates, not claimed local results. No active source checksum files are synthesized, and no packages/tags/releases were published.
+Remaining: full cross-platform matrix and final47 checksum proof are release gates, not claimed local results. No active source checksum files are synthesized, and no packages/tags/releases were published.
+
+Final isolated staged source consumer passed: complete eight-package override closure outside both checkouts, separate deps/build state, warnings-as-errors compile, OXC parsing/selection/format/lint, Vize SFC, Oxide extraction and QuickBEAM runtime execution. The source-only consumer mirrors the existing umbrella ExDoc override needed by Zigler/zig_doc; publishable package metadata contains no override flags. Log: /tmp/duskmoon-staged-consumer-20261013.log.
+
+Strict download failure automation passed4 cases: Rustler and Zigler each reject a localhost404 and checksum-mismatched fixture response. Compiler invocation traps (including explicit Zig executable) remained untouched and no fallback NIF appeared. Run `elixir scripts/native-download-failure-test.exs` after the destination development dependencies have compiled.
+
+Native development configuration now selects Zig0.16 to match the pinned Zigler and native CI requirements. Nix expression syntax passed. Full remote Nix evaluation could not complete because the nixpkgs tar fetch stalled/truncated; the owned command was stopped safely. Raw upstream package definitions confirmed zig_0_16, and both source build lanes actually ran Zig0.16.0. Full devenv realization remains unverified (BLOCKED_ENV), without changing lock versions or bypassing permissions.
+
+Staging provenance now records Git commit/tree, dirty-state marker and actual Mix/Bun lock hashes alongside package source hashes, so developer candidate staging does not misrepresent a dirty tree as an immutable release. Formal release automation requires its own clean immutable checkout gates.
+
+Final provenance validation passed `elixir scripts/verify-inventory.exs --source /home/gao/Workspace/duskmoon-dev/phoenix-duskmoon-ui`: every moved/duplicated/split original content hash matched the recorded source snapshot, and all destination paths exist. No owned commands remain running.

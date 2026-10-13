@@ -52,7 +52,26 @@ defmodule DuskmoonToolchain.PackageStage do
 
     packages = Enum.map(@apps, &stage_app!(root, output, &1, version))
     {sha, 0} = System.cmd("git", ["rev-parse", "HEAD"], cd: root)
-    manifest = %{version: version, source_sha: String.trim(sha), packages: packages}
+    {tree, 0} = System.cmd("git", ["rev-parse", "HEAD^{tree}"], cd: root)
+
+    {status, 0} =
+      System.cmd("git", ["status", "--porcelain", "--untracked-files=normal"], cd: root)
+
+    locks =
+      for name <- ["mix.lock", "bun.lock"], File.exists?(Path.join(root, name)), into: %{} do
+        {name,
+         :crypto.hash(:sha256, File.read!(Path.join(root, name))) |> Base.encode16(case: :lower)}
+      end
+
+    manifest = %{
+      version: version,
+      source_sha: String.trim(sha),
+      source_tree_sha: String.trim(tree),
+      source_dirty: String.trim(status) != "",
+      locks: locks,
+      packages: packages
+    }
+
     File.write!(Path.join(output, "manifest.json"), JSON.encode!(manifest) <> "\n")
     manifest
   end

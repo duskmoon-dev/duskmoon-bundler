@@ -50,10 +50,23 @@
     "source_doctests": 2,
     "native_policy_tests": 4,
     "stage_tests": 2,
-    "js_preload_tests": 2
+    "js_preload_tests": 2,
+    "native_download_failure_tests": 4,
+    "isolated_staged_source_consumer": "passed full eight-package path closure, warnings-as-errors compile and all six native loaders exercised",
+    "nix_syntax": "passed nix-instantiate --parse devenv.nix",
+    "inventory_snapshot_hashes": "passed every moved, duplicated and split original content SHA256 against source snapshot"
   },
   "notes": [
     "Six real source-built host NIF archives hashed into isolated staged checksum files; no active repository checksum edits",
     "Full 47 native artifact release and registry/musl proof require authorized release execution"
-  ]
+  ],
+  "environment_blockers": {
+    "nix_realization": "Full nix eval fetching github:NixOS/nixpkgs/release-26.05 stalled and reported Truncated tar archive detected while reading data after own command stopped. Raw upstream all-packages.nix confirms zig_0_16; actual source builds used Zig 0.16.0."
+  },
+  "evidence_logs": {
+    "source_tests": "/tmp/duskmoon-toolchain-tests-20261013.log",
+    "isolated_consumer": "/tmp/duskmoon-staged-consumer-20261013.log",
+    "host_package_inspection": "/tmp/duskmoon-stage-candidate-20261013c/host-package-inspection.json",
+    "inventory": "/tmp/duskmoon-inventory-verification-20261013.log"
+  }
 }

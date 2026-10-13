@@ -30,6 +30,20 @@ File.mkdir_p!(consumer)
 deps =
   Enum.map(apps, fn app -> {app, [path: Path.join(stage, to_string(app)), override: true]} end)
 
+# Match the source umbrella's explicit ExDoc override: Zigler's documentation
+# helper pins 0.39.1 while this package cohort uses ~> 0.40. This applies only
+# to candidate source consumers; registry package manifests contain no overrides.
+deps =
+  if mode == "source" do
+    [
+      {:zigler, "~> 0.16.0", runtime: false},
+      {:rustler, "~> 0.38", runtime: false},
+      {:ex_doc, "~> 0.40", runtime: false, override: true}
+    ] ++ deps
+  else
+    deps
+  end
+
 source = """
 defmodule IsolatedConsumer.MixProject do
   use Mix.Project
@@ -39,17 +53,6 @@ end
 """
 
 File.write!(Path.join(consumer, "mix.exs"), source)
-# Optional source build dependencies must be explicit in a downstream project.
-if mode == "source" do
-  File.write!(
-    Path.join(consumer, "mix.exs"),
-    String.replace(
-      source,
-      "deps: [",
-      "deps: [{:zigler, \"~> 0.16.0\", runtime: false}, {:rustler, \"~> 0.38\", runtime: false}, "
-    )
-  )
-end
 
 check = """
 {:ok, _} = OXC.parse("export const answer = 42;", "entry.js")
