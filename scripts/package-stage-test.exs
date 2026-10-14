@@ -51,4 +51,35 @@ defmodule PackageStageTest do
     assert File.exists?(Path.join([output, "duskmoon_bundler", "priv/ts/dev/hmr-client.ts"]))
     assert File.exists?(Path.join([output, "duskmoon_bundler_runtime", "LICENSE"]))
   end
+
+  test "staging without an explicit version uses the current toolchain cohort" do
+    root = Path.expand("..", __DIR__)
+
+    output =
+      Path.join(System.tmp_dir!(), "duskmoon-stage-default-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm_rf!(output) end)
+
+    {message, 0} =
+      System.cmd("elixir", [Path.join(__DIR__, "stage-packages.exs"), "--output", output],
+        stderr_to_stdout: true
+      )
+
+    Mix.start()
+
+    version =
+      Mix.Project.in_project(:duskmoon_toolchain, root, fn _ ->
+        Keyword.fetch!(Mix.Project.config(), :version)
+      end)
+
+    assert message =~ "for B=#{version}"
+
+    assert %{"version" => ^version, "packages" => packages} =
+             JSON.decode!(File.read!(Path.join(output, "manifest.json")))
+
+    for %{"name" => name, "version" => package_version} <- packages do
+      assert package_version == version
+      assert File.read!(Path.join([output, name, "mix.exs"])) =~ ~s(@version "#{version}")
+    end
+  end
 end
