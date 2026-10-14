@@ -17,7 +17,7 @@ Scans source files in parallel to extract Tailwind CSS candidate class names at 
 ```elixir
 def deps do
   [
-    {:duskmoon_oxide, "~> 9.0"}
+    {:duskmoon_oxide, "~> 10.0"}
   ]
 end
 ```

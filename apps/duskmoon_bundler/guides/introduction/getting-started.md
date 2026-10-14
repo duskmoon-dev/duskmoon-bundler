@@ -7,7 +7,7 @@ mix igniter.install duskmoon_bundler
 ```
 
 The installer:
-- Adds `{:duskmoon_bundler_runtime, "~> 9.7"}` and `{:duskmoon_bundler, "~> 9.7", runtime: Mix.env() in [:dev, :test]}` to `mix.exs`
+- Adds `{:duskmoon_bundler_runtime, "~> 10.0"}` and `{:duskmoon_bundler, "~> 10.0", runtime: Mix.env() in [:dev, :test]}` to `mix.exs`
 - Configures build settings in `config/config.exs`
 - Adds format and lint config to `config/config.exs`
 - Adds `DuskmoonBundler.Formatter` plugin to `.formatter.exs`
@@ -29,8 +29,8 @@ Add DuskmoonBundler to your dependencies:
 ```elixir
 def deps do
   [
-    {:duskmoon_bundler_runtime, "~> 9.7"},
-    {:duskmoon_bundler, "~> 9.7", runtime: Mix.env() in [:dev, :test]}
+    {:duskmoon_bundler_runtime, "~> 10.0"},
+    {:duskmoon_bundler, "~> 10.0", runtime: Mix.env() in [:dev, :test]}
   ]
 end
 ```

@@ -21,7 +21,7 @@ including Vapor mode IR for BEAM-native SSR.
 ```elixir
 def deps do
   [
-    {:duskmoon_vize, "~> 9.0"}
+    {:duskmoon_vize, "~> 10.0"}
   ]
 end
 ```

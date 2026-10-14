@@ -9,3 +9,5 @@
 - Stage standalone packages with exact cohort dependency versions and verify
   source, precompiled, glibc and Alpine consumers before UI adoption.
 - Keep the Phoenix UI release version independent of the toolchain version.
+- Install the 10.x toolchain through the Igniter installer and documented
+  dependency examples.

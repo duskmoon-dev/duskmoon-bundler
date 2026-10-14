@@ -17,7 +17,7 @@ npm package management through `duskmoon_npm`. Keep setup small and prefer the
 installer unless the user is in an umbrella, custom endpoint, or migration path
 that needs manual edits.
 
-Current repository package version: `9.7.1` for `duskmoon_bundler`,
+Current repository package version: `10.0.0` for `duskmoon_bundler`,
 `duskmoon_bundler_runtime`, and `duskmoon_npm`.
 
 ## Setup Path
@@ -44,8 +44,8 @@ running Igniter. Add both dependencies:
 ```elixir
 def deps do
   [
-    {:duskmoon_bundler_runtime, "~> 9.7"},
-    {:duskmoon_bundler, "~> 9.7", runtime: Mix.env() in [:dev, :test]}
+    {:duskmoon_bundler_runtime, "~> 10.0"},
+    {:duskmoon_bundler, "~> 10.0", runtime: Mix.env() in [:dev, :test]}
   ]
 end
 ```
@@ -59,7 +59,7 @@ project needs npm package-management tasks without depending on
 `:duskmoon_bundler`:
 
 ```elixir
-{:duskmoon_npm, "~> 9.7"}
+{:duskmoon_npm, "~> 10.0"}
 ```
 
 ## NPM Package Management

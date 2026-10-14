@@ -22,7 +22,7 @@ by adding `duskmoon_hex_solver` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:duskmoon_hex_solver, "~> 9.5"}
+    {:duskmoon_hex_solver, "~> 10.0"}
   ]
 end
 ```

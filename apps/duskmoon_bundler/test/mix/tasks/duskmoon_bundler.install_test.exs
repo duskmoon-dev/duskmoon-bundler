@@ -122,10 +122,10 @@ defmodule DuskmoonBundler.InstallTest do
         igniter.rewrite.sources["mix.exs"]
         |> Rewrite.Source.get(:content)
 
-      assert mix_content =~ ~s({:duskmoon_bundler_runtime, "~> 9.7"})
+      assert mix_content =~ ~s({:duskmoon_bundler_runtime, "~> 10.0"})
 
       assert mix_content =~
-               "{:duskmoon_bundler, \"~> 9.7\", runtime: Mix.env() in [:dev, :test]}"
+               "{:duskmoon_bundler, \"~> 10.0\", runtime: Mix.env() in [:dev, :test]}"
 
       assert mix_content =~ ~s("assets.setup": [])
       assert mix_content =~ ~s("assets.build": ["compile", "duskmoon_bundler.build --tailwind"])

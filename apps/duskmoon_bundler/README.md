@@ -34,8 +34,8 @@ Or add the dep manually:
 ```elixir
 def deps do
   [
-    {:duskmoon_bundler_runtime, "~> 9.7"},
-    {:duskmoon_bundler, "~> 9.7", runtime: Mix.env() in [:dev, :test]}
+    {:duskmoon_bundler_runtime, "~> 10.0"},
+    {:duskmoon_bundler, "~> 10.0", runtime: Mix.env() in [:dev, :test]}
   ]
 end
 ```

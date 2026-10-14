@@ -25,7 +25,7 @@ Parse, transform, minify, lint, and generate JavaScript/TypeScript at native spe
 ```elixir
 def deps do
   [
-    {:duskmoon_oxc, "~> 9.0"}
+    {:duskmoon_oxc, "~> 10.0"}
   ]
 end
 ```

@@ -26,7 +26,7 @@ Elixir projects increasingly need JavaScript packages for assets, formatters, li
 
 ```elixir
 def deps do
-  [{:duskmoon_npm, "~> 9.5.1"}]
+  [{:duskmoon_npm, "~> 10.0"}]
 end
 ```
 

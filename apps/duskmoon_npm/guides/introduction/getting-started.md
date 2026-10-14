@@ -6,7 +6,7 @@ Add `:npm` to your Mix dependencies:
 
 ```elixir
 def deps do
-  [{:duskmoon_npm, "~> 9.5.1"}]
+  [{:duskmoon_npm, "~> 10.0"}]
 end
 ```
 

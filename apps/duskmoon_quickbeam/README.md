@@ -11,7 +11,7 @@ leaving the BEAM.
 
 ```elixir
 def deps do
-  [{:duskmoon_quickbeam, "~> 9.0"}]
+  [{:duskmoon_quickbeam, "~> 10.0"}]
 end
 ```
 
@@ -453,8 +453,8 @@ QuickBEAM can use [`npm_ex`](https://hex.pm/packages/npm) to install npm package
 ```elixir
 def deps do
   [
-    {:duskmoon_quickbeam, "~> 9.0"},
-    {:duskmoon_npm, "~> 9.0"}
+    {:duskmoon_quickbeam, "~> 10.0"},
+    {:duskmoon_npm, "~> 10.0"}
   ]
 end
 ```

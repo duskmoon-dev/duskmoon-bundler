@@ -76,8 +76,8 @@ if Code.ensure_loaded?(Igniter) do
       runtime_setting = Sourceror.parse_string!("Mix.env() in [:dev, :test]")
 
       igniter
-      |> ProjectDeps.add_dep({:duskmoon_bundler_runtime, "~> 9.7"}, on_exists: :skip)
-      |> ProjectDeps.add_dep({:duskmoon_bundler, "~> 9.7"}, yes?: true)
+      |> ProjectDeps.add_dep({:duskmoon_bundler_runtime, "~> 10.0"}, on_exists: :skip)
+      |> ProjectDeps.add_dep({:duskmoon_bundler, "~> 10.0"}, yes?: true)
       |> ProjectDeps.set_dep_option(:duskmoon_bundler, :runtime, runtime_setting)
     end
 

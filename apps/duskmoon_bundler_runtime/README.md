@@ -6,14 +6,14 @@ Phoenix runtime releases can depend on this package without carrying the build
 and development toolchain:
 
 ```elixir
-{:duskmoon_bundler_runtime, "~> 9.7"}
+{:duskmoon_bundler_runtime, "~> 10.0"}
 ```
 
 Development and production asset builds should include the build package too:
 
 ```elixir
-{:duskmoon_bundler_runtime, "~> 9.7"},
-{:duskmoon_bundler, "~> 9.7", runtime: Mix.env() in [:dev, :test]}
+{:duskmoon_bundler_runtime, "~> 10.0"},
+{:duskmoon_bundler, "~> 10.0", runtime: Mix.env() in [:dev, :test]}
 ```
 
 The runtime package owns the public template-facing APIs:
