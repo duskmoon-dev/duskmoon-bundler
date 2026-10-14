@@ -154,6 +154,7 @@ jobs:
         with:
           name: exact-publish-packages
           path: ${{ runner.temp }}/packages
+          include-hidden-files: true
   publish:
     needs: stage
     environment: release
