@@ -1,5 +1,13 @@
 # Changelog
 
+## 10.0.1 - 2026-10-14
+
+- Restore required OTP code paths after Mix dependency compilation before npm
+  tasks use HTTPS, including when SSL applications are already running.
+- Fail immediately when npm task HTTP bootstrap fails instead of reporting a
+  later package download timeout.
+- Default candidate package staging to the current toolchain cohort version.
+
 ## 10.0.0 - 2026-10-14
 
 - Release the eight Duskmoon toolchain Hex packages from the independent

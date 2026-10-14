@@ -1,5 +1,13 @@
 # Changelog
 
+## 10.0.1 - 2026-10-14
+
+### Fixed
+
+- Restore required OTP code paths after Mix dependency compilation before npm
+  tasks use HTTPS, including when SSL applications are already running.
+- Report HTTP bootstrap failures immediately instead of package download timeouts.
+
 ## Unreleased
 
 ### Changed

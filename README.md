@@ -2,7 +2,7 @@
 
 Independent Elixir toolchain for frontend assets, native JS/CSS compilers, and the QuickBEAM runtime. The eight Hex packages retain their existing names and namespaces: `duskmoon_bundler`, `duskmoon_bundler_runtime`, `duskmoon_oxc`, `duskmoon_oxide`, `duskmoon_vize`, `duskmoon_quickbeam`, `duskmoon_npm`, and `duskmoon_hex_solver`.
 
-The synchronized toolchain version is **10.0.0**. All eight packages and their native artifacts are released from this repository. Earlier packages retain their native downloads from historical UI releases. UI version U is maintained independently in `phoenix-duskmoon-ui`.
+The synchronized toolchain version is **10.0.1**. All eight packages and their native artifacts are released from this repository. Earlier packages retain their native downloads from historical UI releases. UI version U is maintained independently in `phoenix-duskmoon-ui`.
 
 ## Development
 
@@ -26,7 +26,7 @@ Runtime-only Phoenix applications can use `duskmoon_bundler_runtime` without the
 ## Package staging
 
 ```sh
-elixir scripts/stage-packages.exs --version 10.0.0 --output /tmp/bundler-packages
+elixir scripts/stage-packages.exs --version 10.0.1 --output /tmp/bundler-packages
 elixir scripts/package-consumer-smoke.exs --stage /tmp/bundler-packages --mode source
 ```
 
