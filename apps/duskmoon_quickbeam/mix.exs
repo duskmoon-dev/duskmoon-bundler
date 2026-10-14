@@ -1,7 +1,7 @@
 defmodule QuickBEAM.MixProject do
   use Mix.Project
 
-  @version "9.16.17"
+  @version "10.0.0"
 
   @source_url "https://github.com/duskmoon-dev/duskmoon-bundler"
   @upstream_url "https://github.com/elixir-volt/quickbeam"
