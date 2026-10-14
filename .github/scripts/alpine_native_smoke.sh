@@ -21,6 +21,11 @@ for variable in DUSKMOON_BUILD_NATIVE_FROM_SOURCE OXC_EX_BUILD OXC_FMT_BUILD OXC
   fi
 done
 
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get update
+  apt-get install -y --no-install-recommends ca-certificates
+fi
+
 consumer_dir=$(mktemp -d)
 trap 'rm -rf "$consumer_dir"' EXIT
 cd "$consumer_dir"
