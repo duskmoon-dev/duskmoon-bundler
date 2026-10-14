@@ -31,9 +31,31 @@ settings/secrets/apps are configured by this migration. If credentials are
 absent, B remains successful and the job reports **UI coordination unconfigured**
 in its summary; it does not claim a PR was created.
 
+## Published-release verification and consumer recovery
+
+If a published B cohort needs its final consumer gates rerun after a validation
+script fix, dispatch `verify-published-release.yml` from the corrected validation
+revision with `version` and the original artifact `source_sha`. This workflow
+downloads and hashes all 47 public native artifacts and all eight actual Hex
+tarballs against release provenance, then runs a cold glibc consumer and both
+Alpine consumers. It does not rebuild or publish packages, change release assets
+or move the release tag. The artifact source SHA remains unchanged.
+
+Only after all three jobs pass does it upload `verified-toolchain-release-vB`
+and run the same configured UI upgrade coordination. Its `verified-release.json`
+records the original artifact `source_sha`, the separate `validation_sha`, all
+eight package names and every consumer gate. Without UI credentials it reports
+**UI coordination unconfigured** and retains the record for manual adoption.
+
+```sh
+gh workflow run verify-published-release.yml --repo duskmoon-dev/duskmoon-bundler \
+  --ref VALIDATION_REF -f version=B -f source_sha=FULL_ARTIFACT_SOURCE_SHA
+```
+
 ## Manual fallback
 
-After the formal workflow's glibc and both Alpine consumer jobs passed, retain a
+After the formal release or published-release verification workflow's glibc and
+both Alpine consumer jobs passed, retain a
 verification record (B, source SHA, all eight package names and the four gate
 booleans `public_assets_verified`, `registry_consumer_verified`,
 `musl_amd64_verified`, `musl_arm64_verified`). Do not mark unrun checks true.
