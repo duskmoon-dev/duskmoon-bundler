@@ -11,3 +11,5 @@
 - Keep the Phoenix UI release version independent of the toolchain version.
 - Install the 10.x toolchain through the Igniter installer and documented
   dependency examples.
+- Publish the verified Hex archives directly without resolving optional source
+  toolchains or rebuilding package contents.

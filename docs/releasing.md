@@ -64,6 +64,10 @@ operational authorization outside this implementation task. `publish-packages`
 rechecks public artifacts rather than assuming a preceding upload succeeded.
 The complete release workflow must be rerun to include all acceptance gates.
 
+Publication uploads the verified tarballs directly through Hex's package API
+with replacement disabled. It does not resolve optional source dependencies or
+rebuild package contents; the registry downloads must match those exact bytes.
+
 ## Credentials and permissions
 
 Configure destination-owned `HEX_API_KEY` with ownership of all eight existing

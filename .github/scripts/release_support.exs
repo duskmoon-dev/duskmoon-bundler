@@ -169,11 +169,47 @@ defmodule ReleaseSupport do
         File.rm(downloaded)
       end
     else
-      expected = digest(tarball)
-      IO.write(cmd!("mix", ["deps.get"], cd: dir))
-      IO.write(cmd!("mix", ["hex.build"], cd: dir))
-      immutable_action(digest(tarball), expected)
-      IO.write(cmd!("mix", ["hex.publish", "package", "--yes"], cd: dir))
+      # Hex's CLI loads source dependencies even for package-only publication.
+      # Upload the already verified archive without rebuilding or resolving them.
+      auth_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "hex-publish-auth-#{System.pid()}-#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir!(auth_dir)
+      File.chmod!(auth_dir, 0o700)
+
+      try do
+        header = Path.join(auth_dir, "authorization")
+        File.write!(header, "authorization: #{System.fetch_env!("HEX_API_KEY")}\n")
+        File.chmod!(header, 0o600)
+
+        status =
+          cmd!("curl", [
+            "--fail-with-body",
+            "--silent",
+            "--show-error",
+            "--request",
+            "POST",
+            "--header",
+            "@" <> header,
+            "--header",
+            "content-type: application/octet-stream",
+            "--data-binary",
+            "@" <> tarball,
+            "--output",
+            "/dev/null",
+            "--write-out",
+            "%{http_code}",
+            "https://hex.pm/api/packages/#{package}/releases?replace=false"
+          ])
+
+        unless status in ["200", "201"], do: raise("Hex publication failed: HTTP #{status}")
+        IO.puts("Published exact registry package #{package} #{version}")
+      after
+        File.rm_rf!(auth_dir)
+      end
     end
   end
 
