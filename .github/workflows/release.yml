@@ -11,16 +11,30 @@ on:
         required: true
         type: string
       ui_sha:
-        description: Immutable UI migration-compatible SHA for candidate integration
-        required: true
+        description: Required for publication; immutable UI migration-compatible SHA
+        required: false
         type: string
+      verify_published:
+        description: Verify an already-published cohort using current validation scripts
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
-  group: toolchain-release-${{ inputs.version }}
+  # The called verifier holds the cohort lock; its caller must use a separate lock.
+  group: toolchain-release-${{ inputs.version }}${{ inputs.verify_published && '-verification-dispatch' || '' }}
   cancel-in-progress: false
 jobs:
+  verify-published:
+    if: ${{ inputs.verify_published }}
+    uses: ./.github/workflows/verify-published-release.yml
+    with:
+      version: ${{ inputs.version }}
+      source_sha: ${{ inputs.source_sha }}
+    secrets: inherit
   validate:
+    if: ${{ !inputs.verify_published }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -54,6 +68,7 @@ jobs:
           WORKFLOW_SHA: ${{ github.sha }}
         run: |
           test "$WORKFLOW_SHA" = "$SOURCE_SHA" || { echo 'Dispatch workflow ref must point at source_sha' >&2; exit 1; }
+          test -n "$UI_SHA" || { echo 'ui_sha is required for publication' >&2; exit 1; }
           elixir scripts/release.exs plan "$VERSION" "$SOURCE_SHA"
           elixir scripts/release.exs preflight "$VERSION" "$SOURCE_SHA"
           elixir -r .github/scripts/release_support.exs -e 'ReleaseSupport.sha!(System.fetch_env!("UI_SHA"))'

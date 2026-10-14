@@ -94,6 +94,28 @@ usually a new B; do not relabel historical binaries. Rerun missing gates before
 adoption. If B succeeds and UI fails, retain B and repair/review the pending UI
 upgrade; do not bounce release workflows between repositories.
 
+For a fully published cohort whose consumer validation needs a script fix,
+dispatch **Toolchain Release** from the corrected validation revision with
+`verify_published=true`, the original B and artifact source SHA:
+
+```sh
+gh workflow run release.yml --repo duskmoon-dev/duskmoon-bundler \
+  --ref VALIDATION_REF -f version=B -f source_sha=FULL_ARTIFACT_SOURCE_SHA \
+  -f verify_published=true
+```
+
+This mode calls the published-release verifier, checks all 47 public native
+archives and eight Hex tarballs against original provenance, then runs the cold
+glibc and both Alpine consumers before recording the verified gates. Build,
+staging and publication jobs are skipped; no artifacts, packages or tags change.
+`ui_sha` is required only for normal publication. The record keeps artifact
+`source_sha` separate from `validation_sha`. See `upgrade-ui.md` for coordination
+and the standalone verification dispatch.
+
+GitHub reruns use the original workflow and source revision, so rerunning the
+old failed attempt cannot pick up a later validation-script repair. Its failed
+result remains in history; the corrected dispatch supplies new verification.
+
 Workflow definitions specify cross-platform coverage but local script validation
 alone does not prove those target builds, publication, remote credential setup
 or public consumer installation. Those remain actual release-run evidence.
