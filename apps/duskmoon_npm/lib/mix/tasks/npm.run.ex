@@ -17,12 +17,12 @@ defmodule Mix.Tasks.Npm.Run do
 
   @impl true
   def run([]) do
-    Application.ensure_all_started(:http_fetch)
+    NPM.MixBootstrap.ensure_started!()
     list_scripts()
   end
 
   def run([script_name | extra_args]) do
-    Application.ensure_all_started(:http_fetch)
+    NPM.MixBootstrap.ensure_started!()
     run_script(script_name, extra_args)
   end
 

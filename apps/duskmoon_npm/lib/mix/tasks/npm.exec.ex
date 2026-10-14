@@ -17,7 +17,7 @@ defmodule Mix.Tasks.Npm.Exec do
 
   @impl true
   def run([command | args]) do
-    Application.ensure_all_started(:http_fetch)
+    NPM.MixBootstrap.ensure_started!()
 
     case Exec.which(command, "node_modules") do
       {:ok, bin_path} ->

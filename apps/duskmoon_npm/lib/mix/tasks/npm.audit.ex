@@ -41,7 +41,7 @@ defmodule Mix.Tasks.Npm.Audit do
 
   @impl true
   def run(args) do
-    Application.ensure_all_started(:http_fetch)
+    NPM.MixBootstrap.ensure_started!()
 
     {opts, argv, invalid} = OptionParser.parse(args, strict: @switches)
 

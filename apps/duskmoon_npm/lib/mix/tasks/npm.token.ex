@@ -15,7 +15,7 @@ defmodule Mix.Tasks.Npm.Token do
 
   @impl true
   def run(args) do
-    Application.ensure_all_started(:http_fetch)
+    NPM.MixBootstrap.ensure_started!()
     {opts, _, _} = OptionParser.parse(args, strict: [verify: :boolean])
 
     token = resolve_token()

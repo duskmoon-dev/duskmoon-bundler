@@ -14,8 +14,7 @@ defmodule Mix.Tasks.Npm.Ci do
 
   @impl true
   def run([]) do
-    Application.ensure_all_started(:ssl)
-    Application.ensure_all_started(:http_fetch)
+    NPM.MixBootstrap.ensure_started!()
 
     case NPM.install(frozen: true) do
       :ok -> :ok

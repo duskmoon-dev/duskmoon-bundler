@@ -15,7 +15,7 @@ defmodule Mix.Tasks.Npm.View do
 
   @impl true
   def run([name | fields]) do
-    Application.ensure_all_started(:http_fetch)
+    NPM.MixBootstrap.ensure_started!()
 
     case NPM.Registry.get_packument(name) do
       {:ok, packument} ->

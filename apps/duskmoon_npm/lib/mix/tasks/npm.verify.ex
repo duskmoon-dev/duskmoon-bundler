@@ -15,7 +15,7 @@ defmodule Mix.Tasks.Npm.Verify do
 
   @impl true
   def run([]) do
-    Application.ensure_all_started(:http_fetch)
+    NPM.MixBootstrap.ensure_started!()
 
     with {:ok, lockfile} <- NPM.Lockfile.read(),
          {:ok, nested_lockfile} <- NPM.Lockfile.read_nested() do

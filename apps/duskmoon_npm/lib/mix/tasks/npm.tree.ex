@@ -13,7 +13,7 @@ defmodule Mix.Tasks.Npm.Tree do
 
   @impl true
   def run([]) do
-    Application.ensure_all_started(:http_fetch)
+    NPM.MixBootstrap.ensure_started!()
 
     with {:ok, project} <- NPM.Workspace.read_all(),
          {:ok, lockfile} <- NPM.Lockfile.read() do

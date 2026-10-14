@@ -14,7 +14,7 @@ defmodule Mix.Tasks.Npm.Get do
 
   @impl true
   def run([]) do
-    Application.ensure_all_started(:http_fetch)
+    NPM.MixBootstrap.ensure_started!()
     NPM.get()
   end
 
