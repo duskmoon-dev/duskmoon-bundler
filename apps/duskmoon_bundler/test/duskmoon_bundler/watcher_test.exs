@@ -148,4 +148,45 @@ defmodule DuskmoonBundler.WatcherTest do
 
     GenServer.stop(pid)
   end
+
+  test "rebuilds new Tailwind utilities after a Storybook exs template edit", %{
+    watch_dir: watch_dir
+  } do
+    Registry.register(DuskmoonBundler.HMR.Registry, :clients, nil)
+
+    assets_dir = Path.join(watch_dir, "assets")
+    storybook_dir = Path.join(watch_dir, "storybook")
+    File.mkdir_p!(assets_dir)
+    File.mkdir_p!(storybook_dir)
+    story_file = Path.join(storybook_dir, "button.story.exs")
+    File.write!(story_file, ~S|~s(<button class="flex">Story</button>)|)
+    outdir = Path.join(watch_dir, "css_out")
+
+    pid =
+      start_supervised!(
+        {DuskmoonBundler.Watcher,
+         root: assets_dir,
+         watch_dirs: [storybook_dir],
+         tailwind: true,
+         tailwind_outdir: outdir,
+         name: :test_watcher_storybook_exs}
+      )
+
+    css_file = Path.join(outdir, "app.css")
+    initial_css = File.read!(css_file)
+    refute initial_css =~ ".p-\\[39px\\]"
+    refute initial_css =~ "padding: 39px"
+
+    Process.sleep(100)
+    write_changed!(story_file, ~S|~s(<button class="flex p-[39px]">Story</button>)|)
+
+    assert_receive {:duskmoon_bundler_hmr, :update,
+                    %{path: "assets/css/app.css", changes: [:style]}},
+                   3000
+
+    rebuilt_css = File.read!(css_file)
+    assert rebuilt_css =~ ".p-\\[39px\\]"
+    assert rebuilt_css =~ "padding: 39px;"
+    assert Process.alive?(pid)
+  end
 end

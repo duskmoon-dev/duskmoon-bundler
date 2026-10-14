@@ -7,6 +7,8 @@
 - Fail immediately when npm task HTTP bootstrap fails instead of reporting a
   later package download timeout.
 - Default candidate package staging to the current toolchain cohort version.
+- Rebuild Tailwind CSS and update browser styles when `.exs` templates such as
+  Storybook variations change during development.
 
 ## 10.0.0 - 2026-10-14
 

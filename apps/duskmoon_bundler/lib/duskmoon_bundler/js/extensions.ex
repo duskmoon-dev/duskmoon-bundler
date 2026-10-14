@@ -5,7 +5,7 @@ defmodule DuskmoonBundler.JS.Extensions do
   @cjs ~w(.cjs .cts)
   @css ~w(.css)
   @json ~w(.json)
-  @template ~w(.ex .heex .eex .leex .sface)
+  @template ~w(.ex .exs .heex .eex .leex .sface)
 
   def js, do: @js
   def cjs, do: @cjs

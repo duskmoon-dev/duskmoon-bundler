@@ -1,5 +1,12 @@
 # Changelog
 
+## 10.0.1 - 2026-10-14
+
+### Fixed
+
+- Watch `.exs` templates such as Storybook variations for Tailwind rebuilds and
+  browser style updates, matching the existing `.ex` and `.heex` watch behavior.
+
 ## Unreleased
 
 ### Added
