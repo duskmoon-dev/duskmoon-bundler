@@ -19,6 +19,7 @@ defmodule DuskmoonBundler.Watcher do
       (e.g. `["lib/"]` for `.ex`/`.heex` templates)
     * `:tailwind` — enable Tailwind CSS rebuilds (default: `false`)
     * `:tailwind_css` — custom Tailwind input CSS (default: Tailwind base)
+    * `:tailwind_sources` — configured Tailwind source patterns; defaults to root and watch directories
     * `:target` — JS downlevel target
     * `:import_source` — JSX import source
     * `:vapor` — Vue Vapor mode
@@ -43,7 +44,8 @@ defmodule DuskmoonBundler.Watcher do
     pending: %{},
     tailwind_timer: nil,
     tailwind_changed: [],
-    tailwind_outdir: nil
+    tailwind_outdir: nil,
+    tailwind_server: nil
   ]
 
   def start_link(opts) do
@@ -83,7 +85,25 @@ defmodule DuskmoonBundler.Watcher do
       |> Map.new()
       |> normalize_config_paths()
 
-    all_dirs = Enum.uniq([root | watch_dirs])
+    tailwind_sources =
+      config[:tailwind_sources] ||
+        Enum.map(Enum.uniq([root | watch_dirs]), &%{base: &1, pattern: "**/*"})
+
+    tailwind_dirs =
+      if config[:tailwind] do
+        Enum.map(tailwind_sources, &Path.expand(&1.base)) ++
+          if(config[:tailwind_css], do: [Path.dirname(config.tailwind_css)], else: [])
+      else
+        []
+      end
+
+    all_dirs = Enum.uniq([root | watch_dirs] ++ tailwind_dirs)
+
+    tailwind_server =
+      if config[:tailwind] do
+        {:ok, pid} = DuskmoonBundler.Tailwind.start_link(name: nil, sources: tailwind_sources)
+        pid
+      end
 
     fs_pids =
       Enum.map(all_dirs, fn dir ->
@@ -96,11 +116,12 @@ defmodule DuskmoonBundler.Watcher do
       root: root,
       fs_pids: fs_pids,
       config: config,
-      tailwind_outdir: tailwind_outdir
+      tailwind_outdir: tailwind_outdir,
+      tailwind_server: tailwind_server
     }
 
     if config[:tailwind] do
-      initial_tailwind_build(all_dirs, config[:tailwind_css], tailwind_outdir)
+      initial_tailwind_build(state)
     end
 
     {:ok, state}
@@ -129,11 +150,9 @@ defmodule DuskmoonBundler.Watcher do
     Map.update(config, :tailwind_css, nil, &maybe_expand/1)
   end
 
-  defp initial_tailwind_build(dirs, css_path, outdir) do
-    sources =
-      Enum.map(dirs, fn dir ->
-        %{base: dir, pattern: "**/*"}
-      end)
+  defp initial_tailwind_build(state) do
+    css_path = state.config[:tailwind_css]
+    outdir = state.tailwind_outdir
 
     {css_input, css_base} =
       if css_path do
@@ -142,7 +161,12 @@ defmodule DuskmoonBundler.Watcher do
         {nil, File.cwd!()}
       end
 
-    case DuskmoonBundler.Tailwind.build(sources: sources, css: css_input, css_base: css_base) do
+    case DuskmoonBundler.Tailwind.build(
+           server: state.tailwind_server,
+           css: css_input,
+           css_base: css_base,
+           resolve_dirs: state.config[:resolve_dirs]
+         ) do
       {:ok, css} ->
         if outdir do
           File.mkdir_p!(outdir)
@@ -158,25 +182,20 @@ defmodule DuskmoonBundler.Watcher do
 
   @impl true
   def handle_info({:file_event, _pid, {path, events}}, state) do
-    if relevant_write_event?(events) do
+    if relevant_write_event?(events) and not tailwind_output?(path, state) do
+      state = maybe_schedule_tailwind(state, path)
       ext = Path.extname(path)
 
       cond do
-        ext in Extensions.watchable_js(state.config[:plugins] || []) ->
-          state = schedule_rebuild(state, path)
-          state = maybe_schedule_tailwind(state, path)
-          {:noreply, state}
-
         ext in Extensions.css() ->
           handle_css_change(path, state)
           {:noreply, state}
 
+        ext in Extensions.watchable_js(state.config[:plugins] || []) ->
+          {:noreply, schedule_rebuild(state, path)}
+
         DuskmoonBundler.Assets.asset?(path) ->
           handle_asset_change(path, state)
-          {:noreply, state}
-
-        ext in Extensions.template() and state.config[:tailwind] ->
-          state = maybe_schedule_tailwind(state, path)
           {:noreply, state}
 
         true ->
@@ -206,6 +225,13 @@ defmodule DuskmoonBundler.Watcher do
 
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
     {:noreply, state}
+  end
+
+  defp tailwind_output?(_path, %{tailwind_outdir: nil}), do: false
+
+  defp tailwind_output?(path, state) do
+    state.tailwind_server != nil and
+      Path.expand(path) == Path.join(state.tailwind_outdir, "app.css")
   end
 
   defp relevant_write_event?(events) do
@@ -341,15 +367,25 @@ defmodule DuskmoonBundler.Watcher do
         path -> {File.read!(path), Path.dirname(path)}
       end
 
-    case DuskmoonBundler.Tailwind.rebuild(changed, css: css_input, css_base: css_base) do
+    case DuskmoonBundler.Tailwind.rebuild(changed,
+           server: state.tailwind_server,
+           css: css_input,
+           css_base: css_base,
+           resolve_dirs: state.config[:resolve_dirs],
+           force: Enum.any?(changed_paths, &(Path.extname(&1) in Extensions.css()))
+         ) do
       {:ok, css} ->
-        if outdir = state.tailwind_outdir do
-          File.mkdir_p!(outdir)
-          File.write!(Path.join(outdir, "app.css"), css)
-        end
+        output = if state.tailwind_outdir, do: Path.join(state.tailwind_outdir, "app.css")
 
-        broadcast(:update, %{path: "assets/css/app.css", changes: [:style]})
-        Logger.debug("[DuskmoonBundler] Tailwind rebuilt (#{byte_size(css)} bytes)")
+        if is_nil(output) or File.read(output) != {:ok, css} do
+          if output do
+            File.mkdir_p!(state.tailwind_outdir)
+            File.write!(output, css)
+          end
+
+          broadcast(:update, %{path: "assets/css/app.css", changes: [:style]})
+          Logger.debug("[DuskmoonBundler] Tailwind rebuilt (#{byte_size(css)} bytes)")
+        end
 
       :unchanged ->
         :ok
@@ -385,6 +421,7 @@ defmodule DuskmoonBundler.Watcher do
   @impl true
   def terminate(_reason, state) do
     Enum.each(state.fs_pids, &stop_file_system/1)
+    stop_process(state.tailwind_server)
     :ok
   end
 

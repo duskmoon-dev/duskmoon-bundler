@@ -70,6 +70,8 @@ defmodule Mix.Tasks.DuskmoonBundler.Dev do
       watch_dirs: watch_dirs,
       tailwind: tailwind?,
       tailwind_css: tailwind_css,
+      tailwind_sources: tailwind_config[:sources],
+      resolve_dirs: config.resolve_dirs,
       tailwind_outdir: tailwind_outdir,
       target: target,
       name: watcher_name(profile)

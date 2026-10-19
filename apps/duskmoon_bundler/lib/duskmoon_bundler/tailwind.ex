@@ -30,7 +30,8 @@ defmodule DuskmoonBundler.Tailwind do
   use GenServer
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    server_opts = if name = Keyword.get(opts, :name, __MODULE__), do: [name: name], else: []
+    GenServer.start_link(__MODULE__, opts, server_opts)
   end
 
   @doc """
@@ -46,20 +47,27 @@ defmodule DuskmoonBundler.Tailwind do
     * `:resolve_dirs` — additional package directories for resolving bare stylesheet imports
     * `:sources` — override source patterns (default: from config)
     * `:minify` — minify the output CSS (default: `false`)
+    * `:server` — Tailwind server to use (default: `DuskmoonBundler.Tailwind`)
   """
   @spec build(keyword()) :: {:ok, String.t()} | {:error, term()}
   def build(opts \\ []) do
-    GenServer.call(__MODULE__, {:build, opts}, :infinity)
+    GenServer.call(Keyword.get(opts, :server, __MODULE__), {:build, opts}, :infinity)
   end
 
   @doc """
   Incremental build — only process changed files and return CSS if new candidates found.
 
   Returns `{:ok, css}` if new candidates were found, `:unchanged` otherwise.
+  Pass `force: true` to recompile changed CSS input even without new candidates.
+  Use `:server` to select the same private server used for the initial build.
   """
   @spec rebuild(list(), keyword()) :: {:ok, String.t()} | :unchanged | {:error, term()}
   def rebuild(changed_files, opts \\ []) do
-    GenServer.call(__MODULE__, {:rebuild, changed_files, opts}, :infinity)
+    GenServer.call(
+      Keyword.get(opts, :server, __MODULE__),
+      {:rebuild, changed_files, opts},
+      :infinity
+    )
   end
 
   @impl true
@@ -137,7 +145,7 @@ defmodule DuskmoonBundler.Tailwind do
         css = maybe_minify(css, minify)
 
         {:reply, {:ok, css},
-         %{state | scanner: scanner, resolve_dirs: resolve_dirs, last_css: css}}
+         %{state | scanner: scanner, sources: sources, resolve_dirs: resolve_dirs, last_css: css}}
 
       {:error, _} = error ->
         {:reply, error, state}
@@ -167,7 +175,7 @@ defmodule DuskmoonBundler.Tailwind do
         {:reply, {:error, :no_scanner}, state}
 
       scanner ->
-        if Oxide.scan_files(scanner, changed) == [] do
+        if Oxide.scan_files(scanner, changed) == [] and not Keyword.get(opts, :force, false) do
           {:reply, :unchanged, state}
         else
           case compile_css(

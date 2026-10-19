@@ -36,6 +36,10 @@ npm packages are resolved from `node_modules`. Local files are resolved relative
 
 In dev mode, only changed files are re-scanned. If a `.heex` template adds new Tailwind classes, only those new candidates trigger a CSS rebuild — the browser gets a style-only update without a page reload.
 
+Development watchers use the configured `tailwind.sources` patterns, including dependency directories outside the asset root and `server.watch_dirs`. Each profile owns its scanner and compiler runtime, so starting or rebuilding another profile does not replace its candidates or consume its updates. A shared source change updates every affected profile's stylesheet.
+
+Editing a Tailwind input stylesheet also regenerates CSS when no new class candidates were added, so changes to themes and custom utilities reach the browser through style HMR.
+
 ## Production Build
 
 ```bash

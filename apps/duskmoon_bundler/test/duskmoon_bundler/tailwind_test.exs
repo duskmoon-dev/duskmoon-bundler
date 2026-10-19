@@ -292,7 +292,124 @@ defmodule DuskmoonBundler.TailwindTest do
     end
   end
 
+  describe "independent servers" do
+    @tag :tmp_dir
+    test "retain each profile's sources in both startup orders", %{tmp_dir: tmp_dir} do
+      for order <- [[:api, :admin], [:admin, :api]] do
+        root = Path.join(tmp_dir, Enum.join(order, "-"))
+        shared = Path.join(root, "shared")
+        File.mkdir_p!(shared)
+        shared_file = Path.join(shared, "component.exs")
+        File.write!(shared_file, "# flex")
+
+        servers =
+          Map.new(order, fn profile ->
+            base = Path.join(root, Atom.to_string(profile))
+            File.mkdir_p!(base)
+            width = if profile == :api, do: 287, else: 293
+            File.write!(Path.join(base, "page.heex"), ~s(<div class="w-[#{width}px]"></div>))
+            File.write!(Path.join(base, "ignored.html"), ~s(<div class="w-[887px]"></div>))
+
+            server =
+              start_supervised!(
+                {DuskmoonBundler.Tailwind,
+                 name: nil,
+                 sources: [
+                   %{base: base, pattern: "**/*.heex"},
+                   %{base: shared, pattern: "**/*.exs"}
+                 ]},
+                id: {order, profile}
+              )
+
+            {:ok, css} = DuskmoonBundler.Tailwind.build(server: server)
+            assert css =~ "#{width}px"
+            refute css =~ "887px"
+            {profile, server}
+          end)
+
+        File.write!(shared_file, "# flex w-[297.031px]")
+
+        for profile <- order do
+          {:ok, css} =
+            DuskmoonBundler.Tailwind.rebuild([shared_file], server: servers[profile])
+
+          own_width = if profile == :api, do: 287, else: 293
+          other_width = if profile == :api, do: 293, else: 287
+          assert css =~ "#{own_width}px"
+          assert css =~ "297.031px"
+          refute css =~ "#{other_width}px"
+        end
+      end
+    end
+  end
+
   describe "rebuild/2" do
+    test "recompiles CSS input without new candidates when forced" do
+      css = "@import \"tailwindcss\"; .marker { color: red; }"
+
+      {:ok, initial} =
+        DuskmoonBundler.Tailwind.build(
+          sources: [%{base: @fixture_dir, pattern: "**/*.html"}],
+          css: css
+        )
+
+      assert initial =~ "color: red"
+
+      {:ok, changed} =
+        DuskmoonBundler.Tailwind.rebuild([], css: String.replace(css, "red", "blue"), force: true)
+
+      assert changed =~ "color: blue"
+      assert changed =~ ".flex"
+      refute changed =~ "color: red"
+    end
+
+    test "retains package resolution directories when forced to reload imported CSS" do
+      packages = Path.join(@fixture_dir, "packages")
+      package = Path.join(packages, "profile-theme")
+      File.mkdir_p!(package)
+      File.write!(Path.join(package, "package.json"), ~s({"style":"index.css"}))
+      stylesheet = Path.join(package, "index.css")
+      File.write!(stylesheet, ".profile-marker { color: red; }")
+
+      server = start_supervised!({DuskmoonBundler.Tailwind, name: nil})
+      css = "@import \"profile-theme\"; @import \"tailwindcss\";"
+
+      {:ok, initial} =
+        DuskmoonBundler.Tailwind.build(
+          server: server,
+          sources: [%{base: @fixture_dir, pattern: "**/*.html"}],
+          css: css,
+          css_base: @fixture_dir,
+          resolve_dirs: [packages]
+        )
+
+      assert initial =~ "color: red"
+      File.write!(stylesheet, ".profile-marker { color: blue; }")
+
+      {:ok, changed} =
+        DuskmoonBundler.Tailwind.rebuild([],
+          server: server,
+          css: css,
+          css_base: @fixture_dir,
+          force: true
+        )
+
+      assert changed =~ "color: blue"
+      assert changed =~ ".flex"
+      refute changed =~ "color: red"
+    end
+
+    test "keeps configured source patterns during incremental file scans" do
+      ignored = Path.join(@fixture_dir, "ignored.heex")
+
+      {:ok, initial} =
+        DuskmoonBundler.Tailwind.build(sources: [%{base: @fixture_dir, pattern: "**/*.html"}])
+
+      refute initial =~ "881px"
+      File.write!(ignored, ~s(<div class="w-[881px]"></div>))
+      assert :unchanged = DuskmoonBundler.Tailwind.rebuild([ignored])
+    end
+
     test "returns :unchanged when no new candidates" do
       {:ok, _css} =
         DuskmoonBundler.Tailwind.build(sources: [%{base: @fixture_dir, pattern: "**/*.html"}])
