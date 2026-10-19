@@ -1,5 +1,16 @@
 # Changelog
 
+## 10.0.2 - 2026-10-19
+
+- Honor configured Tailwind source directories and patterns during development,
+  including dependency sources outside the normal watch directories.
+- Keep each development profile's Tailwind scanner and compiler independent so
+  shared source updates reach every profile regardless of startup order.
+- Regenerate styles after CSS-only edits and changes to configured sources such
+  as HTML and Markdown files.
+- Avoid rewriting unchanged generated styles when profiles watch each other's
+  output directories.
+
 ## 10.0.1 - 2026-10-14
 
 - Restore required OTP code paths after Mix dependency compilation before npm
