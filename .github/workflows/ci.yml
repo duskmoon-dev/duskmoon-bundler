@@ -40,6 +40,38 @@ jobs:
         with:
           path: deps
           key: ${{ github.repository }}-${{ runner.os }}-${{ runner.arch }}-glibc-source-elixir1.18-otp${{ matrix.otp }}-rust-stable-zig0.16-${{ hashFiles('mix.lock', '**/Cargo.lock') }}
+      - name: Fingerprint native build toolchain
+        id: native-toolchain
+        shell: bash
+        run: |
+          fingerprint=$(
+            {
+              rustc --version --verbose
+              cargo --version
+              zig version
+              elixir --version
+              cc --version
+              ldd --version
+              printf '%s\n' "$ImageOS" "$ImageVersion"
+            } | sha256sum | cut -d ' ' -f 1
+          )
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+      - name: Cache native compilation
+        uses: actions/cache@v6
+        with:
+          path: |
+            apps/*/target
+            apps/*/native/*/target
+            _build/*/zig-cache
+            ~/.cache/zig
+            ~/.cargo/registry
+            ~/.cargo/git
+          # Cache compiler-owned artifacts, not BEAM files or test results.
+          # Native input changes create a new cache; the compatible fallback
+          # lets Cargo/Zig rebuild only invalidated units rather than all deps.
+          key: ${{ github.repository }}-native-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native-toolchain.outputs.fingerprint }}-${{ hashFiles('mix.exs', 'mix.lock', 'config/**', '.github/workflows/ci.yml', '.cargo/**', 'apps/*/.cargo/**', 'apps/*/mix.exs', 'apps/*/Cargo.*', 'apps/*/native/**', 'apps/*/lib/**/native*.ex', 'apps/duskmoon_quickbeam/lib/**', 'apps/duskmoon_quickbeam/priv/c_src/**', '!**/target/**') }}
+          restore-keys: |
+            ${{ github.repository }}-native-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native-toolchain.outputs.fingerprint }}-
       - uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
