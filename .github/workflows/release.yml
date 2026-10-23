@@ -85,8 +85,6 @@ jobs:
           path: ${{ runner.temp }}/reused-native-assets/*.tar.gz
           if-no-files-found: error
       - name: Standalone source, packaging and policy checks
-        env:
-          CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
         run: |
           mix deps.get --check-locked
           bun install --frozen-lockfile
@@ -96,9 +94,14 @@ jobs:
           elixir scripts/native-policy-test.exs
           mix compile --warnings-as-errors
           elixir scripts/native-download-failure-test.exs
+      # Installs Hologram's asset dependencies before the Elixir helper and compiler tests.
+      - uses: ./.github/actions/hologram-checks
+      - name: All sub-app Elixir tests and generic JavaScript regressions
+        env:
+          CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
+        run: |
           mix test --timeout 300000
           bun test test/js
-      - uses: ./.github/actions/hologram-checks
   candidate-ui:
     needs: validate
     runs-on: ubuntu-latest
