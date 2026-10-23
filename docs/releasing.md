@@ -2,9 +2,11 @@
 
 All nine Hex applications share stable **B**. UI **U** is independently released
 by `phoenix-duskmoon-ui`. No packages are published on pushes, pull requests or
-arbitrary repository dispatches. Only **Toolchain Release**, with an approved
+arbitrary repository dispatches. **Toolchain Release**, with an approved
 `release` environment and explicit stable B, immutable toolchain SHA and pinned
-UI integration SHA, performs publishing. Commit version changes first; the
+UI integration SHA, performs initial publishing. **Resume Exact Hex Publication**
+can finish the original package upload after verifying those completed build gates.
+Commit version changes first; the
 workflow neither changes versions nor pushes a release commit to main. Select a
 dispatch ref whose head equals the supplied toolchain SHA; the validation gate
 requires the workflow definition and source checkout to share that exact SHA.
@@ -94,6 +96,35 @@ usually a new B; do not relabel historical binaries. Rerun missing gates before
 adoption. If B succeeds and UI fails, retain B and repair/review the pending UI
 upgrade; do not bounce release workflows between repositories.
 
+If the complete GitHub release is already public but the exact-package consumer
+fails before Hex publication, preserve the original tag, provenance, native files
+and package archives. A consumer-script fix must not rebuild packages under that
+same version. Dispatch **Resume Exact Hex Publication** from the corrected
+validation revision, supplying the original source SHA and release run:
+
+```sh
+gh workflow run resume-hex-publication.yml --repo duskmoon-dev/duskmoon-bundler \
+  --ref VALIDATION_REF -f version=B -f source_sha=FULL_ARTIFACT_SOURCE_SHA \
+  -f release_run=ORIGINAL_RELEASE_RUN_ID
+```
+
+Recovery requires the original run's successful source, pinned UI, all 47 native
+builds and staging jobs, and its retained `exact-publish-packages` artifact. It
+downloads and checks the public native bytes, extracts the original tarballs into
+a fresh consumer, and runs the corrected strict precompiled checks. Before any
+Hex upload it verifies the original checkout/locks, tag, provenance, all source
+and package hashes, and every existing public asset. Missing or conflicting public
+assets stop recovery; this mode cannot create a release, upload an asset, move a
+tag or rebuild a package. Registry uploads use the original tarballs with
+replacement disabled. Expired original workflow artifacts require a separate
+reviewed recovery; this workflow does not reconstruct them.
+
+The recovery publication job holds the same cohort lock and `release` environment
+as initial publication, with read-only GitHub permissions and the existing Hex
+credential. It releases the lock before calling the normal published-release
+verifier for public hashes, glibc and both musl consumers, and the adoption record.
+The record separates original artifact `source_sha` from corrected `validation_sha`.
+
 For a fully published cohort whose consumer validation needs a script fix,
 dispatch **Toolchain Release** from the corrected validation revision with
 `verify_published=true`, the original B and artifact source SHA:
@@ -128,8 +159,11 @@ and `duskmoon_bundler`. The native artifact matrix remains 47 archives.
 CI and release validation run its full Elixir suite and the Mocha + jsdom
 suite under Bun through `duskmoon_npm`, plus native OXC format/lint checks.
 The staged package includes its local docs and preserves upstream/vendor licenses.
-The production source/tar/registry consumers also load Hologram. UI candidate
-validation and upgrade locks cover the eight asset dependencies actually used
+The production source/tar/registry consumers also load Hologram. Consumers that
+start Hologram register `Mix.compilers() ++ [:hologram]`, so its
+runtime PLTs and bundles are generated before application startup. The installed
+consumer checks assert its supervisor and page resolver are running.
+UI candidate validation and upgrade locks cover the eight asset dependencies actually used
 by the UI; release provenance and registry verification cover all nine packages.
 
 ## Local automation verification

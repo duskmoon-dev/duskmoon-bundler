@@ -69,6 +69,18 @@ unless css =~ ".flex" and css =~ ".items-center" and css =~ ".p-4" and
        do: raise("Tailwind did not generate the scanned utilities")
 
 if hologram != [] do
+  true = Hologram.enabled?()
+  true = is_pid(Process.whereis(Hologram.Supervisor))
+
+  {Hologram.Router.PageModuleResolver, resolver, :worker, _} =
+    Enum.find(
+      Supervisor.which_children(Hologram.Supervisor),
+      &(elem(&1, 0) == Hologram.Router.PageModuleResolver)
+    )
+
+  true = Process.alive?(resolver)
+  false = Hologram.Router.PageModuleResolver.resolve("/release-smoke-missing")
+  true = File.regular?(Path.join(Hologram.Reflection.build_dir(), "module_info.plt"))
   File.write!("assets/hologram.js", "globalThis.hologramAnswer = 42;")
   {path, [_ | _]} = Hologram.Bundler.build!("assets/hologram.js", "hologram", "hologram-dist", [])
   {:ok, runtime} = QuickBEAM.start()

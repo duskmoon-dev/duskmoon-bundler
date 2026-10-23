@@ -153,17 +153,21 @@ defmodule BundlerRelease do
     IO.puts("Exact publish sources and provenance prepared without publishing")
   end
 
-  def publish(version, sha, assets, output, packages?) do
+  def publish(version, sha, assets, output, packages?, opts \\ []) do
     ReleaseSupport.clean_source!()
     current = plan(version, sha)
     state = Path.join(output, "release-provenance.json") |> File.read!() |> JSON.decode!()
 
     for key <- ~w(version source_sha mix_lock_sha256 bun_lock_sha256) do
-      ReleaseSupport.immutable_action(
-        state[key],
-        Map.fetch!(current, String.to_existing_atom(key))
-      )
+      unless Map.fetch!(state, key) == Map.fetch!(current, String.to_existing_atom(key)),
+        do: raise("publication provenance mismatch: #{key}")
     end
+
+    unless state["package_order"] == current.package_order and
+             Enum.sort(Map.keys(state["package_tarballs"])) == Enum.sort(current.package_order) and
+             Enum.sort(Map.keys(state["package_sources"])) == Enum.sort(current.package_order) and
+             ReleaseSupport.reusable_native?(state),
+           do: raise("publication requires the complete original package and native cohort")
 
     for {app, files} <- state["package_sources"], {name, hash} <- files do
       ReleaseSupport.immutable_action(ReleaseSupport.digest(Path.join([output, app, name])), hash)
@@ -190,7 +194,8 @@ defmodule BundlerRelease do
       version,
       sha,
       native_files ++
-        package_files ++ checksum_files ++ [Path.join(output, "release-provenance.json")]
+        package_files ++ checksum_files ++ [Path.join(output, "release-provenance.json")],
+      opts
     )
 
     if packages? do
@@ -230,8 +235,11 @@ case System.argv() do
   ["publish-packages", version, sha, assets, output] ->
     BundlerRelease.publish(version, sha, assets, output, true)
 
+  ["resume-packages", version, sha, assets, output] ->
+    BundlerRelease.publish(version, sha, assets, output, true, existing_only: true)
+
   _ ->
     raise(
-      "usage: elixir scripts/release.exs plan B SHA | prepare|publish-assets|publish-packages B SHA ASSETS STAGE"
+      "usage: elixir scripts/release.exs plan B SHA | prepare|publish-assets|publish-packages|resume-packages B SHA ASSETS STAGE"
     )
 end

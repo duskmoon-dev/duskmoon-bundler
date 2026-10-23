@@ -121,6 +121,28 @@ defmodule ReleaseSupport do
       end)
   end
 
+  def recovery_run!(run, jobs, sha) do
+    sha!(sha)
+
+    unless run["head_sha"] == sha and run["path"] == ".github/workflows/release.yml" and
+             run["event"] == "workflow_dispatch" and run["status"] == "completed",
+           do: raise("recovery requires a completed original release run at source_sha")
+
+    for name <- ["validate", "candidate-ui", "stage"] do
+      unless Enum.any?(jobs, &(&1["name"] == name and &1["conclusion"] == "success")),
+        do: raise("original release gate did not pass: #{name}")
+    end
+
+    native = Enum.filter(jobs, &String.starts_with?(&1["name"], "native / "))
+
+    unless length(native) == 47 and
+             length(Enum.uniq_by(native, & &1["name"])) == 47 and
+             Enum.all?(native, &(&1["conclusion"] == "success")),
+           do: raise("original release must have all 47 successful native builds")
+
+    :ok
+  end
+
   def http!(url, output) do
     status =
       cmd!("curl", [
@@ -137,6 +159,39 @@ defmodule ReleaseSupport do
 
     if status != "200", do: raise("unexpected status #{status}: #{url}")
     output
+  end
+
+  def verify_public_packages!(version, sha, stage) do
+    stable!(version)
+    sha!(sha)
+
+    public =
+      Path.join(System.tmp_dir!(), "public-provenance-#{System.unique_integer([:positive])}.json")
+
+    try do
+      http!(
+        "https://github.com/duskmoon-dev/duskmoon-bundler/releases/download/v#{version}/release-provenance.json",
+        public
+      )
+
+      immutable_action(digest(Path.join(stage, "release-provenance.json")), digest(public))
+      state = JSON.decode!(File.read!(public))
+
+      unless state["version"] == version and state["source_sha"] == sha,
+        do: raise("public provenance version/source mismatch")
+
+      packages = Map.fetch!(state, "package_tarballs")
+
+      unless Enum.sort(Map.keys(packages)) == Enum.sort(cohort(version)),
+        do: raise("public provenance package cohort mismatch")
+
+      for {app, hash} <- packages,
+          do: immutable_action(digest(Path.join([stage, app, "#{app}-#{version}.tar"])), hash)
+
+      :ok
+    after
+      File.rm(public)
+    end
   end
 
   def exists_hex?(package, version) do
@@ -235,7 +290,7 @@ defmodule ReleaseSupport do
     end
   end
 
-  def public_release!(repo, version, sha, files) do
+  def public_release!(repo, version, sha, files, opts \\ []) do
     stable!(version)
     sha!(sha)
     tag = "v#{version}"
@@ -264,6 +319,10 @@ defmodule ReleaseSupport do
 
       _ ->
         unless output =~ "HTTP 404", do: raise("cannot inspect release: #{output}")
+
+        if opts[:existing_only],
+          do: raise("recovery requires an existing public release; creation is forbidden")
+
         # An existing tag must already resolve to this source SHA; never move it.
         refs =
           cmd!("git", [
@@ -299,6 +358,13 @@ defmodule ReleaseSupport do
       cmd!("gh", ["release", "view", tag, "--repo", repo, "--json", "assets"]) |> JSON.decode!()
 
     existing = Map.new(release["assets"], &{&1["name"], &1["digest"]})
+
+    if opts[:existing_only] do
+      for path <- files do
+        unless Map.has_key?(existing, Path.basename(path)),
+          do: raise("recovery requires existing public asset: #{Path.basename(path)}")
+      end
+    end
 
     for path <- files do
       name = Path.basename(path)

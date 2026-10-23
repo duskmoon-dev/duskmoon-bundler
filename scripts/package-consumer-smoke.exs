@@ -47,7 +47,7 @@ deps =
 source = """
 defmodule IsolatedConsumer.MixProject do
   use Mix.Project
-  def project, do: [app: :isolated_consumer, version: "0.0.0", elixir: ">= 1.18.0", deps: #{inspect(deps, limit: :infinity)}]
+  def project, do: [app: :isolated_consumer, version: "0.0.0", elixir: ">= 1.18.0", compilers: Mix.compilers() ++ [:hologram], deps: #{inspect(deps, limit: :infinity)}]
   def application, do: [extra_applications: [:logger]]
 end
 """
@@ -57,6 +57,13 @@ File.write!(Path.join(consumer, "mix.exs"), source)
 check = """
 Code.ensure_loaded!(Hologram)
 Code.ensure_loaded!(Hologram.Bundler)
+true = Hologram.enabled?()
+true = is_pid(Process.whereis(Hologram.Supervisor))
+{Hologram.Router.PageModuleResolver, resolver, :worker, _} =
+  Enum.find(Supervisor.which_children(Hologram.Supervisor), &(elem(&1, 0) == Hologram.Router.PageModuleResolver))
+true = Process.alive?(resolver)
+false = Hologram.Router.PageModuleResolver.resolve("/release-smoke-missing")
+true = File.regular?(Path.join(Hologram.Reflection.build_dir(), "module_info.plt"))
 {:ok, _} = OXC.parse("export const answer = 42;", "entry.js")
 {:ok, _} = OXC.select("import value from 'value';", "entry.js", :import_specifiers)
 {:ok, _} = OXC.Format.run("const answer=42;", "entry.js")

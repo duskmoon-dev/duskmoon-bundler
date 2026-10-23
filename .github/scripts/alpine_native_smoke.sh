@@ -40,6 +40,7 @@ defmodule AlpineNativeSmoke.MixProject do
   def project do
     hologram = if Version.compare("$version", "10.0.3") == :lt, do: [], else: [{:duskmoon_hologram, "== $version"}]
     [app: :alpine_native_smoke, version: "0.1.0", elixir: ">= 1.18.0",
+     compilers: Mix.compilers() ++ if(hologram == [], do: [], else: [:hologram]),
      deps: [
        {:duskmoon_bundler, "== $version"},
        {:duskmoon_bundler_runtime, "== $version"},
@@ -52,4 +53,5 @@ end
 EOF
 mix deps.get
 mix deps.compile
+mix compile --warnings-as-errors
 mix run /validation/alpine_native_smoke.exs

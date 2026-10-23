@@ -71,6 +71,232 @@ defmodule ReleasePlanningTest do
   end
 end
 
+defmodule ReleaseRecoveryContractTest do
+  use ExUnit.Case, async: true
+  @moduletag :tmp_dir
+  @sha String.duplicate("a", 40)
+
+  defp run do
+    %{
+      "head_sha" => @sha,
+      "path" => ".github/workflows/release.yml",
+      "event" => "workflow_dispatch",
+      "status" => "completed"
+    }
+  end
+
+  defp jobs do
+    Enum.map(
+      ["validate", "candidate-ui", "stage"] ++ Enum.map(1..47, &"native / #{&1}"),
+      fn name ->
+        %{"name" => name, "conclusion" => "success"}
+      end
+    )
+  end
+
+  test "recovery retains the original successful build gates" do
+    assert :ok = ReleaseSupport.recovery_run!(run(), jobs(), @sha)
+
+    for name <- ["validate", "candidate-ui", "stage", "native / 47"] do
+      failed =
+        Enum.map(jobs(), fn job ->
+          if job["name"] == name, do: Map.put(job, "conclusion", "failure"), else: job
+        end)
+
+      assert_raise RuntimeError, fn -> ReleaseSupport.recovery_run!(run(), failed, @sha) end
+    end
+  end
+
+  test "recovery rejects different source, workflow, event and unfinished runs" do
+    for {key, value} <- [
+          {"head_sha", String.duplicate("b", 40)},
+          {"path", ".github/workflows/ci.yml"},
+          {"event", "pull_request"},
+          {"status", "in_progress"}
+        ] do
+      assert_raise RuntimeError, fn ->
+        ReleaseSupport.recovery_run!(Map.put(run(), key, value), jobs(), @sha)
+      end
+    end
+  end
+
+  test "recovery rejects missing or duplicated native jobs" do
+    incomplete = Enum.reject(jobs(), &(&1["name"] == "native / 47"))
+    assert_raise RuntimeError, fn -> ReleaseSupport.recovery_run!(run(), incomplete, @sha) end
+
+    duplicate = incomplete ++ [%{"name" => "native / 46", "conclusion" => "success"}]
+    assert_raise RuntimeError, fn -> ReleaseSupport.recovery_run!(run(), duplicate, @sha) end
+  end
+
+  for scenario <- ~w(matching altered_provenance altered_tar wrong_source incomplete_cohort) do
+    test "public package verification: #{scenario}", %{tmp_dir: tmp_dir} do
+      scenario = unquote(scenario)
+      bin = Path.join(tmp_dir, "bin")
+      File.mkdir!(bin)
+
+      packages =
+        Map.new(ReleaseSupport.cohort(), fn app ->
+          dir = Path.join(tmp_dir, app)
+          File.mkdir!(dir)
+          tarball = Path.join(dir, "#{app}-10.0.3.tar")
+          File.write!(tarball, "original #{app}")
+          {app, ReleaseSupport.digest(tarball)}
+        end)
+
+      packages =
+        if scenario == "incomplete_cohort",
+          do: Map.delete(packages, "duskmoon_hologram"),
+          else: packages
+
+      state = JSON.encode!(%{version: "10.0.3", source_sha: @sha, package_tarballs: packages})
+      public = Path.join(tmp_dir, "public.json")
+      File.write!(public, state)
+
+      File.write!(
+        Path.join(tmp_dir, "release-provenance.json"),
+        if(scenario == "altered_provenance", do: "changed", else: state)
+      )
+
+      if scenario == "altered_tar",
+        do:
+          File.write!(
+            Path.join([tmp_dir, "duskmoon_hologram", "duskmoon_hologram-10.0.3.tar"]),
+            "changed"
+          )
+
+      File.write!(Path.join(bin, "curl"), ~S"""
+      #!/bin/sh
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --output) shift; cp "$RECOVERY_PUBLIC" "$1" ;;
+        esac
+        shift
+      done
+      printf 200
+      """)
+
+      File.chmod!(Path.join(bin, "curl"), 0o755)
+      sha = if scenario == "wrong_source", do: String.duplicate("b", 40), else: @sha
+
+      {output, status} =
+        System.cmd(
+          "elixir",
+          [
+            "-r",
+            Path.join(__DIR__, "release_support.exs"),
+            "-e",
+            "ReleaseSupport.verify_public_packages!(\"10.0.3\", \"#{sha}\", hd(System.argv()))",
+            tmp_dir
+          ],
+          stderr_to_stdout: true,
+          env: [
+            {"PATH", bin <> ":" <> System.fetch_env!("PATH")},
+            {"RECOVERY_PUBLIC", public}
+          ]
+        )
+
+      if scenario == "matching" do
+        assert status == 0, output
+      else
+        assert status != 0
+        assert output =~ "RuntimeError"
+      end
+    end
+  end
+
+  defp verify_public(tmp_dir, scenario) do
+    bin = Path.join(tmp_dir, "bin")
+    File.mkdir_p!(bin)
+    artifact = Path.join(tmp_dir, "original.tar")
+    File.write!(artifact, "original bytes")
+
+    File.write!(Path.join(bin, "gh"), ~S"""
+    #!/bin/sh
+    printf '%s\n' "$*" >> "$RECOVERY_TEST_ROOT/commands"
+    case "$1 $2" in
+      'api repos/example/toolchain/releases/tags/v10.0.3')
+        if [ "$RECOVERY_SCENARIO" = missing_release ]; then
+          echo 'HTTP 404'; exit 1
+        fi
+        printf '{"draft":false}' ;;
+      'release view') printf '%s' "$RECOVERY_ASSETS" ;;
+      *) echo 'Unexpected GitHub mutation' >&2; exit 1 ;;
+    esac
+    """)
+
+    File.write!(
+      Path.join(bin, "git"),
+      "#!/bin/sh\nprintf '%s refs/tags/v10.0.3\\n' \"$RECOVERY_TAG\"\n"
+    )
+
+    File.write!(Path.join(bin, "curl"), ~S"""
+    #!/bin/sh
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --output) shift; printf '%s' "$RECOVERY_BYTES" > "$1" ;;
+      esac
+      shift
+    done
+    printf 200
+    """)
+
+    for command <- ["gh", "git", "curl"], do: File.chmod!(Path.join(bin, command), 0o755)
+
+    hash =
+      if scenario == "wrong_digest",
+        do: String.duplicate("0", 64),
+        else: ReleaseSupport.digest(artifact)
+
+    assets =
+      if scenario == "missing_asset",
+        do: [],
+        else: [%{name: "original.tar", digest: "sha256:" <> hash}]
+
+    result =
+      System.cmd(
+        "elixir",
+        [
+          "-r",
+          Path.join(__DIR__, "release_support.exs"),
+          "-e",
+          "System.put_env(\"PATH\", System.fetch_env!(\"RECOVERY_TEST_PATH\")); ReleaseSupport.public_release!(\"example/toolchain\", \"10.0.3\", \"#{@sha}\", System.argv(), existing_only: true)",
+          artifact
+        ],
+        stderr_to_stdout: true,
+        env: [
+          {"RECOVERY_TEST_ROOT", tmp_dir},
+          {"RECOVERY_TEST_PATH", bin <> ":" <> System.fetch_env!("PATH")},
+          {"RECOVERY_SCENARIO", scenario},
+          {"RECOVERY_ASSETS", JSON.encode!(%{assets: assets})},
+          {"RECOVERY_TAG",
+           if(scenario == "wrong_tag", do: String.duplicate("b", 40), else: @sha)},
+          {"RECOVERY_BYTES",
+           if(scenario == "wrong_bytes", do: "changed bytes", else: "original bytes")}
+        ]
+      )
+
+    commands = File.read!(Path.join(tmp_dir, "commands"))
+    refute commands =~ "release create"
+    refute commands =~ "release upload"
+    assert File.read!(artifact) == "original bytes"
+    result
+  end
+
+  test "existing-only verification accepts identical public bytes without mutation", %{
+    tmp_dir: tmp_dir
+  } do
+    assert {_output, 0} = verify_public(tmp_dir, "matching")
+  end
+
+  for scenario <- ~w(missing_release missing_asset wrong_tag wrong_digest wrong_bytes) do
+    test "existing-only verification rejects #{scenario} before publication", %{tmp_dir: tmp_dir} do
+      {output, status} = verify_public(tmp_dir, unquote(scenario))
+      assert status != 0
+      assert output =~ "RuntimeError"
+    end
+  end
+end
+
 defmodule PackagePublicationContractTest do
   use ExUnit.Case, async: true
   @moduletag :tmp_dir

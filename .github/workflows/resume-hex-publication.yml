@@ -1,0 +1,91 @@
+name: Resume Exact Hex Publication
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Original public stable B version
+        required: true
+        type: string
+      source_sha:
+        description: Original immutable artifact source SHA
+        required: true
+        type: string
+      release_run:
+        description: Original release run with successful source, UI, native and staging gates
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  resume:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: release
+    # Release this lock before the reusable verifier takes the same cohort lock.
+    concurrency:
+      group: toolchain-release-${{ inputs.version }}
+      cancel-in-progress: false
+    env:
+      DUSKMOON_NATIVE_MODE: precompiled
+      MIX_ENV: prod
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: validation
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: source
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.18'
+          otp-version: '28'
+      - name: Verify original release gates and immutable source
+        working-directory: source
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_RUN: ${{ inputs.release_run }}
+          GH_TOKEN: ${{ github.token }}
+        run: elixir "$GITHUB_WORKSPACE/validation/.github/scripts/check_recovery_run.exs" "$SOURCE_SHA" "$RELEASE_RUN"
+      - uses: actions/download-artifact@v7
+        with:
+          name: exact-publish-packages
+          run-id: ${{ inputs.release_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/original-packages
+      - name: Verify complete original public native bytes
+        id: reuse
+        working-directory: source
+        env:
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: elixir "$GITHUB_WORKSPACE/validation/.github/scripts/reuse_release.exs" "$VERSION" "$SOURCE_SHA" "$RUNNER_TEMP/original-native-assets"
+      - name: Require the complete public release
+        env:
+          REUSABLE: ${{ steps.reuse.outputs.reusable }}
+        run: test "$REUSABLE" = true
+      - name: Check exact original tarballs in a fresh precompiled consumer
+        env:
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          elixir -r validation/.github/scripts/release_support.exs -e 'ReleaseSupport.verify_public_packages!(System.fetch_env!("VERSION"), System.fetch_env!("SOURCE_SHA"), Path.join(System.fetch_env!("RUNNER_TEMP"), "original-packages"))'
+          elixir validation/.github/scripts/prepare_tar_consumer.exs "$RUNNER_TEMP/original-packages" "$RUNNER_TEMP/consumer-packages"
+          elixir validation/scripts/package-consumer-smoke.exs --stage "$RUNNER_TEMP/consumer-packages" --mode precompiled
+      - name: Verify all original public bytes and resume missing Hex packages
+        working-directory: source
+        env:
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          GH_TOKEN: ${{ github.token }}
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+        run: elixir "$GITHUB_WORKSPACE/validation/scripts/release.exs" resume-packages "$VERSION" "$SOURCE_SHA" "$RUNNER_TEMP/original-native-assets" "$RUNNER_TEMP/original-packages"
+  verify:
+    needs: resume
+    uses: ./.github/workflows/verify-published-release.yml
+    with:
+      version: ${{ inputs.version }}
+      source_sha: ${{ inputs.source_sha }}
+    secrets: inherit
