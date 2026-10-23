@@ -2,7 +2,7 @@ defmodule DuskmoonBundler.JS.Helpers do
   @moduledoc "Shared JavaScript file discovery helpers for Mix tasks."
 
   def discover_files(opts \\ []) do
-    config = DuskmoonBundler.Config.build()
+    config = DuskmoonBundler.Config.build(Keyword.get(opts, :profile))
     root = config.root
     sources = config.sources
     ignore = config.ignore
@@ -32,7 +32,7 @@ defmodule DuskmoonBundler.JS.Helpers do
     |> Enum.sort()
   end
 
-  def discover_format_files do
-    discover_files(only: DuskmoonBundler.JS.Extensions.formattable())
+  def discover_format_files(opts \\ []) do
+    discover_files(Keyword.put(opts, :only, DuskmoonBundler.JS.Extensions.formattable()))
   end
 end

@@ -1,0 +1,270 @@
+defmodule Hologram.Runtime.Deserializer do
+  @moduledoc false
+
+  # TODO: consider moving to Hologram.Transport (transport/adapter layer) when splitting up Hologram.Runtime
+
+  alias Hologram.Commons.BitstringUtils
+  alias Hologram.Commons.IntegerUtils
+
+  # This is added only to make String.to_existing_atom/1 recognize atoms related to client DOM events
+  @atoms_whitelist [
+    # change event, select event
+    :value,
+
+    # client-side ERTS node name
+    :hologram_client,
+
+    # keyboard event
+    :alt_key,
+    :code,
+    :ctrl_key,
+    :key,
+    :meta_key,
+    :repeat,
+    :shift_key,
+
+    # mouse event, mouse move event, pointer event
+    :page_x,
+    :page_y,
+
+    # mouse move event
+    :client_x,
+    :client_y,
+    :movement_x,
+    :movement_y,
+    :offset_x,
+    :offset_y,
+    :screen_x,
+    :screen_y,
+
+    # pointer event
+    :mouse,
+    :pen,
+    :touch,
+    :pointer_type
+  ]
+
+  # Can't use control characters in 0x00-0x1F (0-31) range
+  # because they are escaped in JSON and result in multi-byte delimiter.
+  # Can't use characters above 0x7F (128) because they mess up transmission encoding.
+  # Using \x7F (DEL character) which is practically unused.
+  @delimiter "\x7F"
+
+  @doc """
+  Returns the atoms whitelist related to client DOM events. 
+  """
+  @spec atoms_whitelist :: list(atom)
+  def atoms_whitelist, do: @atoms_whitelist
+
+  @doc """
+  Deserializes the top-level term serialized by the client in Hologram format into Elixir terms.
+
+  The input can be either:
+  - A binary containing raw JSON that will be parsed first, then deserialized from Hologram format
+  - Already JSON-decoded data in the format [version, data] where version is an integer
+    and data is the serialized content in Hologram format
+
+  This is the entry point for deserializing, which then recursively uses deserialize/2 for nested structures.
+  """
+  @spec deserialize(binary() | list()) :: any
+  def deserialize(json_or_list)
+
+  def deserialize(json) when is_binary(json) do
+    json
+    |> Jason.decode!()
+    |> deserialize()
+  end
+
+  def deserialize([version, data]) do
+    deserialize(version, data)
+  end
+
+  @doc """
+  Deserializes a term serialized by the client and pre-decoded from JSON.
+  """
+  @spec deserialize(integer, map | String.t()) :: any
+  def deserialize(version, data)
+
+  # sobelow_skip ["Misc.BinToTerm"]
+  def deserialize(3, %{"t" => "r", "n" => "s" <> node, "c" => creation, "i" => id_words}) do
+    node_len = byte_size(node)
+    len = length(id_words)
+    id_words_binary = for word <- id_words, into: <<>>, do: <<word::32>>
+
+    # Build Erlang external term format for reference:
+    # - 131: VERSION_NUMBER (ETF version)
+    # - 90: NEWER_REFERENCE_EXT tag
+    # - len::16: number of ID words (16-bit unsigned)
+    # - 119: SMALL_ATOM_UTF8_EXT tag
+    # - node_len::8: length of node name (8-bit unsigned)
+    # - node::binary: node name as UTF-8 bytes
+    # - creation::32: creation number (32-bit unsigned)
+    # - id_words_binary::binary: ID words, each 32-bit big-endian
+    binary =
+      <<131, 90, len::16, 119, node_len::8, node::binary, creation::32, id_words_binary::binary>>
+
+    :erlang.binary_to_term(binary, [:safe])
+  end
+
+  def deserialize(version, "a" <> value) when version in [3, 2] do
+    String.to_existing_atom(value)
+  end
+
+  def deserialize(version, "b") when version in [3, 2] do
+    ""
+  end
+
+  def deserialize(version, "b0" <> <<hex::binary>>) when version in [3, 2] do
+    Base.decode16!(hex, case: :lower)
+  end
+
+  def deserialize(version, "b" <> <<leftover_bits::binary-size(1), hex::binary>>)
+      when version in [3, 2] do
+    bytes = Base.decode16!(hex, case: :lower)
+    leftover_bit_count = String.to_integer(leftover_bits)
+    full_byte_count = byte_size(bytes) - 1
+
+    <<full_bytes::binary-size(^full_byte_count), left_aligned_leftover_byte::integer>> = bytes
+    right_aligned_leftover_byte = Bitwise.bsr(left_aligned_leftover_byte, 8 - leftover_bit_count)
+    <<full_bytes::binary, right_aligned_leftover_byte::size(leftover_bit_count)>>
+  end
+
+  def deserialize(version, "c" <> data) when version in [3, 2] do
+    [module_str, function_str, arity_str] = String.split(data, @delimiter)
+
+    module = Module.safe_concat([module_str])
+    function = String.to_existing_atom(function_str)
+    arity = IntegerUtils.parse!(arity_str)
+
+    Function.capture(module, function, arity)
+  end
+
+  def deserialize(version, "f" <> value) when version in [3, 2] do
+    value
+    |> Float.parse()
+    |> elem(0)
+  end
+
+  def deserialize(version, "i" <> value) when version in [3, 2] do
+    IntegerUtils.parse!(value)
+  end
+
+  def deserialize(version, %{"t" => "l", "d" => data}) when version in [3, 2] do
+    Enum.map(data, &deserialize(version, &1))
+  end
+
+  def deserialize(version, %{"t" => "m", "d" => data}) when version in [3, 2] do
+    data
+    |> Enum.map(fn [key, value] -> {deserialize(version, key), deserialize(version, value)} end)
+    |> Enum.into(%{})
+    |> maybe_recompile_regex()
+  end
+
+  def deserialize(version, "o" <> data) when version in [3, 2] do
+    [major, minor] = decode_identifier_segments(data)
+    IEx.Helpers.port(major, minor)
+  end
+
+  def deserialize(version, "p" <> data) when version in [3, 2] do
+    [x, y, z] = decode_identifier_segments(data)
+    IEx.Helpers.pid(x, y, z)
+  end
+
+  def deserialize(version, %{"t" => "t", "d" => data}) when version in [3, 2] do
+    data
+    |> Enum.map(&deserialize(version, &1))
+    |> List.to_tuple()
+  end
+
+  def deserialize(2, "r" <> data) do
+    [w, x, y, z] = decode_identifier_segments(data)
+    IEx.Helpers.ref(w, x, y, z)
+  end
+
+  def deserialize(1, %{
+        "type" => "anonymous_function",
+        "capturedModule" => module_str,
+        "capturedFunction" => function_str,
+        "arity" => arity
+      }) do
+    module = Module.safe_concat([module_str])
+    function = String.to_existing_atom(function_str)
+
+    Function.capture(module, function, arity)
+  end
+
+  def deserialize(1, "__atom__:" <> value) do
+    String.to_existing_atom(value)
+  end
+
+  def deserialize(1, "__binary__:" <> value) do
+    value
+  end
+
+  def deserialize(1, %{"type" => "bitstring", "bits" => bits}) do
+    BitstringUtils.from_bit_list(bits)
+  end
+
+  def deserialize(1, "__float__:" <> value) do
+    value
+    |> Float.parse()
+    |> elem(0)
+  end
+
+  def deserialize(1, "__integer__:" <> value) do
+    IntegerUtils.parse!(value)
+  end
+
+  def deserialize(1, %{"type" => "list", "data" => data}) do
+    Enum.map(data, &deserialize(1, &1))
+  end
+
+  def deserialize(1, %{"type" => "map", "data" => data}) do
+    data
+    |> Enum.map(fn [key, value] -> {deserialize(1, key), deserialize(1, value)} end)
+    |> Enum.into(%{})
+  end
+
+  def deserialize(1, %{"type" => "pid", "segments" => [x, y, z]}) do
+    IEx.Helpers.pid(x, y, z)
+  end
+
+  def deserialize(1, %{"type" => "port", "value" => value}) do
+    IEx.Helpers.port(value)
+  end
+
+  def deserialize(1, %{"type" => "reference", "value" => value}) do
+    IEx.Helpers.ref(value)
+  end
+
+  def deserialize(1, %{"type" => "tuple", "data" => data}) do
+    data
+    |> Enum.map(&deserialize(1, &1))
+    |> List.to_tuple()
+  end
+
+  @doc """
+  Returns the delimiter string used for separating fields in serialized data.
+  """
+  @spec delimiter() :: String.t()
+  def delimiter, do: @delimiter
+
+  defp decode_identifier_segments(data) do
+    [_node, segments_str, _origin] = String.split(data, @delimiter)
+
+    segments_str
+    |> String.split(",")
+    |> Enum.map(&IntegerUtils.parse!/1)
+  end
+
+  # A Regex struct's :re_pattern references a compiled pattern that exists
+  # only in the client runtime, so the struct is rebuilt by compiling its
+  # source and options server-side, which also gives it the exact shape the
+  # running Elixir version expects.
+  defp maybe_recompile_regex(%{__struct__: Regex, source: source, opts: opts}) do
+    {:ok, regex} = Regex.compile(source, opts)
+    regex
+  end
+
+  defp maybe_recompile_regex(map), do: map
+end

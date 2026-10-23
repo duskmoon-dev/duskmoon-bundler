@@ -1,0 +1,60 @@
+defmodule HologramClusterTests.MixProject do
+  use Mix.Project
+
+  defp aliases do
+    [
+      f: ["format", "format.js"],
+      "format.js": "duskmoon_bundler.js.format duskmoon_hologram",
+      "format.js.check": "duskmoon_bundler.js.check duskmoon_hologram"
+    ]
+  end
+
+  def application do
+    [
+      mod: {HologramClusterTests.Application, []},
+      extra_applications: [:iex, :logger, :runtime_tools]
+    ]
+  end
+
+  defp deps do
+    [
+      {:bandit, "~> 1.5"},
+      {:credo, "~> 1.0", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.0", only: [:dev, :test], runtime: false},
+      {:duskmoon_hologram, path: Path.expand("../..", __DIR__)},
+      {:jason, "~> 1.0"},
+      {:mint, "~> 1.0", only: :test},
+      {:phoenix, "~> 1.7"},
+      {:wallaby, "~> 0.30", only: :test}
+    ]
+  end
+
+  defp elixirc_paths(:test) do
+    ["app", "lib", "test/support"]
+  end
+
+  defp elixirc_paths(_env) do
+    ["app", "lib"]
+  end
+
+  def project do
+    [
+      aliases: aliases(),
+      app: :hologram_cluster_tests,
+      # credo:disable-for-next-line Credo.Check.Refactor.AppendSingleItem
+      compilers: Mix.compilers() ++ [:hologram],
+      deps: deps(),
+      elixir: "~> 1.0",
+      elixirc_options: [warnings_as_errors: true],
+      elixirc_paths: elixirc_paths(Mix.env()),
+      dialyzer: [
+        plt_add_apps: [:ex_unit, :iex, :mix],
+        plt_core_path: "priv/plts/core.plt",
+        plt_local_path: "priv/plts/project.plt"
+      ],
+      listeners: [Phoenix.CodeReloader],
+      start_permanent: Mix.env() == :prod,
+      version: "0.1.0"
+    ]
+  end
+end

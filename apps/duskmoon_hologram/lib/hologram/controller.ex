@@ -1,0 +1,994 @@
+defmodule Hologram.Controller do
+  @moduledoc false
+
+  require Logger
+
+  alias Hologram.Assets.ChunkRegistry
+  alias Hologram.Assets.PageDigestRegistry
+  alias Hologram.Compiler.Encoder
+  alias Hologram.Component.Action
+  alias Hologram.LiveReload
+  alias Hologram.Page
+  alias Hologram.Realtime
+  alias Hologram.Realtime.Handshake
+  alias Hologram.Realtime.Receipt
+  alias Hologram.Realtime.SSE
+  alias Hologram.Realtime.SubscriptionRegistry
+  alias Hologram.Realtime.Tombstone
+  alias Hologram.Router.PageModuleResolver
+  alias Hologram.Runtime.Cookie
+  alias Hologram.Runtime.CSRFProtection
+  alias Hologram.Runtime.Deserializer
+  alias Hologram.Runtime.PlugConnUtils
+  alias Hologram.Runtime.Session
+  alias Hologram.Server
+  alias Hologram.Server.Middleware
+  alias Hologram.Template.Renderer
+  alias Phoenix.Controller
+
+  @typedoc """
+  A connection with parsed JSON body_params containing Hologram command data.
+  The body_params should contain %{"_json" => [version, data]} directly.
+  """
+  @type command_conn :: %Plug.Conn{body_params: map}
+
+  @doc """
+  Applies a map of cookie operations to the given Plug.Conn struct.
+
+  Takes a map of cookie operations where each key is a cookie name (string) and each value
+  is either a `Cookie` struct representing a put operation or a `:delete` atom
+  representing a delete operation.
+
+  For put operations, the cookie value is encoded and set with the provided options.
+  For delete operations, the cookie is removed from the response.
+
+  ## Parameters
+
+    * `conn` - The Plug.Conn struct to modify
+    * `cookie_ops` - A map of cookie operations to apply
+
+  ## Returns
+
+  The updated Plug.Conn struct with the cookie operations applied.
+
+  ## Examples
+
+      iex> ops = %{"user_id" => %Cookie{value: 123}}
+      iex> updated_conn = apply_cookie_ops(conn, ops)
+      iex> updated_conn.resp_cookies["user_id"]
+      # Returns the cookie data
+  """
+  @spec apply_cookie_ops(Plug.Conn.t(), %{String.t() => Cookie.op()}) :: Plug.Conn.t()
+  def apply_cookie_ops(conn, cookie_ops) do
+    Enum.reduce(cookie_ops, conn, fn {cookie_name, operation}, acc_conn ->
+      case operation do
+        %Cookie{value: cookie_value} = cookie_struct ->
+          opts = build_cookie_opts(cookie_struct)
+
+          Plug.Conn.put_resp_cookie(
+            acc_conn,
+            cookie_name,
+            Cookie.encode(cookie_value),
+            opts
+          )
+
+        :delete ->
+          Plug.Conn.delete_resp_cookie(acc_conn, cookie_name)
+      end
+    end)
+  end
+
+  @doc """
+  Applies session operations to the given Plug.Conn struct.
+  """
+  @spec apply_session_ops(Plug.Conn.t(), %{String.t() => Session.op()}) :: Plug.Conn.t()
+  def apply_session_ops(conn, session_ops) do
+    Enum.reduce(session_ops, conn, fn {key, operation}, acc_conn ->
+      case operation do
+        {:put, value} ->
+          Plug.Conn.put_session(acc_conn, key, value)
+
+        :delete ->
+          Plug.Conn.delete_session(acc_conn, key)
+      end
+    end)
+  end
+
+  @doc """
+  Builds the payload describing a page for a client that renders it itself, rather than being sent
+  the markup.
+
+  Carries the render itself, as an evaluated tree, so the page can be shown before any of its own
+  code has arrived, and everything a mount reads as fields of its own beside it: the component
+  registry, the page module and params, and the realtime bookkeeping.
+
+  A loaded document has only one channel for that state - a script in the markup it is sent - but a
+  navigated page has the payload, so it does not pay for the round trip of escaping encoder output
+  into the tree's own encoding and unescaping it again on arrival. It also means the state is
+  readable before the render is patched in, rather than as a side effect of a script the patch
+  inserts and the browser then runs.
+
+  The digest names the bundle to fetch when this client does not have the page's code yet, and the
+  chunk digests name the chunks the page needs before it mounts (see
+  `Hologram.Assets.ChunkRegistry`), which the client loads unless it has them.
+
+  Every value but the tree is encoded the way a command's response encodes terms, as JavaScript the
+  client evaluates, since that is the form its runtime already reads. The tree is not: it holds
+  only elements, text, comments and the doctype, which is a closed vocabulary with no Elixir
+  semantics in it, so it rides as a nested JSON value the client gets already parsed rather than as
+  source it has to evaluate first.
+
+  A redirect is a payload of its own, since a client-side navigation cannot be answered with a real
+  one: a `fetch` following redirects consumes the 302 invisibly, and one set to leave it alone gets
+  a response whose Location it is not allowed to read. Carrying the target as data is what lets the
+  client go there without reloading the document, which is the whole point of navigating in the
+  first place. The target's own page module and params ride along, resolved server-side, so the
+  client can ask for that page's data without a round trip to find out what it is. A target no page
+  owns carries no module, and the client hands it to the browser.
+  """
+  @spec build_page_data_payload(map | {:redirect, String.t(), module | nil, map | nil}) :: map
+  def build_page_data_payload({:redirect, to, nil, _params}) do
+    %{to: to, type: "redirect"}
+  end
+
+  def build_page_data_payload({:redirect, to, page_module, params}) do
+    %{
+      pageModule: Encoder.encode_term!(page_module),
+      pageParams: Encoder.encode_term!(params),
+      to: to,
+      type: "redirect"
+    }
+  end
+
+  # The wire format for the tree, and the 112 alternatives it was measured against.
+  # See: docs/navigation_payload_wire_format.md
+  def build_page_data_payload(%{
+        chunk_digests: chunk_digests,
+        mount_data: mount_data,
+        page_digest: page_digest,
+        self_echoes: self_echoes,
+        sub_receipt_adds: sub_receipt_adds,
+        sub_receipt_drops: sub_receipt_drops,
+        tree: tree
+      }) do
+    %{
+      chunks: chunk_digests,
+      componentRegistry: mount_data.component_registry,
+      pageDigest: page_digest,
+      pageModule: mount_data.page_module,
+      pageParams: mount_data.page_params,
+      selfEchoes: Encoder.encode_term!(self_echoes),
+      subReceiptAdds: Encoder.encode_term!(sub_receipt_adds),
+      subReceiptDrops: Encoder.encode_term!(sub_receipt_drops),
+      tree: Renderer.encode_tree(tree),
+      type: "page"
+    }
+  end
+
+  @doc """
+  Resolves a redirect target into the page it names, so a client that navigates by page module can
+  ask for that page's data directly.
+
+  Uses the same resolution the router uses for an incoming request, which is what keeps a redirect
+  landing on the page a browser would have landed on. Params come from both places a page can carry
+  them, the path and the query string, cast the way the page declares them. A query param the page
+  does not declare is left out rather than refused, since a redirect URL can carry params meant for
+  something other than the page.
+
+  A target no page owns - an external URL, or a path the framework itself serves - resolves to no
+  module, leaving the client to hand it to the browser.
+  """
+  @spec resolve_redirect_target(String.t()) :: {:redirect, String.t(), module | nil, map | nil}
+  def resolve_redirect_target(to) do
+    %URI{host: host, path: path, query: query, scheme: scheme} = URI.parse(to)
+
+    # Only a target that names no host of its own can be one of this app's pages. The same path
+    # can exist here and elsewhere, so resolving by path alone would answer a redirect to another
+    # origin with a local page, keeping the client where it was told to leave.
+    #
+    # The resolver answers false, not nil, when no page owns the path.
+    page_module =
+      is_nil(host) && is_nil(scheme) && path && PageModuleResolver.resolve(path)
+
+    if page_module do
+      query_params = if query, do: URI.decode_query(query), else: %{}
+
+      # Only the params the page declares are cast. A redirect target is a URL someone wrote, and
+      # it can carry query params that belong to something else entirely - a tracking tag, a
+      # campaign id - which the page never declared and Page.cast_params/2 refuses. Casting those
+      # would turn a redirect into a 500. They stay in the URL either way, since that is what the
+      # browser is given.
+      declared_names =
+        Enum.map(page_module.__params__(), fn {name, _type, _opts} -> Atom.to_string(name) end)
+
+      params =
+        path
+        |> extract_params(page_module)
+        |> Map.merge(query_params)
+        |> Map.take(declared_names)
+        |> Page.cast_params(page_module)
+
+      {:redirect, to, page_module, params}
+    else
+      {:redirect, to, nil, nil}
+    end
+  end
+
+  @doc """
+  Extracts (uncast) params from the given URL path corresponding to the route of the given page module.
+  """
+  @spec extract_params(String.t(), module) :: %{String.t() => String.t()}
+  def extract_params(url_path, page_module) do
+    route_segments = String.split(page_module.__route__(), "/")
+    url_path_segments = String.split(url_path, "/")
+
+    route_segments
+    |> Enum.zip(url_path_segments)
+    |> Enum.reduce([], fn
+      {":" <> key, value}, acc ->
+        [{key, URI.decode(value)} | acc]
+
+      _non_param_segment, acc ->
+        acc
+    end)
+    |> Enum.into(%{})
+  end
+
+  @doc """
+  Handles HTTP POST command requests by building JSON response.
+
+  ## Parameters
+
+    * `conn` - The Plug.Conn struct representing the HTTP request with parsed JSON body_params
+
+  ## Returns
+
+  The updated and halted Plug.Conn struct with the JSON response and applied cookies.
+  """
+  @spec handle_command_request(command_conn()) :: Plug.Conn.t()
+  def handle_command_request(initial_conn) do
+    conn =
+      initial_conn
+      |> PlugConnUtils.init_conn()
+      |> Session.init()
+
+    if validate_csrf_token(conn) do
+      payload =
+        conn.body_params
+        |> Map.get("_json")
+        |> Deserializer.deserialize()
+
+      %{
+        instance_id: instance_id,
+        module: module,
+        name: name,
+        params: params,
+        sub_receipts: sub_receipts,
+        target: target
+      } = payload
+
+      if caller_owns_instance_id?(conn, instance_id) do
+        handle_validated_command_request(
+          conn,
+          instance_id,
+          module,
+          name,
+          params,
+          sub_receipts,
+          target
+        )
+      else
+        Logger.warning("instance_id cross-check failed")
+
+        conn
+        |> Plug.Conn.put_status(403)
+        |> Controller.text("Forbidden")
+        |> Plug.Conn.halt()
+      end
+    else
+      Logger.warning("CSRF token validation failed")
+
+      conn
+      |> Plug.Conn.put_status(403)
+      |> Controller.text("Forbidden")
+      |> Plug.Conn.halt()
+    end
+  end
+
+  # Returns true when the registry has no entry for the `instance_id` (the
+  # instance hasn't attached yet, or its SSE process died and was GC'd) or
+  # when the entry's recorded `{session_id, user_id}` matches the caller's
+  # current session. Returns false when an entry exists but its identity
+  # doesn't match - the caller is using an `instance_id` they didn't
+  # establish (forgery, or post-logout stale state).
+  defp caller_owns_instance_id?(conn, instance_id) do
+    case SubscriptionRegistry.identity_of(instance_id) do
+      nil ->
+        true
+
+      registry_identity ->
+        registry_identity == {Session.get_session_id(conn), Session.get_user_id(conn)}
+    end
+  end
+
+  # The tab's own signed receipts stand in for a registry read, which would come back
+  # empty whenever the command lands on a node that does not hold the connection. A
+  # verified receipt is also the stronger statement: it is bound to this instance and
+  # checked against tombstones, where the local table only reports what it happens to
+  # know.
+  defp handle_validated_command_request(
+         conn,
+         instance_id,
+         module,
+         name,
+         params,
+         sub_receipts,
+         target
+       ) do
+    {validated_bindings, _refreshed_receipts} =
+      verify_and_refresh_receipts(
+        sub_receipts,
+        instance_id,
+        Session.get_session_id(conn),
+        Session.get_user_id(conn)
+      )
+
+    bindings = Map.new(validated_bindings)
+
+    target_subscriptions =
+      for {{_channel, cid} = key, _user_id} <- bindings, cid == target, do: key
+
+    server_struct = %{
+      Server.from(conn)
+      | cid: target,
+        instance_id: instance_id,
+        subscriptions: target_subscriptions
+    }
+
+    middleware_server_struct = Middleware.run(server_struct, module.__middleware__())
+
+    if middleware_server_struct.status do
+      # Middleware produced a terminal response - skip the command and send it,
+      # still applying the decorations accumulated by the steps that ran.
+      Realtime.maybe_announce_identity_change(server_struct, middleware_server_struct)
+
+      conn
+      |> apply_session_ops(middleware_server_struct.__meta__.session_ops)
+      |> apply_cookie_ops(middleware_server_struct.__meta__.cookie_ops)
+      |> maybe_persist_user_id(server_struct, middleware_server_struct)
+      |> send_response(middleware_server_struct)
+      |> Plug.Conn.halt()
+    else
+      command_result = module.command(name, params, middleware_server_struct)
+
+      {processed_server_struct, next_action} =
+        process_command_result(command_result, middleware_server_struct, target)
+
+      # Apply subscription deltas before flushing broadcasts so a registry
+      # failure (GenServer.call timeout) leaves no half-done state.
+      # flush_broadcasts is effectively infallible, so once apply succeeds both
+      # side effects land.
+      {sub_receipt_adds, sub_receipt_drops} = apply_subscription_deltas(processed_server_struct)
+
+      Realtime.maybe_announce_identity_change(server_struct, processed_server_struct)
+
+      # Snapshot self-echoes before flush_broadcasts/1 clears the queue. Self-echoes
+      # reach every component on the originating instance subscribed to the
+      # broadcast channel, so they are materialized against the instance-wide
+      # subscription set rather than the cid-scoped server.subscriptions.
+      self_echoes =
+        Realtime.get_self_echoes(
+          processed_server_struct,
+          instance_subscriptions(bindings, processed_server_struct.__meta__.subscription_ops)
+        )
+
+      flushed_server_struct = Realtime.flush_broadcasts(processed_server_struct)
+
+      {encode_status, encoded_next_action} = Encoder.encode_term(next_action)
+      command_status = if encode_status == :ok, do: 1, else: 0
+
+      {:ok, encoded_self_echoes} = Encoder.encode_term(self_echoes)
+      {:ok, encoded_sub_receipt_adds} = Encoder.encode_term(sub_receipt_adds)
+      {:ok, encoded_sub_receipt_drops} = Encoder.encode_term(sub_receipt_drops)
+
+      conn
+      |> apply_session_ops(flushed_server_struct.__meta__.session_ops)
+      |> apply_cookie_ops(flushed_server_struct.__meta__.cookie_ops)
+      |> maybe_persist_user_id(server_struct, flushed_server_struct)
+      |> Controller.json(%{
+        action: encoded_next_action,
+        # The chunks the struct types in the action and in the self echoes need, which the client
+        # loads before it runs them.
+        chunks: ChunkRegistry.lookup_term({next_action, self_echoes}),
+        selfEchoes: encoded_self_echoes,
+        status: command_status,
+        subReceiptAdds: encoded_sub_receipt_adds,
+        subReceiptDrops: encoded_sub_receipt_drops
+      })
+      |> Plug.Conn.halt()
+    end
+  end
+
+  @doc """
+  Handles the initial page HTTP GET request by building HTTP response.
+
+  ## Parameters
+
+    * `conn` - The Plug.Conn struct representing the HTTP request
+    * `page_module` - The page module to render
+
+  ## Returns
+
+  The updated and halted Plug.Conn struct with the rendered HTML and applied cookies.
+  """
+  @spec handle_initial_page_request(Plug.Conn.t(), module) :: Plug.Conn.t()
+  def handle_initial_page_request(initial_conn, page_module) do
+    conn = PlugConnUtils.init_conn(initial_conn)
+
+    params =
+      conn.request_path
+      |> extract_params(page_module)
+      |> Page.cast_params(page_module)
+
+    {conn_with_csrf_token, {masked_csrf_token, _unmasked_csrf_token}} =
+      CSRFProtection.ensure_tokens(conn)
+
+    instance_id = UUID.uuid4()
+
+    renderer_opts = [
+      csrf_token: masked_csrf_token,
+      initial_page?: true,
+      instance_id: instance_id
+    ]
+
+    handle_page_request(conn_with_csrf_token, page_module, params, [], renderer_opts)
+  end
+
+  # Public for tests so they can drive a page render with a known instance_id
+  # without going through the auto-generating `handle_initial_page_request/2`.
+  @doc false
+  # sobelow_skip ["XSS.HTML"]
+  @spec handle_page_request(Plug.Conn.t(), module, map, [{any, String.t()}], keyword) ::
+          Plug.Conn.t()
+  def handle_page_request(
+        initial_conn,
+        page_module,
+        params,
+        client_claimed_sub_keys,
+        renderer_opts
+      ) do
+    case run_page_lifecycle(
+           initial_conn,
+           page_module,
+           params,
+           client_claimed_sub_keys,
+           renderer_opts
+         ) do
+      {:terminal, conn, server_struct} ->
+        conn
+        |> send_response(server_struct)
+        |> Plug.Conn.halt()
+
+      {:rendered, conn, result} ->
+        final_html =
+          result.html
+          |> Renderer.interpolate_chunks(result.chunk_digests)
+          |> Renderer.interpolate_self_echoes_js(result.self_echoes)
+          |> Renderer.interpolate_sub_receipt_adds_js(result.sub_receipt_adds)
+          |> Renderer.interpolate_sub_receipt_drops_js(result.sub_receipt_drops)
+
+        conn
+        |> Controller.html(final_html)
+        |> Plug.Conn.halt()
+    end
+  end
+
+  @doc """
+  Handles the ping HTTP GET request by building HTTP response.
+  """
+  @spec handle_ping_request(Plug.Conn.t()) :: Plug.Conn.t()
+  def handle_ping_request(conn) do
+    conn
+    |> Controller.text("pong")
+    |> Plug.Conn.halt()
+  end
+
+  @doc """
+  Handles the SSE handshake HTTP POST request. Runs the auth gate, mints a
+  fresh `handshake_id`, stashes the validated bindings bound to the client's
+  identity tuple, and returns the `handshake_id` for the client to use when
+  opening the EventSource.
+  """
+  @spec handle_sse_handshake_request(Plug.Conn.t()) :: Plug.Conn.t()
+  def handle_sse_handshake_request(initial_conn) do
+    conn = PlugConnUtils.init_conn(initial_conn)
+
+    case Session.get_session_id(conn) do
+      nil ->
+        conn
+        |> Plug.Conn.send_resp(401, "Unauthorized")
+        |> Plug.Conn.halt()
+
+      session_id ->
+        current_user_id = Session.get_user_id(conn)
+
+        %{instance_id: instance_id, receipts: receipts} =
+          conn.body_params
+          |> Map.get("_json")
+          |> Deserializer.deserialize()
+
+        {validated_bindings, refreshed_receipts} =
+          verify_and_refresh_receipts(receipts, instance_id, session_id, current_user_id)
+
+        handshake_id = UUID.uuid4()
+        expires_at = System.system_time(:millisecond) + Handshake.stash_ttl_ms()
+
+        Handshake.insert(
+          handshake_id,
+          validated_bindings,
+          {instance_id, session_id, current_user_id},
+          expires_at
+        )
+
+        {:ok, encoded_refreshed_receipts} = Encoder.encode_term(refreshed_receipts)
+
+        conn
+        |> Controller.json(%{
+          handshakeId: handshake_id,
+          heartbeatIntervalMs: SSE.heartbeat_interval_ms(conn),
+          refreshedReceipts: encoded_refreshed_receipts
+        })
+        |> Plug.Conn.halt()
+    end
+  end
+
+  @doc """
+  Handles a request for a page the client navigated to, answering with the page described as data
+  for a client that renders it itself.
+
+  Runs the same lifecycle the initial request runs - session, middleware, render, subscription
+  transition, broadcasts - and differs only in what it sends back, so a page behaves the same way
+  however it is reached.
+  """
+  @spec handle_subsequent_page_request(Plug.Conn.t(), module) :: Plug.Conn.t()
+  def handle_subsequent_page_request(initial_conn, page_module) do
+    conn = PlugConnUtils.init_conn(initial_conn)
+
+    {instance_id, client_claimed_sub_keys} = extract_page_request_payload(conn)
+
+    params =
+      conn
+      |> Plug.Conn.fetch_query_params()
+      |> Map.get(:query_params)
+      |> Page.cast_params(page_module)
+
+    renderer_opts = [initial_page?: false, instance_id: instance_id]
+
+    case run_page_lifecycle(
+           conn,
+           page_module,
+           params,
+           client_claimed_sub_keys,
+           renderer_opts
+         ) do
+      {:terminal, lifecycle_conn, server_struct} ->
+        lifecycle_conn
+        |> send_terminal_page_data(server_struct)
+        |> Plug.Conn.halt()
+
+      {:rendered, lifecycle_conn, result} ->
+        # The values the HTML path substitutes into the served document travel as payload fields
+        # here. Nothing is interpolated into the tree: this path renders no script to interpolate
+        # into, and the client reads the state from the payload before it patches.
+        payload =
+          build_page_data_payload(%{
+            chunk_digests: result.chunk_digests,
+            mount_data: result.mount_data,
+            page_digest: PageDigestRegistry.lookup(page_module),
+            self_echoes: result.self_echoes,
+            sub_receipt_adds: result.sub_receipt_adds,
+            sub_receipt_drops: result.sub_receipt_drops,
+            tree: result.tree
+          })
+
+        lifecycle_conn
+        |> send_page_data(payload)
+        |> Plug.Conn.halt()
+    end
+  end
+
+  @doc """
+  Sends the terminal response built from the server struct's response fields.
+
+  Merges `response_headers` onto the connection and sends `status` with `response_body`
+  (an empty body when `response_body` is `nil`).
+  """
+  # Body comes from put_response_body/2 (developer-set) - content safety is the caller's.
+  # sobelow_skip ["XSS.SendResp"]
+  @spec send_response(Plug.Conn.t(), Server.t()) :: Plug.Conn.t()
+  def send_response(conn, server) do
+    conn
+    |> Plug.Conn.merge_resp_headers(Map.to_list(server.response_headers))
+    |> Plug.Conn.send_resp(server.status, server.response_body || "")
+  end
+
+  @doc false
+  @spec verify_and_refresh_receipts([String.t()], String.t(), term | nil, term | nil) ::
+          {[{{any, String.t()}, term | nil}], [{any, String.t(), String.t()}]}
+  def verify_and_refresh_receipts(receipts, instance_id, session_id, current_user_id) do
+    receipts
+    |> Enum.flat_map(fn token ->
+      case Receipt.verify(token) do
+        {:ok, %Receipt{instance_id: ^instance_id, user_id: authorizing_user_id} = receipt}
+        when is_nil(authorizing_user_id) or authorizing_user_id == current_user_id ->
+          refresh_unless_tombstoned(receipt, instance_id, session_id, authorizing_user_id)
+
+        _other ->
+          []
+      end
+    end)
+    |> Enum.unzip()
+  end
+
+  defp apply_subscription_deltas(%Server{__meta__: %{subscription_ops: ops}}) when ops == %{},
+    do: {[], []}
+
+  defp apply_subscription_deltas(%Server{__meta__: %{subscription_ops: ops}} = server) do
+    adds = for {key, :put} <- ops, do: key
+    drops = for {key, :delete} <- ops, do: key
+
+    {actually_added, actually_dropped} =
+      SubscriptionRegistry.apply_deltas(server.instance_id, adds, drops, server.user_id)
+
+    now = System.system_time(:millisecond)
+
+    Enum.each(actually_dropped, fn {channel, cid} ->
+      Tombstone.insert({{:instance, server.instance_id}, channel, cid}, now)
+    end)
+
+    {build_receipts(actually_added, server), actually_dropped}
+  end
+
+  defp build_cookie_opts(cookie_struct) do
+    opts =
+      [
+        domain: cookie_struct.domain,
+        http_only: cookie_struct.http_only,
+        max_age: cookie_struct.max_age,
+        path: cookie_struct.path,
+        same_site: same_site_to_string(cookie_struct.same_site),
+        secure: cookie_struct.secure
+      ]
+
+    Enum.filter(opts, fn {_key, value} -> value != nil end)
+  end
+
+  defp build_receipts(add_keys, server) do
+    Enum.map(add_keys, fn {channel, cid} ->
+      {channel, cid, Receipt.issue(channel, cid, server.instance_id, server.user_id)}
+    end)
+  end
+
+  # Reads the Hologram-serialized JSON body produced by `Client.fetchPage` and
+  # pulls out the two fields the page-render path needs from the client:
+  # the stable JS-context `instance_id` and the subscription keys the client claims to
+  # currently hold in its subscription receipt registry.
+  defp extract_page_request_payload(%Plug.Conn{body_params: %{"_json" => json}}) do
+    %{instance_id: instance_id, client_claimed_sub_keys: client_claimed_sub_keys} =
+      Deserializer.deserialize(json)
+
+    {instance_id, client_claimed_sub_keys}
+  end
+
+  defp get_csrf_token_from_header(conn) do
+    case Plug.Conn.get_req_header(conn, "x-csrf-token") do
+      [token] when is_binary(token) and token != "" -> {:ok, token}
+      _fallback -> :error
+    end
+  end
+
+  defp get_csrf_token_from_session(conn) do
+    case Plug.Conn.get_session(conn, CSRFProtection.session_key()) do
+      token when is_binary(token) -> {:ok, token}
+      _fallback -> :error
+    end
+  end
+
+  # Returns the originating instance's full post-handler subscription set: the
+  # command-start `bindings` adjusted by this handler's subscription ops. Used to
+  # materialize self-echoes, which reach every component on the instance
+  # subscribed to the broadcast channel - not only the command's target cid (the
+  # scope of `server.subscriptions`).
+  defp instance_subscriptions(bindings, subscription_ops) do
+    initial_acc =
+      bindings
+      |> Map.keys()
+      |> MapSet.new()
+
+    subscription_ops
+    |> Enum.reduce(initial_acc, fn
+      {key, :put}, acc -> MapSet.put(acc, key)
+      {key, :delete}, acc -> MapSet.delete(acc, key)
+    end)
+    |> MapSet.to_list()
+  end
+
+  # Persists a handler-driven `server.user_id` change into the Phoenix session
+  # (the opaque `:hologram_user_id` key) so later requests resolve the new
+  # identity. No-op when unchanged, leaving the session - and any Set-Cookie -
+  # untouched on the common path. Applied after the handler's own ops so
+  # `server.user_id` stays the source of truth for the key.
+  # In dev a live reload may still be building the page's bundle: the render names the bundle, so
+  # it waits for it, and asking for the page has it built next. This is what serves a page the
+  # live reload could not tell was about to be visited, a path computed at runtime or a redirect,
+  # with its current bundle.
+  defp maybe_await_page_bundle(page_module) do
+    if Hologram.env() == :dev do
+      LiveReload.await_page(page_module)
+    end
+  end
+
+  # In dev a live reload builds the pages open in tabs first, and the page a tab shows is the page
+  # it rendered last.
+  defp maybe_note_page_rendered(nil, _page_module), do: :ok
+
+  defp maybe_note_page_rendered(instance_id, page_module) do
+    if Hologram.env() == :dev do
+      LiveReload.page_rendered(instance_id, page_module)
+    end
+  end
+
+  defp maybe_persist_user_id(conn, %Server{user_id: user_id}, %Server{user_id: user_id}) do
+    conn
+  end
+
+  defp maybe_persist_user_id(conn, _pre_server, %Server{user_id: user_id}) do
+    Session.put_user_id(conn, user_id)
+  end
+
+  # The chunks a rendered page needs before it mounts: the ones it preloads for the struct types
+  # its client code names, the ones its state needs, and the ones its self echoes need.
+  defp page_chunk_digests(page_module, state_chunk_digests, self_echoes) do
+    [
+      ChunkRegistry.lookup_page(page_module),
+      state_chunk_digests,
+      ChunkRegistry.lookup_term(self_echoes)
+    ]
+    |> Enum.concat()
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp process_command_result(command_result, server_struct, default_target) do
+    case command_result do
+      %Server{next_action: %Action{target: nil} = action} = updated_server_struct ->
+        {updated_server_struct, %{action | target: default_target}}
+
+      %Server{next_action: action} = updated_server_struct ->
+        {updated_server_struct, action}
+
+      _fallback ->
+        {server_struct, nil}
+    end
+  end
+
+  # Everything a page response does before it is a response: session, middleware, render,
+  # subscription transition, broadcasts. Returns the connection with the session and cookie
+  # operations the run accumulated already applied, so the caller only chooses what to send.
+  #
+  # A page must behave the same whichever form it is asked for, markup or data, which it only does
+  # while there is one of these to run.
+  defp run_page_lifecycle(
+         initial_conn,
+         page_module,
+         params,
+         client_claimed_sub_keys,
+         renderer_opts
+       ) do
+    maybe_await_page_bundle(page_module)
+
+    conn = Session.init(initial_conn)
+
+    server_struct = %{
+      Server.from(conn)
+      | cid: "page",
+        instance_id: renderer_opts[:instance_id]
+    }
+
+    middleware_server_struct =
+      Middleware.run(server_struct, page_module.__middleware__())
+
+    if middleware_server_struct.status do
+      # Middleware answered before anything was rendered - skip the render, still applying the
+      # decorations accumulated by the steps that ran.
+      Realtime.maybe_announce_identity_change(server_struct, middleware_server_struct)
+
+      {:terminal, decorate_conn(conn, server_struct, middleware_server_struct),
+       middleware_server_struct}
+    else
+      %{
+        chunk_digests: state_chunk_digests,
+        component_registry: component_registry,
+        html: rendered_html,
+        mount_data: mount_data,
+        server_struct: rendered_server_struct,
+        tree: rendered_tree
+      } = Renderer.render_page(page_module, params, middleware_server_struct, renderer_opts)
+
+      maybe_note_page_rendered(renderer_opts[:instance_id], page_module)
+
+      # Transition subscriptions before flushing broadcasts so a registry failure
+      # (GenServer.call timeout) leaves no half-done state. flush_broadcasts is
+      # effectively infallible, so once transition succeeds both side effects land.
+      {sub_receipt_adds, sub_receipt_drops} =
+        transition_subscriptions(rendered_server_struct, client_claimed_sub_keys)
+
+      Realtime.maybe_announce_identity_change(server_struct, rendered_server_struct)
+
+      # Snapshot self-echoes before flush_broadcasts/1 clears the queue. The renderer leaves
+      # `$SELF_ECHOES_JS_PLACEHOLDER` in the HTML on purpose so this Realtime-domain computation
+      # lives in the controller, which is also why it is returned rather than interpolated here.
+      self_echoes =
+        Realtime.get_self_echoes(rendered_server_struct, rendered_server_struct.subscriptions)
+
+      flushed_server_struct = Realtime.flush_broadcasts(rendered_server_struct)
+
+      result = %{
+        chunk_digests: page_chunk_digests(page_module, state_chunk_digests, self_echoes),
+        component_registry: component_registry,
+        html: rendered_html,
+        mount_data: mount_data,
+        self_echoes: self_echoes,
+        sub_receipt_adds: sub_receipt_adds,
+        sub_receipt_drops: sub_receipt_drops,
+        tree: rendered_tree
+      }
+
+      {:rendered, decorate_conn(conn, server_struct, flushed_server_struct), result}
+    end
+  end
+
+  defp decorate_conn(conn, server_struct, final_server_struct) do
+    conn
+    |> apply_session_ops(final_server_struct.__meta__.session_ops)
+    |> apply_cookie_ops(final_server_struct.__meta__.cookie_ops)
+    |> maybe_persist_user_id(server_struct, final_server_struct)
+  end
+
+  # Marks a response as carrying page data, so the client can tell one from a response a page's
+  # middleware wrote itself. Status alone cannot: middleware is free to answer 200 with a body of
+  # its own, which is a page's answer rather than a page.
+  defp send_page_data(conn, payload) do
+    conn
+    |> Plug.Conn.put_resp_header("hologram-page-data", "true")
+    |> Controller.json(payload)
+  end
+
+  # What a page's middleware answered, in the form the client can act on.
+  #
+  # A redirect is data, because a redirect cannot survive the trip: the fetch this answers either
+  # follows it out of sight or is refused its Location. Everything else is sent as it stands, status
+  # and all, since those are dead ends rather than navigations - the client hands the path to the
+  # browser, which shows exactly what a typed-in URL would have shown. Keeping the real status is
+  # also what keeps a denial legible to logs and proxies rather than reading as success.
+  defp send_terminal_page_data(conn, %Server{status: status} = server)
+       when status >= 300 and status < 400 do
+    case server.response_headers["location"] do
+      nil ->
+        send_response(conn, server)
+
+      to ->
+        # The headers travel even though the redirect itself does not. Middleware that sets one
+        # alongside a redirect means it for the response, and the HTML path keeps it, so dropping
+        # it here would make the same middleware behave differently for a navigation. Location is
+        # left behind: the payload carries the target, and a location on the 200 this sends names
+        # somewhere the client is not going.
+        conn
+        |> Plug.Conn.merge_resp_headers(
+          server.response_headers
+          |> Map.delete("location")
+          |> Map.to_list()
+        )
+        |> send_page_data(build_page_data_payload(resolve_redirect_target(to)))
+    end
+  end
+
+  defp send_terminal_page_data(conn, %Server{} = server) do
+    send_response(conn, server)
+  end
+
+  defp refresh_unless_tombstoned(receipt, instance_id, session_id, authorizing_user_id) do
+    if tombstoned?(receipt, instance_id, session_id, authorizing_user_id) do
+      []
+    else
+      fresh_token =
+        Receipt.issue(receipt.channel, receipt.cid, instance_id, authorizing_user_id)
+
+      [
+        {{{receipt.channel, receipt.cid}, authorizing_user_id},
+         {receipt.channel, receipt.cid, fresh_token}}
+      ]
+    end
+  end
+
+  defp same_site_to_string(:lax), do: "Lax"
+
+  defp same_site_to_string(:none), do: "None"
+
+  defp same_site_to_string(:strict), do: "Strict"
+
+  defp same_site_to_string(nil), do: nil
+
+  defp tombstone_at_or_after?(key, threshold) do
+    case :ets.lookup(Tombstone.ets_table_name(), key) do
+      [{^key, tombstone_at}] -> tombstone_at >= threshold
+      [] -> false
+    end
+  end
+
+  defp tombstoned?(receipt, instance_id, session_id, authorizing_user_id) do
+    identities = [
+      {:instance, instance_id},
+      {:session, session_id},
+      {:user, authorizing_user_id}
+    ]
+
+    identities
+    |> Enum.reject(fn {_kind, id} -> is_nil(id) end)
+    |> Enum.any?(fn identity ->
+      binding_key = {identity, receipt.channel, receipt.cid}
+      channel_key = {identity, receipt.channel}
+
+      tombstone_at_or_after?(binding_key, receipt.created_at) or
+        tombstone_at_or_after?(channel_key, receipt.created_at)
+    end)
+  end
+
+  # Called after a successful page render. Reconciles the registry's binding
+  # set for this instance against the union of `put_subscription` calls
+  # accumulated across the page-render tree (page + layout + component init/3).
+  # `client_claimed_sub_keys` is `[]` for the initial render and the keys the
+  # client claims to currently hold for subsequent navigations.
+  # `authorizing_user_id` is `nil` until the auth gate is wired.
+  #
+  # Drops here are intentionally NOT tombstoned (unlike `apply_subscription_deltas/1`,
+  # the explicit-removal path). This is the high-frequency cleanup path (every
+  # navigation), and a drop means only "the new page didn't re-declare this
+  # binding", not an authoritative revocation - tombstoning every navigation
+  # would both explode tombstone volume and, via the `created_at` threshold,
+  # reject the snapshot-restored receipt a prior page still relies on when the
+  # user navigates back. Authoritative removal stays on the explicit-delete
+  # path.
+  defp transition_subscriptions(server, client_claimed_sub_keys)
+
+  defp transition_subscriptions(%Server{instance_id: nil}, _client_claimed_sub_keys), do: {[], []}
+
+  defp transition_subscriptions(
+         %Server{instance_id: instance_id, subscriptions: subscriptions} = server,
+         client_claimed_sub_keys
+       ) do
+    {add_keys, drop_keys} =
+      SubscriptionRegistry.diff_sub_keys(subscriptions, client_claimed_sub_keys)
+
+    # Addressed to the connection rather than applied here, since another node may hold
+    # it. Nothing is awaited: the diff above needed no registry read, and a miss is
+    # legitimate on an initial render, where no connection exists yet and the receipts
+    # ride this response into the handshake.
+    topic = Realtime.instance_announce_topic(instance_id)
+    envelope = {:replace_subscriptions, subscriptions, server.user_id}
+
+    Phoenix.PubSub.broadcast(Hologram.PubSub, topic, envelope)
+
+    {build_receipts(add_keys, server), drop_keys}
+  end
+
+  defp validate_csrf_token(conn) do
+    with {:ok, client_token} <- get_csrf_token_from_header(conn),
+         {:ok, session_token} <- get_csrf_token_from_session(conn),
+         true <- CSRFProtection.validate_token(session_token, client_token) do
+      true
+    else
+      _fallback -> false
+    end
+  end
+end

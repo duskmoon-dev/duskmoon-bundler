@@ -1,0 +1,62 @@
+# Duskmoon Hologram
+
+Fork integration: see README.md and UPSTREAM.md in this directory. Requires
+Elixir >= 1.18.0 and OTP >= 28. Use :duskmoon_hologram for dependencies and
+configuration; keep Hologram.* modules, compiler :hologram, and /hologram/ routes.
+Use duskmoon_npm for dependencies, duskmoon_bundler for builds, and its native
+OXC formatter/linter instead of npm CLI, esbuild, Prettier, and ESLint. Bun
+runs the Mocha + jsdom JavaScript suite; Node.js and npm CLI are not required. Run development commands from
+the Duskmoon Bundler umbrella root with DUSKMOON_NATIVE_MODE=source.
+The following imported framework reference and external links describe upstream
+Hologram; its installation/tooling instructions need the adaptations above.
+
+> Full-stack isomorphic Elixir web framework that lets you build interactive web applications entirely in Elixir, without writing JavaScript.
+
+- [Website](https://hologram.page)
+- [GitHub](https://github.com/bartblast/hologram)
+- [HexDocs](https://hexdocs.pm/hologram)
+
+## Guides
+
+- [Introduction](https://hologram.page/docs/introduction): Overview of Hologram, key features, framework philosophy, and inspirations
+- [Installation](https://hologram.page/docs/installation): Upstream setup guide; use the local README.md for fork requirements, umbrella dependencies, and Bun test commands
+- [Quick Start](https://hologram.page/docs/quick-start): Build a simple blog app demonstrating layouts, pages, components, and interactions
+
+## Documentation
+
+- [Architecture](https://hologram.page/docs/architecture): Pages and components, code distribution, client-server communication
+- [Template Syntax](https://hologram.page/docs/template-syntax): ~HOLO sigil, HTML markup, @var access, component nodes, dynamic nodes, interpolation, attribute and prop spread, control flow blocks
+- [Components](https://hologram.page/docs/components): Reusable UI building blocks, props, stateful vs stateless, slots, templates
+- [Pages](https://hologram.page/docs/pages): Route entry points, routing and parameters, differences from regular components
+- [Layouts](https://hologram.page/docs/layouts): Root components that wrap page content, specifying layouts, layout templates
+- [Events](https://hologram.page/docs/events): User interaction handling, event types, event data, binding syntax, event targets
+- [Actions](https://hologram.page/docs/actions): Client-side operations, state updates, action parameters, targets, delays
+- [Commands](https://hologram.page/docs/commands): Server-side operations, database/API access, async execution, command targets
+- [Navigation](https://hologram.page/docs/navigation): Link component, programmatic navigation, History PushState transitions
+- [Forms](https://hologram.page/docs/forms): Synchronized vs non-synchronized inputs, event handling, input types
+- [Context](https://hologram.page/docs/context): Sharing data between components without prop drilling
+- [Middleware](https://hologram.page/docs/middleware): Reusable server-side logic running before a page renders or a command executes, composition, dispatch and scoping, terminal responses
+- [Session](https://hologram.page/docs/session): Secure server-side storage persisting across page visits
+- [Cookies](https://hologram.page/docs/cookies): Client-side persistent storage managed through server-side functions
+- [Realtime](https://hologram.page/docs/realtime): Live server-pushed updates, subscribing to channels, broadcasting actions, delivery semantics
+- [JavaScript Interop](https://hologram.page/docs/javascript-interop): Calling JavaScript from Elixir, importing JS modules, async support
+- [Configuration](https://hologram.page/docs/configuration): Client diagnostics settings, bundle size limit, environment variables
+- [Bundling](https://hologram.page/docs/bundling): What goes into the runtime bundle, the page bundles and chunks, how the code of struct types loads, when reflection functions and dynamic components ship
+
+## Reference
+
+- [Client Runtime](https://hologram.page/reference/client-runtime): Erlang-to-JavaScript porting status, Elixir standard library coverage
+- [Features](https://hologram.page/reference/features): Feature implementation status and progress tracking
+- [Roadmap](https://hologram.page/docs/roadmap): Short-term, medium-term, and long-term development goals
+- [Contributing](https://hologram.page/reference/contributing): How to contribute, why contributions go through issues rather than pull requests, where security vulnerabilities go instead
+- [Package Naming](https://hologram.page/reference/package-naming): Reserved prefixes and namespaces for Hologram packages
+- [Sponsor](https://hologram.page/reference/sponsor): Sponsorship information and project impact
+- [Reporting Vulnerabilities](https://hologram.page/reference/reporting-vulnerabilities): How to report a security vulnerability privately, response process, supported versions, scope
+
+## Resources
+
+- [Community](https://hologram.page/community): Elixir Forum, Discord, Slack, and Twitter/X links
+- [Showcase](https://hologram.page/showcase/submit): Form for submitting an app built with Hologram or a library made for it to the Showcase
+- [Courses](https://hologram.page/courses): Video courses for building real-world applications with Hologram
+- [UI](https://hologram.page/ui): Official Hologram UI component library, currently available through a waiting list
+- [Newsletter](https://hologram.page/newsletter): Monthly updates on development milestones and ecosystem news

@@ -1,0 +1,243 @@
+defmodule Hologram.Commons.ETSTest do
+  use Hologram.Test.BasicCase, async: true
+  import Hologram.Commons.ETS
+
+  setup do
+    table_ref = create_unnamed_table()
+    :ets.insert(table_ref, {:my_key_1, :my_value_1})
+    :ets.insert(table_ref, {:my_key_2, :my_value_2})
+
+    [table_ref: table_ref]
+  end
+
+  test "create_named_table/1" do
+    table_name = random_atom()
+    table_ref = create_named_table(table_name)
+
+    assert is_reference(table_ref)
+    assert ets_table_exists?(table_ref)
+    assert ets_table_exists?(table_name)
+    assert ets_table_name_registered?(table_name)
+
+    ets_info = :ets.info(table_ref)
+    assert ets_info[:named_table]
+    assert ets_info[:protection] == :public
+    assert ets_info[:read_concurrency] == true
+    assert ets_info[:write_concurrency] == true
+  end
+
+  test "create_unnamed_table/1", %{table_ref: table_ref} do
+    assert is_reference(table_ref)
+    assert ets_table_exists?(table_ref)
+
+    ets_info = :ets.info(table_ref)
+    refute ets_info[:named_table]
+    assert ets_info[:protection] == :public
+    assert ets_info[:read_concurrency] == true
+    assert ets_info[:write_concurrency] == true
+  end
+
+  describe "delete/1" do
+    test "table exists" do
+      table_ref = create_unnamed_table()
+
+      assert delete(table_ref) == true
+      refute table_exists?(table_ref)
+    end
+
+    test "table doesn't exist" do
+      assert delete(make_ref()) == false
+    end
+  end
+
+  describe "delete!/1" do
+    test "table exists" do
+      table_ref = create_unnamed_table()
+
+      assert delete!(table_ref) == true
+      refute table_exists?(table_ref)
+    end
+
+    test "table doesn't exist" do
+      assert_raise ArgumentError, fn -> delete!(random_atom()) end
+    end
+  end
+
+  describe "delete/2" do
+    test "key exists", %{table_ref: table_ref} do
+      assert delete(table_ref, :my_key_2) == true
+
+      assert :ets.lookup(table_ref, :my_key_1) == [{:my_key_1, :my_value_1}]
+      assert :ets.lookup(table_ref, :my_key_2) == []
+    end
+
+    test "key doesn't exist", %{table_ref: table_ref} do
+      assert delete(table_ref, :my_key_3) == true
+
+      assert :ets.lookup(table_ref, :my_key_1) == [{:my_key_1, :my_value_1}]
+      assert :ets.lookup(table_ref, :my_key_2) == [{:my_key_2, :my_value_2}]
+    end
+  end
+
+  describe "get/2" do
+    test "key exists", %{table_ref: table_ref} do
+      assert get(table_ref, :my_key_2) == {:ok, :my_value_2}
+    end
+
+    test "key doesn't exist", %{table_ref: table_ref} do
+      assert get(table_ref, :my_key_3) == :error
+    end
+  end
+
+  describe "get!/2" do
+    test "key exists", %{table_ref: table_ref} do
+      assert get!(table_ref, :my_key_2) == :my_value_2
+    end
+
+    test "key doesn't exist", %{table_ref: table_ref} do
+      assert_raise KeyError, "key :my_key_3 not found in the ETS table", fn ->
+        get!(table_ref, :my_key_3)
+      end
+    end
+  end
+
+  test "get_all/1", %{table_ref: table_ref} do
+    assert get_all(table_ref) == %{my_key_1: :my_value_1, my_key_2: :my_value_2}
+  end
+
+  describe "keys/1" do
+    test "table with items", %{table_ref: table_ref} do
+      sorted_keys =
+        table_ref
+        |> keys()
+        |> Enum.sort()
+
+      assert sorted_keys == [:my_key_1, :my_key_2]
+    end
+
+    test "empty table" do
+      table_ref = create_unnamed_table()
+      assert keys(table_ref) == []
+    end
+  end
+
+  describe "keys/2" do
+    test "keys whose value matches the pattern", %{table_ref: table_ref} do
+      :ets.insert(table_ref, {:my_key_3, :my_value_1})
+
+      sorted_keys =
+        table_ref
+        |> keys(:my_value_1)
+        |> Enum.sort()
+
+      assert sorted_keys == [:my_key_1, :my_key_3]
+    end
+
+    test "map pattern matches values holding the given keys", %{table_ref: table_ref} do
+      :ets.insert(table_ref, {:my_key_3, %{a: 1, b: 2}})
+      :ets.insert(table_ref, {:my_key_4, %{a: 1}})
+      :ets.insert(table_ref, {:my_key_5, %{a: 2, b: 2}})
+
+      sorted_keys =
+        table_ref
+        |> keys(%{a: 1})
+        |> Enum.sort()
+
+      assert sorted_keys == [:my_key_3, :my_key_4]
+    end
+
+    test "no value matches the pattern", %{table_ref: table_ref} do
+      assert keys(table_ref, :my_value_3) == []
+    end
+  end
+
+  describe "member?/2" do
+    test "key exists", %{table_ref: table_ref} do
+      assert member?(table_ref, :my_key_2)
+    end
+
+    test "key doesn't exist", %{table_ref: table_ref} do
+      refute member?(table_ref, :my_key_3)
+    end
+  end
+
+  test "put/2", %{table_ref: table_ref} do
+    items = [
+      {:my_key_3, :my_value_3},
+      {:my_key_4, :my_value_4}
+    ]
+
+    assert put(table_ref, items) == true
+
+    assert get_all(table_ref) == %{
+             my_key_1: :my_value_1,
+             my_key_2: :my_value_2,
+             my_key_3: :my_value_3,
+             my_key_4: :my_value_4
+           }
+  end
+
+  test "put/3", %{table_ref: table_ref} do
+    assert put(table_ref, :my_key_3, :my_value_3) == true
+    assert :ets.lookup(table_ref, :my_key_3) == [{:my_key_3, :my_value_3}]
+  end
+
+  describe "replace_all/2" do
+    test "puts the items in and deletes the keys they don't name", %{table_ref: table_ref} do
+      items = [
+        {:my_key_2, :my_value_2_new},
+        {:my_key_3, :my_value_3}
+      ]
+
+      replace_all(table_ref, items)
+
+      assert get_all(table_ref) == %{my_key_2: :my_value_2_new, my_key_3: :my_value_3}
+    end
+
+    test "keeps a key whose value didn't change", %{table_ref: table_ref} do
+      replace_all(table_ref, [{:my_key_1, :my_value_1}])
+
+      assert get_all(table_ref) == %{my_key_1: :my_value_1}
+    end
+
+    test "empty items empty the table", %{table_ref: table_ref} do
+      replace_all(table_ref, [])
+
+      assert get_all(table_ref) == %{}
+    end
+
+    test "returns true", %{table_ref: table_ref} do
+      assert replace_all(table_ref, [{:my_key_1, :my_value_1}]) == true
+    end
+  end
+
+  test "reset/1", %{table_ref: table_ref} do
+    assert reset(table_ref) == true
+    assert get_all(table_ref) == %{}
+  end
+
+  describe "table_exists?/1" do
+    test "exists, named" do
+      table_name = random_atom()
+      create_named_table(table_name)
+
+      assert table_exists?(table_name)
+    end
+
+    test "exists, unnamed" do
+      table_ref = create_unnamed_table()
+
+      assert table_exists?(table_ref)
+    end
+
+    test "doesn't exist, named" do
+      table_name = random_atom()
+
+      refute table_exists?(table_name)
+    end
+
+    test "doesn't exist, unnamed" do
+      refute table_exists?(make_ref())
+    end
+  end
+end

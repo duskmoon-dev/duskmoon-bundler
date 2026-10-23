@@ -50,3 +50,6 @@ package-lock.json
 
 # Application-local scratch fixtures created by tests.
 /apps/*/tmp/
+
+# Lock the Hologram assets installed by duskmoon_npm.
+!/apps/duskmoon_hologram/assets/package-lock.json

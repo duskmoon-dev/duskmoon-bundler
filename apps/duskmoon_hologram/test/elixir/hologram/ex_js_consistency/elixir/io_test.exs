@@ -1,0 +1,141 @@
+defmodule Hologram.ExJsConsistency.Elixir.IOTest do
+  @moduledoc """
+  IMPORTANT!
+  Each Elixir consistency test has a related JavaScript test in test/javascript/elixir/io_test.mjs
+  Always update both together.
+  """
+
+  use Hologram.Test.BasicCase, async: true
+  import ExUnit.CaptureIO
+
+  @moduletag :consistency
+
+  describe "inspect/1" do
+    test "delegates to inspect/2" do
+      output =
+        capture_io(fn ->
+          # credo:disable-for-next-line Credo.Check.Warning.IoInspect
+          assert IO.inspect(true) == true
+        end)
+
+      assert output == "true\n"
+    end
+  end
+
+  describe "inspect/2" do
+    test "delegates to inspect/3" do
+      output =
+        capture_io(fn ->
+          # credo:disable-for-next-line Credo.Check.Warning.IoInspect
+          assert IO.inspect(%{b: 2, a: 1}, custom_options: [sort_maps: true]) == %{
+                   a: 1,
+                   b: 2
+                 }
+        end)
+
+      assert output == "%{a: 1, b: 2}\n"
+    end
+  end
+
+  # Also see interpreter "inspect" consistency tests
+  describe "inspect/3" do
+    test "outputs inspected term to the :stdio device" do
+      output =
+        capture_io(fn ->
+          # credo:disable-for-next-line Credo.Check.Warning.IoInspect
+          assert IO.inspect(:stdio, %{b: 2, a: 1}, custom_options: [sort_maps: true]) == %{
+                   a: 1,
+                   b: 2
+                 }
+        end)
+
+      assert output == "%{a: 1, b: 2}\n"
+    end
+
+    # The attempted function clauses come from the clause heads the runtime script
+    # registers at bundle load, which unit tests don't run, so the JavaScript twin
+    # asserts the message without them.
+    test "raises FunctionClauseError if the first arg is not an atom or a pid" do
+      expected_msg =
+        build_function_clause_error_msg("IO.inspect/3", [123, :abc, []], [
+          "def inspect(device, item, opts) when (-is_atom(device)- or -is_pid(device)-) and is_list(opts)"
+        ])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        123
+        |> wrap_term()
+        # credo:disable-for-next-line Credo.Check.Warning.IoInspect
+        |> IO.inspect(:abc, [])
+      end
+    end
+
+    test "error frame carries args" do
+      device = wrap_term(123)
+
+      top_frame =
+        try do
+          # credo:disable-for-next-line Credo.Check.Warning.IoInspect
+          IO.inspect(device, :abc, [])
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      # The server implements this function in Elixir code inside io.ex, so its frame
+      # location also carries the corresponding file and line, which the
+      # client doesn't mirror.
+      assert {IO, :inspect, [123, :abc, []], location} = wrap_term(top_frame)
+      assert location[:error_info] == nil
+    end
+  end
+
+  describe "warn/1" do
+    test "handles string message" do
+      output =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          assert IO.warn("my warning") == :ok
+        end)
+
+      assert output =~ "my warning"
+    end
+
+    test "handles iodata message" do
+      output =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          assert IO.warn(["hello", " ", "world"]) == :ok
+        end)
+
+      assert output =~ "hello world"
+    end
+  end
+
+  describe "warn/2" do
+    test "handles string message" do
+      output =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          assert IO.warn("my warning", []) == :ok
+        end)
+
+      assert output =~ "my warning"
+    end
+
+    test "handles iodata message" do
+      output =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          assert IO.warn(["hello", " ", "world"], []) == :ok
+        end)
+
+      assert output =~ "hello world"
+    end
+  end
+
+  describe "warn_once/3" do
+    test "evaluates message function and warns" do
+      output =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          assert IO.warn_once(:my_key, fn -> "my warning" end, 0) == :ok
+        end)
+
+      assert output =~ "my warning"
+    end
+  end
+end

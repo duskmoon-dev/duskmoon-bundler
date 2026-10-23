@@ -1,0 +1,369 @@
+defmodule Hologram.Test.Helpers do
+  import ExUnit.Assertions
+  import Hologram.Commons.Guards, only: [is_regex: 1]
+  import Hologram.Commons.TestUtils, only: [wrap_term: 1]
+  import Hologram.Template, only: [sigil_HOLO: 2]
+
+  alias Hologram.Commons.CryptographicUtils
+  alias Hologram.Commons.ETS
+  alias Hologram.Commons.FileUtils
+  alias Hologram.Commons.ProcessUtils
+  alias Hologram.Commons.StringUtils
+  alias Hologram.Compiler.AST
+  alias Hologram.Compiler.Context
+  alias Hologram.Compiler.Encoder
+  alias Hologram.Compiler.IR
+  alias Hologram.Component
+  alias Hologram.Realtime
+  alias Hologram.Reflection
+  alias Hologram.Server
+  alias Hologram.Template.Parser
+  alias Hologram.Template.Renderer
+  alias Hologram.Template.Renderer.Env
+
+  # See Hologram.Compiler.IR: `%Context{}` defaults read as concrete MapSets and won't unify
+  # with the opaque `MapSet.t()` in the specs these helpers delegate to / pass into.
+  @dialyzer :no_opaque
+
+  defdelegate ast(code), to: AST, as: :for_code
+  defdelegate clean_dir(file_path), to: FileUtils, as: :recreate_dir
+  defdelegate ir(code, context \\ %Context{}), to: IR, as: :for_code
+  defdelegate normalize_newlines(string), to: StringUtils
+  defdelegate parsed_tags(markup), to: Parser, as: :parse_markup
+
+  @doc """
+  Asserts that the given module function call raises the given error (with the given error message).
+  The expected error message must contain the context information that is appended by blame/2.
+  """
+  defmacro assert_error(error_module, expected_msg, fun_or_mfargs)
+
+  defmacro assert_error(error_module, expected_msg, {:fn, _meta, _data} = fun) do
+    quote do
+      try do
+        unquote(fun).()
+        raise "Expected #{inspect(unquote(error_module))} but no error was raised"
+      rescue
+        error in unquote(error_module) ->
+          assert_error_msg(error, unquote(expected_msg))
+      end
+    end
+  end
+
+  defmacro assert_error(error_module, expected_msg, {:{}, _meta, _data} = mfargs) do
+    quote do
+      {module, fun, args} = unquote(mfargs)
+
+      try do
+        apply(module, fun, wrap_term(args))
+        raise "Expected #{inspect(unquote(error_module))} but no error was raised"
+      rescue
+        error in unquote(error_module) ->
+          assert_error_msg(error, unquote(expected_msg))
+      end
+    end
+  end
+
+  defmacro assert_error_msg(error, expected_msg) do
+    quote do
+      error_msg = resolve_error_msg(unquote(error), __STACKTRACE__)
+
+      # is_regex/1 is a guard, so we need to wrap the arg to prevent compilation warnings.
+      if is_regex(wrap_term(unquote(expected_msg))) do
+        assert error_msg =~ unquote(expected_msg)
+      else
+        # wrap_term/1 keeps the Elixir 1.20+ type checker from flagging a distinct-type
+        # comparison here when expected_msg is a regex literal (this branch is dead in that case).
+        assert error_msg == wrap_term(unquote(expected_msg))
+      end
+    end
+  end
+
+  @doc """
+  Builds empty component struct.
+  """
+  @spec build_component_struct() :: Component.t()
+  def build_component_struct do
+    %Component{}
+  end
+
+  @doc """
+  Builds empty server struct.
+  """
+  @spec build_server_struct() :: Server.t()
+  def build_server_struct do
+    %Server{}
+  end
+
+  @doc """
+  Returns how many times the given function is called, in any process, while the given function runs.
+  """
+  @spec count_calls(mfa, (-> any)) :: non_neg_integer
+  def count_calls(mfa, fun) do
+    :erlang.trace_pattern(mfa, true, [:call_count])
+
+    try do
+      fun.()
+      {:call_count, count} = :erlang.trace_info(mfa, :call_count)
+      count
+    after
+      :erlang.trace_pattern(mfa, false, [:call_count])
+    end
+  end
+
+  @doc """
+  Encodes the given Elixir source code to JavaScript.
+  """
+  @spec encode_code(String.t(), Context.t()) :: String.t()
+  def encode_code(code, context \\ %Context{}) do
+    code
+    |> ir(context)
+    |> Encoder.encode_ir(context)
+  end
+
+  @doc """
+  Determines whether the given ETS table exists.
+  """
+  @spec ets_table_exists?(ETS.tid()) :: boolean
+  def ets_table_exists?(table_ref_or_name) do
+    table_ref_or_name
+    |> :ets.info()
+    |> is_list()
+  end
+
+  @doc """
+  Determines whether the given ETS table name has been registered.
+  """
+  @spec ets_table_name_registered?(atom) :: boolean
+  def ets_table_name_registered?(table_name) do
+    # Can't use: table_name |> :ets.whereis() |> is_reference()
+    # because Dialyzer will warn about breaking the opacity of the term.
+    :ets.whereis(table_name) != :undefined
+  end
+
+  @doc """
+  Encodes Elixir source code to JavaScript source code.
+
+  ## Examples
+
+      iex> js("[1, :abc]")
+      "Type.list([Type.integer(1), Type.atom(\"abc\")])"
+  """
+  @spec js(String.t()) :: String.t()
+  def js(code) do
+    code
+    |> ir(%Context{})
+    |> Encoder.encode_ir(%Context{})
+  end
+
+  @doc """
+  Gives the given assets dir the lib's installed JavaScript deps, so that a compile skips
+  `npm install`: copies `package.json` and `package-lock.json` from the lib's assets dir and writes
+  the digest file `Hologram.Compiler.maybe_install_js_deps/2` checks into the given build dir.
+  Returns the lib's `node_modules` path, to be given as the `:node_modules_path` opt.
+  """
+  @spec link_lib_js_deps(String.t(), String.t()) :: String.t()
+  def link_lib_js_deps(assets_dir, build_dir) do
+    lib_assets_dir = Path.join(Reflection.hologram_dep_dir(), "assets")
+
+    File.mkdir_p!(assets_dir)
+    File.mkdir_p!(build_dir)
+
+    for file_name <- ["package.json", "package-lock.json"] do
+      lib_file_path = Path.join(lib_assets_dir, file_name)
+      file_path = Path.join(assets_dir, file_name)
+      File.cp!(lib_file_path, file_path)
+    end
+
+    package_json_digest =
+      lib_assets_dir
+      |> Path.join("package.json")
+      |> File.read!()
+      |> CryptographicUtils.digest(:sha256, :binary)
+
+    package_json_digest_path = Path.join(build_dir, "package_json_digest.bin")
+    File.write!(package_json_digest_path, package_json_digest)
+
+    Path.join(lib_assets_dir, "node_modules")
+  end
+
+  @doc """
+  Determines whether a persistent term with the given key exists.
+  """
+  @spec persistent_term_exists?(any) :: boolean
+  def persistent_term_exists?(key) do
+    key in Enum.map(:persistent_term.get(), fn {name, _value} -> name end)
+  end
+
+  @doc """
+  Determines whether the given process name has been registered.
+  """
+  @spec process_name_registered?(atom) :: boolean
+  def process_name_registered?(name) do
+    name in Process.registered()
+  end
+
+  @doc """
+  Generates a unique random atom.
+  """
+  @spec random_atom() :: atom
+  def random_atom do
+    make_ref()
+    |> inspect()
+    |> String.replace(["#", "<", ".", ">"], "")
+    |> String.replace("Reference", "a")
+    # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+    |> String.to_atom()
+  end
+
+  @doc """
+  Generates a unique random module alias.
+  """
+  @spec random_module() :: module
+  def random_module do
+    make_ref()
+    |> inspect()
+    |> String.replace(["#", "<", ".", ">"], "")
+    |> String.replace("Reference", "M")
+    |> StringUtils.prepend("Elixir.")
+    # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+    |> String.to_atom()
+  end
+
+  @doc """
+  Generates a unique random string.
+  """
+  @spec random_string() :: String.t()
+  def random_string do
+    make_ref()
+    |> inspect()
+    |> String.replace(["#", "<", ".", ">"], "")
+    |> String.replace("Reference", "s")
+  end
+
+  @doc """
+  Returns the HTML for the given component.
+  """
+  @spec render_component(module, %{atom => any}, %{(atom | {any, atom}) => any}) :: String.t()
+  def render_component(module, props, context) do
+    props_dom = Enum.map(props, fn {name, value} -> {to_string(name), [expression: {value}]} end)
+
+    node = {:component, module, props_dom, []}
+
+    {html, _component_structs, _server_struct} =
+      Renderer.render_dom(node, %Renderer.Env{context: context}, %Server{})
+
+    html
+  end
+
+  @doc """
+  Renders the given markup.
+  """
+  @spec render_markup(fun, %{atom => any}, Env.t()) :: String.t()
+  def render_markup(template, vars \\ %{}, env \\ %Env{}) do
+    vars
+    |> template.()
+    |> Renderer.render_dom(env, %Server{})
+    |> elem(0)
+  end
+
+  defmacro resolve_error_msg(error, stacktrace) do
+    quote do
+      {error_with_blame, _stacktrace} =
+        Exception.blame(:error, unquote(error), unquote(stacktrace))
+
+      Exception.message(error_with_blame)
+    end
+  end
+
+  @doc """
+  Generates a fresh session id, subscribes the calling process to its
+  framework-private announce topic, and returns the id so the caller can build
+  matching `%Server{session_id: id}` fixtures.
+  """
+  @spec setup_session_announce_subscription() :: String.t()
+  def setup_session_announce_subscription do
+    id = "test-session-#{:erlang.unique_integer([:positive])}"
+    announce_topic = Realtime.session_announce_topic(id)
+    Phoenix.PubSub.subscribe(Hologram.PubSub, announce_topic)
+
+    id
+  end
+
+  @doc """
+  Subscribes the calling process to a Hologram identity-channel PubSub topic
+  with a unique generated id. Returns the generated id so the caller can build
+  matching channel tuples (e.g. `{:instance, id}`).
+
+  `kind` must be one of `:instance`, `:session`, or `:user`.
+  """
+  @spec subscribe_to_identity_channel(:instance | :session | :user) :: String.t()
+  def subscribe_to_identity_channel(kind) when kind in [:instance, :session, :user] do
+    id = "test-#{kind}-#{:erlang.unique_integer([:positive])}"
+    topic = Realtime.identity_topic(kind, id)
+    Phoenix.PubSub.subscribe(Hologram.PubSub, topic)
+
+    id
+  end
+
+  @doc """
+  Returns the template for the given markup.
+  """
+  defmacro template(markup) do
+    quote do
+      sigil_HOLO(unquote(markup), [])
+    end
+  end
+
+  @doc """
+  Returns unnormalized (pre-normalization) AST of the given module.
+  """
+  @spec unnormalized_ast(module) :: AST.t()
+  def unnormalized_ast(module) do
+    BeamFile.elixir_quoted!(module)
+  end
+
+  @doc """
+  Waits until the specified process is no longer running.
+
+  ## Examples
+
+      iex> wait_for_process_cleanup(:my_process)
+      :ok
+  """
+  @spec wait_for_process_cleanup(atom) :: :ok
+  def wait_for_process_cleanup(name) do
+    if ProcessUtils.running?(name) do
+      :timer.sleep(1)
+      wait_for_process_cleanup(name)
+    else
+      :ok
+    end
+  end
+
+  @doc """
+  Polls `fun` (sleeping ~1 ms between attempts) until it returns a truthy
+  value, then returns `:ok`. Fails the test via `flunk/1` once roughly
+  `timeout_ms` has elapsed without the condition holding, so a never-met
+  condition fails fast with a clear message instead of stalling until the
+  global ExUnit timeout.
+
+  ## Examples
+
+      iex> wait_until(fn -> :ets.lookup(table, key) == [expected] end)
+      :ok
+  """
+  @spec wait_until((-> as_boolean(term)), non_neg_integer) :: :ok
+  def wait_until(fun, timeout_ms \\ 2_000) do
+    cond do
+      fun.() ->
+        :ok
+
+      timeout_ms <= 0 ->
+        flunk("wait_until/2: condition was not met within the timeout")
+
+      true ->
+        :timer.sleep(1)
+        wait_until(fun, timeout_ms - 1)
+    end
+  end
+end

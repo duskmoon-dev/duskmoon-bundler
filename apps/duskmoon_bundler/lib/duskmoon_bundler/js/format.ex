@@ -25,8 +25,10 @@ defmodule DuskmoonBundler.JS.Format do
 
   @atom_values ~w(trailing_comma arrow_parens end_of_line quote_props object_wrap experimental_operator_position embedded_language_formatting)a
 
-  def load_config do
-    case Application.get_env(:duskmoon_bundler, :format) do
+  def load_config(profile \\ nil) do
+    profile_config = if profile, do: Application.get_env(:duskmoon_bundler, profile, []), else: []
+
+    case Keyword.get(profile_config, :format) || Application.get_env(:duskmoon_bundler, :format) do
       nil -> load_json_config()
       opts when is_list(opts) -> opts
     end

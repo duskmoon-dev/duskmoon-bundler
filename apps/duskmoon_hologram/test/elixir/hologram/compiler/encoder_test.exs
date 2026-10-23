@@ -1,0 +1,5608 @@
+defmodule Hologram.Compiler.EncoderTest do
+  use Hologram.Test.BasicCase, async: true
+  import Hologram.Compiler.Encoder, except: [encode_ir: 2]
+
+  alias Hologram.Commons.PLT
+  alias Hologram.Commons.SystemUtils
+  alias Hologram.Compiler.Context
+  alias Hologram.Compiler.IR
+  alias Hologram.Reflection
+
+  # for <<x <- <<1, 2>>>>, do: x
+  @bitstring_generator_comprehension_ir %IR.Comprehension{
+    qualifiers: [
+      %IR.ComprehensionBitstringGenerator{
+        match: %IR.BitstringType{
+          segments: [
+            %IR.BitstringSegment{
+              value: %IR.Variable{name: :x},
+              modifiers: [type: :integer]
+            }
+          ]
+        },
+        body: %IR.BitstringType{
+          segments: [
+            %IR.BitstringSegment{
+              value: %IR.IntegerType{value: 1},
+              modifiers: [type: :integer]
+            },
+            %IR.BitstringSegment{
+              value: %IR.IntegerType{value: 2},
+              modifiers: [type: :integer]
+            }
+          ]
+        }
+      }
+    ],
+    collectable: %IR.ListType{data: []},
+    unique: %IR.AtomType{value: false},
+    mapper: %IR.Variable{name: :x}
+  }
+
+  @erlang_js_dir Path.join([Reflection.hologram_dep_dir(), "assets", "js", "erlang"])
+
+  defdelegate encode_ir(ir, context \\ %Context{}), to: Hologram.Compiler.Encoder
+
+  # :erlang.orelse/2 calls nested to the left over the given operands, the way `or` and `in` nest
+  defp orelse_chain_ir([first_ir | rest_irs]) do
+    Enum.reduce(rest_irs, first_ir, fn operand_ir, acc ->
+      %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :orelse,
+        args: [acc, operand_ir]
+      }
+    end)
+  end
+
+  # :erlang.=:=(left, right)
+  defp strict_equality_ir(left_ir, right_ir) do
+    %IR.RemoteFunctionCall{
+      module: %IR.AtomType{value: :erlang},
+      function: :"=:=",
+      args: [left_ir, right_ir]
+    }
+  end
+
+  describe "anonymous function call" do
+    setup do
+      # my_fun.(1, 2)
+      ir = %IR.AnonymousFunctionCall{
+        function: %IR.Variable{name: :my_fun},
+        args: [
+          %IR.IntegerType{value: 1},
+          %IR.IntegerType{value: 2}
+        ]
+      }
+
+      [ir: ir]
+    end
+
+    test "sync", %{ir: ir} do
+      assert encode_ir(ir) ==
+               "Interpreter.callAnonymousFunction(context.vars.my_fun, [Type.integer(1n), Type.integer(2n)])"
+    end
+
+    test "async", %{ir: ir} do
+      assert encode_ir(ir, %Context{async?: true}) ==
+               "(await Interpreter.callAnonymousFunction(context.vars.my_fun, [Type.integer(1n), Type.integer(2n)]))"
+    end
+
+    test "records the line it is called on", %{ir: ir} do
+      assert encode_ir(%{ir | line: 123}) ==
+               "(Interpreter.setFrameLine(123), Interpreter.callAnonymousFunction(context.vars.my_fun, [Type.integer(1n), Type.integer(2n)]))"
+    end
+
+    test "records the line before awaiting an async call", %{ir: ir} do
+      assert encode_ir(%{ir | line: 123}, %Context{async?: true}) ==
+               "(Interpreter.setFrameLine(123), (await Interpreter.callAnonymousFunction(context.vars.my_fun, [Type.integer(1n), Type.integer(2n)])))"
+    end
+  end
+
+  describe "anonymous function type" do
+    test "with single clause" do
+      # fn x -> :expr end
+      ir = %IR.AnonymousFunctionType{
+        arity: 1,
+        captured_module: nil,
+        captured_function: nil,
+        clauses: [
+          %IR.FunctionClause{
+            params: [%IR.Variable{name: :x}],
+            guards: [],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :expr}]
+            }
+          }
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        Type.anonymousFunction(1, [{params: (context) => [Type.variablePattern("x")], guards: [], body: (context) => {
+        return Type.atom("expr");
+        }}], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "with multiple clauses" do
+      # fn
+      #   x -> :expr_a
+      #   y -> :expr_b
+      # end
+      ir = %IR.AnonymousFunctionType{
+        arity: 1,
+        captured_module: nil,
+        captured_function: nil,
+        clauses: [
+          %IR.FunctionClause{
+            params: [%IR.Variable{name: :x}],
+            guards: [],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :expr_a}]
+            }
+          },
+          %IR.FunctionClause{
+            params: [%IR.Variable{name: :y}],
+            guards: [],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :expr_b}]
+            }
+          }
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        Type.anonymousFunction(1, [{params: (context) => [Type.variablePattern("x")], guards: [], body: (context) => {
+        return Type.atom("expr_a");
+        }}, {params: (context) => [Type.variablePattern("y")], guards: [], body: (context) => {
+        return Type.atom("expr_b");
+        }}], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "with Elixir module/function capture info" do
+      # credo:disable-for-lines:27 Credo.Check.Design.DuplicatedCode
+      # &Calendar.ISO.parse_date/2
+      ir = %IR.AnonymousFunctionType{
+        arity: 2,
+        captured_module: Calendar.ISO,
+        captured_function: :parse_date,
+        clauses: [
+          %IR.FunctionClause{
+            params: [
+              %IR.Variable{name: :"$1"},
+              %IR.Variable{name: :"$2"}
+            ],
+            guards: [],
+            body: %IR.Block{
+              expressions: [
+                %IR.RemoteFunctionCall{
+                  module: %IR.AtomType{value: Calendar.ISO},
+                  function: :parse_date,
+                  args: [
+                    %IR.Variable{name: :"$1"},
+                    %IR.Variable{name: :"$2"}
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        Type.functionCapture("Calendar.ISO", "parse_date", 2, [{params: (context) => [Type.variablePattern("$1"), Type.variablePattern("$2")], guards: [], body: (context) => {
+        return Elixir_Calendar_ISO["parse_date/2"](context.vars["$1"], context.vars["$2"]);
+        }}], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "with Elixir module/function capture info answered from the IR PLT" do
+      # &Aaa.Bbb.fun/0, a module that only the IR PLT knows
+      ir_plt = PLT.start()
+      PLT.put(ir_plt, Aaa.Bbb, :ir)
+
+      ir = %IR.AnonymousFunctionType{
+        arity: 0,
+        captured_module: Aaa.Bbb,
+        captured_function: :fun,
+        clauses: [
+          %IR.FunctionClause{
+            params: [],
+            guards: [],
+            body: %IR.Block{
+              expressions: [
+                %IR.RemoteFunctionCall{
+                  module: %IR.AtomType{value: Aaa.Bbb},
+                  function: :fun,
+                  args: []
+                }
+              ]
+            }
+          }
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        Type.functionCapture("Aaa.Bbb", "fun", 0, [{params: (context) => [], guards: [], body: (context) => {
+        return Elixir_Aaa_Bbb["fun/0"]();
+        }}], context)\
+        """)
+
+      assert encode_ir(ir, %Context{ir_plt: ir_plt}) == expected
+    end
+
+    test "with Erlang module/function capture info" do
+      # &:persistent_term.get/2
+      ir = %IR.AnonymousFunctionType{
+        arity: 2,
+        captured_module: :persistent_term,
+        captured_function: :get,
+        clauses: [
+          %IR.FunctionClause{
+            params: [
+              %IR.Variable{name: :"$1"},
+              %IR.Variable{name: :"$2"}
+            ],
+            guards: [],
+            body: %IR.Block{
+              expressions: [
+                %IR.RemoteFunctionCall{
+                  module: %IR.AtomType{value: :persistent_term},
+                  function: :get,
+                  args: [
+                    %IR.Variable{name: :"$1"},
+                    %IR.Variable{name: :"$2"}
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        Type.functionCapture(":persistent_term", "get", 2, [{params: (context) => [Type.variablePattern("$1"), Type.variablePattern("$2")], guards: [], body: (context) => {
+        return Erlang_Persistent_Term["get/2"](context.vars["$1"], context.vars["$2"]);
+        }}], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "async parent, sync body — body stays sync" do
+      # fn x -> :expr end
+      ir = %IR.AnonymousFunctionType{
+        arity: 1,
+        captured_module: nil,
+        captured_function: nil,
+        clauses: [
+          %IR.FunctionClause{
+            params: [%IR.Variable{name: :x}],
+            guards: [],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :expr}]
+            }
+          }
+        ]
+      }
+
+      context = %Context{
+        async?: true,
+        async_mfas: MapSet.new([{Aaa.Bbb, :some_async, 1}]),
+        module: Aaa.Bbb
+      }
+
+      expected =
+        normalize_newlines("""
+        Type.anonymousFunction(1, [{params: (context) => [Type.variablePattern("x")], guards: [], body: (context) => {
+        return Type.atom("expr");
+        }}], context)\
+        """)
+
+      assert encode_ir(ir, context) == expected
+    end
+
+    test "async parent, body with async remote call — body becomes async" do
+      # fn x -> Aaa.Bbb.some_async(x) end
+      ir = %IR.AnonymousFunctionType{
+        arity: 1,
+        captured_module: nil,
+        captured_function: nil,
+        clauses: [
+          %IR.FunctionClause{
+            params: [%IR.Variable{name: :x}],
+            guards: [],
+            body: %IR.Block{
+              expressions: [
+                %IR.RemoteFunctionCall{
+                  module: %IR.AtomType{value: Aaa.Bbb},
+                  function: :some_async,
+                  args: [%IR.Variable{name: :x}]
+                }
+              ]
+            }
+          }
+        ]
+      }
+
+      context = %Context{
+        async?: true,
+        async_mfas: MapSet.new([{Aaa.Bbb, :some_async, 1}]),
+        module: Aaa.Bbb
+      }
+
+      expected =
+        normalize_newlines("""
+        Type.anonymousFunction(1, [{params: (context) => [Type.variablePattern("x")], guards: [], body: async (context) => {
+        return (await Elixir_Aaa_Bbb["some_async/1"](context.vars.x));
+        }}], context)\
+        """)
+
+      assert encode_ir(ir, context) == expected
+    end
+
+    test "async parent, body with async local call — body becomes async" do
+      # fn x -> some_async(x) end
+      ir = %IR.AnonymousFunctionType{
+        arity: 1,
+        captured_module: nil,
+        captured_function: nil,
+        clauses: [
+          %IR.FunctionClause{
+            params: [%IR.Variable{name: :x}],
+            guards: [],
+            body: %IR.Block{
+              expressions: [
+                %IR.LocalFunctionCall{
+                  function: :some_async,
+                  args: [%IR.Variable{name: :x}]
+                }
+              ]
+            }
+          }
+        ]
+      }
+
+      context = %Context{
+        async?: true,
+        async_mfas: MapSet.new([{Aaa.Bbb, :some_async, 1}]),
+        module: Aaa.Bbb
+      }
+
+      expected =
+        normalize_newlines("""
+        Type.anonymousFunction(1, [{params: (context) => [Type.variablePattern("x")], guards: [], body: async (context) => {
+        return (await Elixir_Aaa_Bbb["some_async/1"](context.vars.x));
+        }}], context)\
+        """)
+
+      assert encode_ir(ir, context) == expected
+    end
+
+    test "sync parent, body with async call — body becomes async" do
+      # fn x -> Aaa.Bbb.some_async(x) end
+      # Parent function is not async, but async_mfas is non-empty.
+      # The anon fn must independently detect its own async calls.
+      ir = %IR.AnonymousFunctionType{
+        arity: 1,
+        captured_module: nil,
+        captured_function: nil,
+        clauses: [
+          %IR.FunctionClause{
+            params: [%IR.Variable{name: :x}],
+            guards: [],
+            body: %IR.Block{
+              expressions: [
+                %IR.RemoteFunctionCall{
+                  module: %IR.AtomType{value: Aaa.Bbb},
+                  function: :some_async,
+                  args: [%IR.Variable{name: :x}]
+                }
+              ]
+            }
+          }
+        ]
+      }
+
+      context = %Context{
+        async?: false,
+        async_mfas: MapSet.new([{Aaa.Bbb, :some_async, 1}]),
+        module: Aaa.Bbb
+      }
+
+      expected =
+        normalize_newlines("""
+        Type.anonymousFunction(1, [{params: (context) => [Type.variablePattern("x")], guards: [], body: async (context) => {
+        return (await Elixir_Aaa_Bbb["some_async/1"](context.vars.x));
+        }}], context)\
+        """)
+
+      assert encode_ir(ir, context) == expected
+    end
+
+    test "function capture variant stays sync when no async calls" do
+      # credo:disable-for-lines:27 Credo.Check.Design.DuplicatedCode
+      # &Calendar.ISO.parse_date/2  (inside async context, but body has no async calls)
+      ir = %IR.AnonymousFunctionType{
+        arity: 2,
+        captured_module: Calendar.ISO,
+        captured_function: :parse_date,
+        clauses: [
+          %IR.FunctionClause{
+            params: [
+              %IR.Variable{name: :"$1"},
+              %IR.Variable{name: :"$2"}
+            ],
+            guards: [],
+            body: %IR.Block{
+              expressions: [
+                %IR.RemoteFunctionCall{
+                  module: %IR.AtomType{value: Calendar.ISO},
+                  function: :parse_date,
+                  args: [
+                    %IR.Variable{name: :"$1"},
+                    %IR.Variable{name: :"$2"}
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+
+      context = %Context{
+        async?: true,
+        async_mfas: MapSet.new([{Aaa.Bbb, :some_async, 1}]),
+        module: Aaa.Bbb
+      }
+
+      expected =
+        normalize_newlines("""
+        Type.functionCapture("Calendar.ISO", "parse_date", 2, [{params: (context) => [Type.variablePattern("$1"), Type.variablePattern("$2")], guards: [], body: (context) => {
+        return Elixir_Calendar_ISO["parse_date/2"](context.vars["$1"], context.vars["$2"]);
+        }}], context)\
+        """)
+
+      assert encode_ir(ir, context) == expected
+    end
+
+    test "function capture variant becomes async when body has async call" do
+      # &Calendar.ISO.some_async/1
+      ir = %IR.AnonymousFunctionType{
+        arity: 1,
+        captured_module: Calendar.ISO,
+        captured_function: :some_async,
+        clauses: [
+          %IR.FunctionClause{
+            params: [%IR.Variable{name: :"$1"}],
+            guards: [],
+            body: %IR.Block{
+              expressions: [
+                %IR.RemoteFunctionCall{
+                  module: %IR.AtomType{value: Calendar.ISO},
+                  function: :some_async,
+                  args: [%IR.Variable{name: :"$1"}]
+                }
+              ]
+            }
+          }
+        ]
+      }
+
+      context = %Context{
+        async?: true,
+        async_mfas: MapSet.new([{Calendar.ISO, :some_async, 1}]),
+        module: Calendar.ISO
+      }
+
+      expected =
+        normalize_newlines("""
+        Type.functionCapture("Calendar.ISO", "some_async", 1, [{params: (context) => [Type.variablePattern("$1")], guards: [], body: async (context) => {
+        return (await Elixir_Calendar_ISO["some_async/1"](context.vars["$1"]));
+        }}], context)\
+        """)
+
+      assert encode_ir(ir, context) == expected
+    end
+
+    test "nested: async call in inner does not make outer async" do
+      # fn x -> fn y -> Aaa.Bbb.some_async(y) end end
+      ir = %IR.AnonymousFunctionType{
+        arity: 1,
+        captured_module: nil,
+        captured_function: nil,
+        clauses: [
+          %IR.FunctionClause{
+            params: [%IR.Variable{name: :x}],
+            guards: [],
+            body: %IR.Block{
+              expressions: [
+                %IR.AnonymousFunctionType{
+                  arity: 1,
+                  captured_module: nil,
+                  captured_function: nil,
+                  clauses: [
+                    %IR.FunctionClause{
+                      params: [%IR.Variable{name: :y}],
+                      guards: [],
+                      body: %IR.Block{
+                        expressions: [
+                          %IR.RemoteFunctionCall{
+                            module: %IR.AtomType{value: Aaa.Bbb},
+                            function: :some_async,
+                            args: [%IR.Variable{name: :y}]
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+
+      context = %Context{
+        async?: true,
+        async_mfas: MapSet.new([{Aaa.Bbb, :some_async, 1}]),
+        module: Aaa.Bbb
+      }
+
+      expected =
+        normalize_newlines("""
+        Type.anonymousFunction(1, [{params: (context) => [Type.variablePattern("x")], guards: [], body: (context) => {
+        return Type.anonymousFunction(1, [{params: (context) => [Type.variablePattern("y")], guards: [], body: async (context) => {
+        return (await Elixir_Aaa_Bbb["some_async/1"](context.vars.y));
+        }}], context);
+        }}], context)\
+        """)
+
+      assert encode_ir(ir, context) == expected
+    end
+
+    test "names the function after the definition it is encoded in" do
+      # fn x -> x end
+      ir = %IR.AnonymousFunctionType{
+        arity: 1,
+        captured_function: nil,
+        captured_module: nil,
+        clauses: [
+          %IR.FunctionClause{
+            params: [%IR.Variable{name: :x}],
+            guards: [],
+            body: %IR.Block{expressions: [%IR.Variable{name: :x}]}
+          }
+        ]
+      }
+
+      context = %Context{arity: 2, function: :my_fun, module: Aaa.Bbb}
+
+      assert encode_ir(ir, context) =~ ~s/, context, "-my_fun\/2-fun-0-")/
+    end
+
+    test "leaves the function unnamed outside a definition" do
+      # fn x -> x end
+      ir = %IR.AnonymousFunctionType{
+        arity: 1,
+        captured_function: nil,
+        captured_module: nil,
+        clauses: [
+          %IR.FunctionClause{
+            params: [%IR.Variable{name: :x}],
+            guards: [],
+            body: %IR.Block{expressions: [%IR.Variable{name: :x}]}
+          }
+        ]
+      }
+
+      assert encode_ir(ir, %Context{module: Aaa.Bbb}) =~ ", context)"
+    end
+  end
+
+  describe "atom type" do
+    test "nil" do
+      # nil
+      ir = %IR.AtomType{value: nil}
+
+      assert encode_ir(ir) == ~s/Type.atom("nil")/
+    end
+
+    test "false" do
+      # false
+      ir = %IR.AtomType{value: false}
+
+      assert encode_ir(ir) == ~s/Type.atom("false")/
+    end
+
+    test "true" do
+      # true
+      ir = %IR.AtomType{value: true}
+
+      assert encode_ir(ir) == ~s/Type.atom("true")/
+    end
+
+    test "non-nil and non-boolean" do
+      # :"aa\"bb\ncc"
+      ir = %IR.AtomType{value: :"aa\"bb\ncc"}
+
+      assert encode_ir(ir) == ~s/Type.atom("aa\\"bb\\ncc")/
+    end
+  end
+
+  describe "bitstring pattern" do
+    @context %Context{pattern?: true}
+
+    test "no segments" do
+      # <<>>
+      ir = %IR.BitstringType{segments: []}
+
+      assert encode_ir(ir, @context) == "Type.bitstringPattern([])"
+    end
+
+    test "single segment" do
+      # <<1>>
+      ir = %IR.BitstringType{
+        segments: [
+          %IR.BitstringSegment{
+            value: %IR.IntegerType{value: 1},
+            modifiers: [type: :integer]
+          }
+        ]
+      }
+
+      assert encode_ir(ir, @context) ==
+               ~s/Type.bitstringPattern([Type.bitstringSegment(Type.integer(1n), {type: "integer"})])/
+    end
+
+    test "multiple segments" do
+      # <<1, 2>>
+      ir = %IR.BitstringType{
+        segments: [
+          %IR.BitstringSegment{
+            value: %IR.IntegerType{value: 1},
+            modifiers: [type: :integer]
+          },
+          %IR.BitstringSegment{
+            value: %IR.IntegerType{value: 2},
+            modifiers: [type: :integer]
+          }
+        ]
+      }
+
+      assert encode_ir(ir, @context) ==
+               ~s/Type.bitstringPattern([Type.bitstringSegment(Type.integer(1n), {type: "integer"}), Type.bitstringSegment(Type.integer(2n), {type: "integer"})])/
+    end
+  end
+
+  describe "bitstring type" do
+    @context %Context{pattern?: false}
+
+    test "no segments" do
+      # <<>>
+      ir = %IR.BitstringType{segments: []}
+
+      assert encode_ir(ir, @context) == "Type.bitstring([])"
+    end
+
+    test "single segment" do
+      # <<1>>
+      ir = %IR.BitstringType{
+        segments: [
+          %IR.BitstringSegment{
+            value: %IR.IntegerType{value: 1},
+            modifiers: [type: :integer]
+          }
+        ]
+      }
+
+      assert encode_ir(ir, @context) ==
+               ~s/Type.bitstring([Type.bitstringSegment(Type.integer(1n), {type: "integer"})])/
+    end
+
+    test "multiple segments" do
+      # <<1, 2>>
+      ir = %IR.BitstringType{
+        segments: [
+          %IR.BitstringSegment{
+            value: %IR.IntegerType{value: 1},
+            modifiers: [type: :integer]
+          },
+          %IR.BitstringSegment{
+            value: %IR.IntegerType{value: 2},
+            modifiers: [type: :integer]
+          }
+        ]
+      }
+
+      assert encode_ir(ir, @context) ==
+               ~s/Type.bitstring([Type.bitstringSegment(Type.integer(1n), {type: "integer"}), Type.bitstringSegment(Type.integer(2n), {type: "integer"})])/
+    end
+
+    test "records the line the bitstring is built on" do
+      # <<1>>
+      ir = %IR.BitstringType{
+        segments: [%IR.BitstringSegment{value: %IR.IntegerType{value: 1}, modifiers: []}],
+        line: 123
+      }
+
+      assert encode_ir(ir) ==
+               "(Interpreter.setFrameLine(123), Type.bitstring([Type.bitstringSegment(Type.integer(1n), {})]))"
+    end
+
+    test "records no line for a bitstring pattern, which builds nothing" do
+      # <<1>>
+      ir = %IR.BitstringType{
+        segments: [%IR.BitstringSegment{value: %IR.IntegerType{value: 1}, modifiers: []}],
+        line: 123
+      }
+
+      assert encode_ir(ir, %Context{pattern?: true}) ==
+               "Type.bitstringPattern([Type.bitstringSegment(Type.integer(1n), {})])"
+    end
+  end
+
+  describe "bitstring segment" do
+    # If no type modifier is specified explicitely, a default one is given based on the value type
+    test "only type modifier specified" do
+      # <<123>>
+      ir = %IR.BitstringSegment{
+        value: %IR.IntegerType{value: 123},
+        modifiers: [type: :integer]
+      }
+
+      assert encode_ir(ir) == ~s/Type.bitstringSegment(Type.integer(123n), {type: "integer"})/
+    end
+
+    test "all modifiers specified" do
+      # <<123::integer-size(16)-unit(1)-signed-big>>
+      ir = %IR.BitstringSegment{
+        value: %IR.IntegerType{value: 123},
+        modifiers: [
+          type: :integer,
+          size: %IR.IntegerType{value: 16},
+          unit: 1,
+          signedness: :signed,
+          endianness: :big
+        ]
+      }
+
+      assert encode_ir(ir) ==
+               ~s/Type.bitstringSegment(Type.integer(123n), {type: "integer", size: Type.integer(16n), unit: 1n, signedness: "signed", endianness: "big"})/
+    end
+
+    test "single modifier specified" do
+      # <<123::big>>
+      ir = %IR.BitstringSegment{
+        value: %IR.IntegerType{value: 123},
+        modifiers: [type: :integer, endianness: :big]
+      }
+
+      assert encode_ir(ir) ==
+               ~s/Type.bitstringSegment(Type.integer(123n), {type: "integer", endianness: "big"})/
+    end
+
+    test "from string type" do
+      # <<"abc">>
+      ir = %IR.BitstringSegment{value: %IR.StringType{value: "abc"}, modifiers: [type: "utf8"]}
+
+      assert encode_ir(ir) ==
+               ~s/Type.bitstringSegment(Type.string(\"abc\"), {type: "utf8"})/
+    end
+
+    test "from string type that is not valid UTF-8" do
+      # <<255>> - the segment Macro.escape makes of the byte-aligned part of a bitstring.
+      ir = %IR.BitstringSegment{
+        value: %IR.StringType{value: <<255>>},
+        modifiers: [type: :binary]
+      }
+
+      assert encode_ir(ir) ==
+               ~s/Type.bitstringSegment(Type.bitstring("ff", "hex"), {type: "binary"})/
+    end
+
+    test "from non-string type" do
+      # <<123::big>>
+      ir = %IR.BitstringSegment{
+        value: %IR.IntegerType{value: 123},
+        modifiers: [type: :integer, endianness: :big]
+      }
+
+      assert encode_ir(ir) ==
+               ~s/Type.bitstringSegment(Type.integer(123n), {type: "integer", endianness: "big"})/
+    end
+  end
+
+  describe "block" do
+    test "empty" do
+      # do
+      # end
+      ir = %IR.Block{expressions: []}
+
+      expected =
+        normalize_newlines("""
+        ((context) => {
+        return Type.atom("nil");
+        })(context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "single expression" do
+      # do
+      #   1
+      # end
+      ir = %IR.Block{
+        expressions: [
+          %IR.IntegerType{value: 1}
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        ((context) => {
+        return Type.integer(1n);
+        })(context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "multiple expressions" do
+      # do
+      #   1
+      #   2
+      # end
+      ir = %IR.Block{
+        expressions: [
+          %IR.IntegerType{value: 1},
+          %IR.IntegerType{value: 2}
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        ((context) => {
+        Type.integer(1n);
+        return Type.integer(2n);
+        })(context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "the last expression in the block, having a nested match operator" do
+      # x + (y = 123)
+      ir = %IR.Block{
+        expressions: [
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :+,
+            args: [
+              %IR.Variable{name: :x},
+              %IR.MatchOperator{left: %IR.Variable{name: :y}, right: %IR.IntegerType{value: 123}}
+            ]
+          }
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        ((context) => {
+        globalThis.Hologram.return = Erlang["+/2"](context.vars.x, Interpreter.matchOperator(Type.integer(123n), Type.variablePattern("y"), context));
+        Interpreter.updateVarsToMatchedValues(context);
+        return globalThis.Hologram.return;
+        })(context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "the last expression in the block, not having a nested match operator" do
+      # x + y
+      ir = %IR.Block{
+        expressions: [
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :+,
+            args: [
+              %IR.Variable{name: :x},
+              %IR.Variable{name: :y}
+            ]
+          }
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        ((context) => {
+        return Erlang["+/2"](context.vars.x, context.vars.y);
+        })(context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "not the last expression in the block, having a nested match operator" do
+      # x + (y = 123)
+      # :ok
+      ir = %IR.Block{
+        expressions: [
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :+,
+            args: [
+              %IR.Variable{name: :x},
+              %IR.MatchOperator{left: %IR.Variable{name: :y}, right: %IR.IntegerType{value: 123}}
+            ]
+          },
+          %IR.AtomType{value: :ok}
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        ((context) => {
+        Erlang["+/2"](context.vars.x, Interpreter.matchOperator(Type.integer(123n), Type.variablePattern("y"), context));
+        Interpreter.updateVarsToMatchedValues(context);
+        return Type.atom("ok");
+        })(context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "not the last expression in the block, not having a nested match operator" do
+      # x + y
+      # :ok
+      ir = %IR.Block{
+        expressions: [
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :+,
+            args: [
+              %IR.Variable{name: :x},
+              %IR.Variable{name: :y}
+            ]
+          },
+          %IR.AtomType{value: :ok}
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        ((context) => {
+        Erlang["+/2"](context.vars.x, context.vars.y);
+        return Type.atom("ok");
+        })(context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "as a function argument" do
+      # my_fun(1, (x = 2; x + 3))
+      ir = %IR.LocalFunctionCall{
+        function: :my_fun,
+        args: [
+          %IR.IntegerType{value: 1},
+          %IR.Block{
+            expressions: [
+              %IR.MatchOperator{
+                left: %IR.Variable{name: :x},
+                right: %IR.IntegerType{value: 2}
+              },
+              %IR.RemoteFunctionCall{
+                module: %IR.AtomType{value: :erlang},
+                function: :+,
+                args: [
+                  %IR.Variable{name: :x},
+                  %IR.IntegerType{value: 3}
+                ]
+              }
+            ]
+          }
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        Erlang_["my_fun/2"](Type.integer(1n), ((context) => {
+        Interpreter.matchOperator(Type.integer(2n), Type.variablePattern("x"), context);
+        Interpreter.updateVarsToMatchedValues(context);
+        return Erlang["+/2"](context.vars.x, Type.integer(3n));
+        })(context))\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "async" do
+      ir = %IR.Block{
+        expressions: [
+          %IR.IntegerType{value: 1},
+          %IR.IntegerType{value: 2}
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        (await (async (context) => {
+        Type.integer(1n);
+        return Type.integer(2n);
+        })(context))\
+        """)
+
+      assert encode_ir(ir, %Context{async?: true}) == expected
+    end
+  end
+
+  describe "case" do
+    test "single-expression condition" do
+      # case my_var do
+      #   x when x == 100 -> :ok
+      #   y -> y
+      # end
+      #
+      # case my_var do
+      #   x when :erlang.==(x, 100) -> :ok
+      #   y -> y
+      # end
+      ir = %IR.Case{
+        condition: %IR.Variable{name: :my_var},
+        clauses: [
+          %IR.Clause{
+            match: %IR.Variable{name: :x},
+            guards: [
+              %IR.RemoteFunctionCall{
+                module: %IR.AtomType{value: :erlang},
+                function: :==,
+                args: [
+                  %IR.Variable{name: :x},
+                  %IR.IntegerType{value: 100}
+                ]
+              }
+            ],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :ok}]
+            }
+          },
+          %IR.Clause{
+            match: %IR.Variable{name: :y},
+            guards: [],
+            body: %IR.Block{
+              expressions: [%IR.Variable{name: :y}]
+            }
+          }
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.case(context.vars.my_var, [{match: Type.variablePattern("x"), guards: [(context) => Erlang["==/2"](context.vars.x, Type.integer(100n))], body: (context) => {
+        return Type.atom("ok");
+        }}, {match: Type.variablePattern("y"), guards: [], body: (context) => {
+        return context.vars.y;
+        }}], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "multiple-expression condition" do
+      # case (1; 2) do
+      #   2 -> :ok
+      # end
+      ir = %IR.Case{
+        condition: %IR.Block{
+          expressions: [
+            %IR.IntegerType{value: 1},
+            %IR.IntegerType{value: 2}
+          ]
+        },
+        clauses: [
+          %IR.Clause{
+            match: %IR.IntegerType{value: 2},
+            guards: [],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :ok}]
+            }
+          }
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.case((context) => {
+        Type.integer(1n);
+        return Type.integer(2n);
+        }, [{match: Type.integer(2n), guards: [], body: (context) => {
+        return Type.atom("ok");
+        }}], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "async" do
+      ir = %IR.Case{
+        condition: %IR.Variable{name: :my_var},
+        clauses: [
+          %IR.Clause{
+            match: %IR.Variable{name: :x},
+            guards: [],
+            body: %IR.Block{
+              expressions: [%IR.Variable{name: :x}]
+            }
+          }
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        (await Interpreter.asyncCase(context.vars.my_var, [{match: Type.variablePattern("x"), guards: [], body: async (context) => {
+        return context.vars.x;
+        }}], context))\
+        """)
+
+      assert encode_ir(ir, %Context{async?: true}) == expected
+    end
+
+    test "records the line the case is on" do
+      # case my_var do
+      #   x -> x
+      # end
+      ir = %IR.Case{
+        condition: %IR.Variable{name: :my_var},
+        clauses: [
+          %IR.Clause{
+            match: %IR.Variable{name: :x},
+            guards: [],
+            body: %IR.Block{expressions: [%IR.Variable{name: :x}]}
+          }
+        ],
+        line: 123
+      }
+
+      result = encode_ir(ir)
+
+      assert String.starts_with?(
+               result,
+               "(Interpreter.setFrameLine(123), Interpreter.case(context.vars.my_var, "
+             )
+    end
+  end
+
+  describe "clause" do
+    test "no guards" do
+      # case 1 do
+      #   x -> 1
+      # end
+      ir = %IR.Clause{
+        match: %IR.Variable{name: :x},
+        guards: [],
+        body: %IR.Block{
+          expressions: [%IR.IntegerType{value: 1}]
+        }
+      }
+
+      assert encode_ir(ir) ==
+               "{match: Type.variablePattern(\"x\"), guards: [], body: (context) => {\nreturn Type.integer(1n);\n}}"
+    end
+
+    test "single guard" do
+      # case 1 do
+      #   x when y -> 1
+      # end
+      ir = %IR.Clause{
+        match: %IR.Variable{name: :x},
+        guards: [%IR.Variable{name: :y}],
+        body: %IR.Block{
+          expressions: [%IR.IntegerType{value: 1}]
+        }
+      }
+
+      assert encode_ir(ir) ==
+               "{match: Type.variablePattern(\"x\"), guards: [(context) => context.vars.y], body: (context) => {\nreturn Type.integer(1n);\n}}"
+    end
+
+    test "multiple guards" do
+      # case 1 do
+      #   x when y when z -> 1
+      # end
+      ir = %IR.Clause{
+        match: %IR.Variable{name: :x},
+        guards: [%IR.Variable{name: :y}, %IR.Variable{name: :z}],
+        body: %IR.Block{
+          expressions: [%IR.IntegerType{value: 1}]
+        }
+      }
+
+      assert encode_ir(ir) ==
+               "{match: Type.variablePattern(\"x\"), guards: [(context) => context.vars.y, (context) => context.vars.z], body: (context) => {\nreturn Type.integer(1n);\n}}"
+    end
+
+    # In a param both sides of a match are patterns, so neither is a value the
+    # other is matched against - the argument is matched against each of them.
+    test "with match operator in param, variable on the left" do
+      # (x = %{a: 1}) do
+      #  :ok
+      ir = %IR.FunctionClause{
+        params: [
+          %IR.MatchOperator{
+            left: %IR.Variable{name: :x},
+            right: %IR.MapType{
+              data: [{%IR.AtomType{value: :a}, %IR.IntegerType{value: 1}}]
+            }
+          }
+        ],
+        guards: [],
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :ok}]
+        }
+      }
+
+      expected =
+        normalize_newlines("""
+        {params: (context) => [Type.matchPattern(Type.variablePattern("x"), Type.map([[Type.atom("a"), Type.integer(1n)]]))], guards: [], body: (context) => {
+        return Type.atom("ok");
+        }}\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "with match operator in param, variable on the right" do
+      # (%{a: 1} = x) do
+      #  :ok
+      ir = %IR.FunctionClause{
+        params: [
+          %IR.MatchOperator{
+            left: %IR.MapType{
+              data: [{%IR.AtomType{value: :a}, %IR.IntegerType{value: 1}}]
+            },
+            right: %IR.Variable{name: :x}
+          }
+        ],
+        guards: [],
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :ok}]
+        }
+      }
+
+      expected =
+        normalize_newlines("""
+        {params: (context) => [Type.matchPattern(Type.map([[Type.atom("a"), Type.integer(1n)]]), Type.variablePattern("x"))], guards: [], body: (context) => {
+        return Type.atom("ok");
+        }}\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "async — guards stay sync, body becomes async" do
+      ir = %IR.Clause{
+        match: %IR.Variable{name: :x},
+        guards: [%IR.Variable{name: :y}],
+        body: %IR.Block{
+          expressions: [%IR.IntegerType{value: 1}]
+        }
+      }
+
+      assert encode_ir(ir, %Context{async?: true}) ==
+               "{match: Type.variablePattern(\"x\"), guards: [(context) => context.vars.y], body: async (context) => {\nreturn Type.integer(1n);\n}}"
+    end
+  end
+
+  describe "comprehension" do
+    test "sync" do
+      # for x when x < 3 <- [1, 2],
+      #     is_integer(x),
+      #     y when y < 5 <- [3, 4],
+      #     into: %{},
+      #     uniq: true,
+      #     do: {x, y}
+      #
+      # for x when :erlang.<(x, 3) <- [1, 2],
+      #     :erlang.is_integer(x),
+      #     y when :erlang.<(y, 5) <- [3, 4],
+      #     into: %{},
+      #     uniq: true,
+      #     do: {x, y}
+
+      ir = %IR.Comprehension{
+        qualifiers: [
+          %IR.Clause{
+            match: %IR.Variable{name: :x},
+            guards: [
+              %IR.RemoteFunctionCall{
+                module: %IR.AtomType{value: :erlang},
+                function: :<,
+                args: [
+                  %IR.Variable{name: :x},
+                  %IR.IntegerType{value: 3}
+                ]
+              }
+            ],
+            body: %IR.ListType{
+              data: [
+                %IR.IntegerType{value: 1},
+                %IR.IntegerType{value: 2}
+              ]
+            }
+          },
+          %IR.ComprehensionFilter{
+            expression: %IR.RemoteFunctionCall{
+              module: %IR.AtomType{value: :erlang},
+              function: :is_integer,
+              args: [%IR.Variable{name: :x}]
+            }
+          },
+          %IR.Clause{
+            match: %IR.Variable{name: :y},
+            guards: [
+              %IR.RemoteFunctionCall{
+                module: %IR.AtomType{value: :erlang},
+                function: :<,
+                args: [
+                  %IR.Variable{name: :y},
+                  %IR.IntegerType{value: 5}
+                ]
+              }
+            ],
+            body: %IR.ListType{
+              data: [
+                %IR.IntegerType{value: 3},
+                %IR.IntegerType{value: 4}
+              ]
+            }
+          }
+        ],
+        collectable: %IR.MapType{data: []},
+        unique: %IR.AtomType{value: true},
+        mapper: %IR.TupleType{
+          data: [
+            %IR.Variable{name: :x},
+            %IR.Variable{name: :y}
+          ]
+        }
+      }
+
+      assert encode_ir(ir) ==
+               "Interpreter.comprehension([{type: \"generator\", match: Type.variablePattern(\"x\"), guards: [(context) => Erlang[\"</2\"](context.vars.x, Type.integer(3n))], body: (context) => Type.list([Type.integer(1n), Type.integer(2n)])}, {type: \"filter\", filter: (context) => Erlang[\"is_integer/1\"](context.vars.x)}, {type: \"generator\", match: Type.variablePattern(\"y\"), guards: [(context) => Erlang[\"</2\"](context.vars.y, Type.integer(5n))], body: (context) => Type.list([Type.integer(3n), Type.integer(4n)])}], Type.map([]), true, (context) => Type.tuple([context.vars.x, context.vars.y]), context)"
+    end
+
+    test "async" do
+      ir = %IR.Comprehension{
+        qualifiers: [
+          %IR.Clause{
+            match: %IR.Variable{name: :x},
+            guards: [],
+            body: %IR.ListType{
+              data: [
+                %IR.IntegerType{value: 1},
+                %IR.IntegerType{value: 2}
+              ]
+            }
+          }
+        ],
+        collectable: %IR.ListType{data: []},
+        unique: %IR.AtomType{value: false},
+        mapper: %IR.Variable{name: :x}
+      }
+
+      assert encode_ir(ir, %Context{async?: true}) ==
+               "(await Interpreter.asyncComprehension([{type: \"generator\", match: Type.variablePattern(\"x\"), guards: [], body: async (context) => Type.list([Type.integer(1n), Type.integer(2n)])}], Type.list([]), false, async (context) => context.vars.x, context))"
+    end
+
+    test "sync with bitstring generator" do
+      assert encode_ir(@bitstring_generator_comprehension_ir) ==
+               "Interpreter.comprehension([{type: \"bitstring_generator\", match: Type.bitstringPattern([Type.bitstringSegment(Type.variablePattern(\"x\"), {type: \"integer\"})]), body: (context) => Type.bitstring([Type.bitstringSegment(Type.integer(1n), {type: \"integer\"}), Type.bitstringSegment(Type.integer(2n), {type: \"integer\"})])}], Type.list([]), false, (context) => context.vars.x, context)"
+    end
+
+    test "async with bitstring generator" do
+      assert encode_ir(@bitstring_generator_comprehension_ir, %Context{async?: true}) ==
+               "(await Interpreter.asyncComprehension([{type: \"bitstring_generator\", match: Type.bitstringPattern([Type.bitstringSegment(Type.variablePattern(\"x\"), {type: \"integer\"})]), body: async (context) => Type.bitstring([Type.bitstringSegment(Type.integer(1n), {type: \"integer\"}), Type.bitstringSegment(Type.integer(2n), {type: \"integer\"})])}], Type.list([]), false, async (context) => context.vars.x, context))"
+    end
+
+    test "sync with reducer" do
+      # for x <- [1, 2], reduce: 0 do
+      #   acc when acc < 9 -> acc + x
+      #   acc -> acc
+      # end
+      #
+      # for x <- [1, 2], reduce: 0 do
+      #   acc when :erlang.<(acc, 9) -> :erlang.+(acc, x)
+      #   acc -> acc
+      # end
+
+      ir = %IR.Comprehension{
+        qualifiers: [
+          %IR.Clause{
+            match: %IR.Variable{name: :x},
+            guards: [],
+            body: %IR.ListType{
+              data: [
+                %IR.IntegerType{value: 1},
+                %IR.IntegerType{value: 2}
+              ]
+            }
+          }
+        ],
+        collectable: %IR.ListType{data: []},
+        unique: %IR.AtomType{value: false},
+        mapper: nil,
+        reducer: %{
+          initial_value: %IR.IntegerType{value: 0},
+          clauses: [
+            %IR.Clause{
+              match: %IR.Variable{name: :acc},
+              guards: [
+                %IR.RemoteFunctionCall{
+                  module: %IR.AtomType{value: :erlang},
+                  function: :<,
+                  args: [
+                    %IR.Variable{name: :acc},
+                    %IR.IntegerType{value: 9}
+                  ]
+                }
+              ],
+              body: %IR.Block{
+                expressions: [
+                  %IR.RemoteFunctionCall{
+                    module: %IR.AtomType{value: :erlang},
+                    function: :+,
+                    args: [
+                      %IR.Variable{name: :acc},
+                      %IR.Variable{name: :x}
+                    ]
+                  }
+                ]
+              }
+            },
+            %IR.Clause{
+              match: %IR.Variable{name: :acc},
+              guards: [],
+              body: %IR.Block{
+                expressions: [%IR.Variable{name: :acc}]
+              }
+            }
+          ]
+        }
+      }
+
+      assert encode_ir(ir) ==
+               "Interpreter.comprehensionReduce([{type: \"generator\", match: Type.variablePattern(\"x\"), guards: [], body: (context) => Type.list([Type.integer(1n), Type.integer(2n)])}], Type.integer(0n), [{match: Type.variablePattern(\"acc\"), guards: [(context) => Erlang[\"</2\"](context.vars.acc, Type.integer(9n))], body: (context) => {\nreturn Erlang[\"+/2\"](context.vars.acc, context.vars.x);\n}}, {match: Type.variablePattern(\"acc\"), guards: [], body: (context) => {\nreturn context.vars.acc;\n}}], context)"
+    end
+
+    test "async with reducer" do
+      # for x <- [1, 2], reduce: 0 do
+      #   acc -> acc + x
+      # end
+      #
+      # for x <- [1, 2], reduce: 0 do
+      #   acc -> :erlang.+(acc, x)
+      # end
+
+      ir = %IR.Comprehension{
+        qualifiers: [
+          %IR.Clause{
+            match: %IR.Variable{name: :x},
+            guards: [],
+            body: %IR.ListType{
+              data: [
+                %IR.IntegerType{value: 1},
+                %IR.IntegerType{value: 2}
+              ]
+            }
+          }
+        ],
+        collectable: %IR.ListType{data: []},
+        unique: %IR.AtomType{value: false},
+        mapper: nil,
+        reducer: %{
+          initial_value: %IR.IntegerType{value: 0},
+          clauses: [
+            %IR.Clause{
+              match: %IR.Variable{name: :acc},
+              guards: [],
+              body: %IR.Block{
+                expressions: [
+                  %IR.RemoteFunctionCall{
+                    module: %IR.AtomType{value: :erlang},
+                    function: :+,
+                    args: [
+                      %IR.Variable{name: :acc},
+                      %IR.Variable{name: :x}
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+
+      assert encode_ir(ir, %Context{async?: true}) ==
+               "(await Interpreter.asyncComprehensionReduce([{type: \"generator\", match: Type.variablePattern(\"x\"), guards: [], body: async (context) => Type.list([Type.integer(1n), Type.integer(2n)])}], Type.integer(0n), [{match: Type.variablePattern(\"acc\"), guards: [], body: async (context) => {\nreturn Erlang[\"+/2\"](context.vars.acc, context.vars.x);\n}}], context))"
+    end
+
+    test "records the line the comprehension is on" do
+      ir = %IR.Comprehension{
+        qualifiers: [],
+        collectable: %IR.ListType{data: []},
+        unique: %IR.AtomType{value: false},
+        mapper: %IR.Block{expressions: [%IR.AtomType{value: :ok}]},
+        reducer: nil,
+        line: 123
+      }
+
+      result = encode_ir(ir)
+
+      assert String.starts_with?(
+               result,
+               "(Interpreter.setFrameLine(123), Interpreter.comprehension("
+             )
+    end
+  end
+
+  test "comprehension generator" do
+    # {a, b} when my_guard(a, 2) -> [1, 2]
+    ir = %IR.Clause{
+      match: %IR.TupleType{
+        data: [
+          %IR.Variable{name: :a},
+          %IR.Variable{name: :b}
+        ]
+      },
+      guards: [
+        %IR.LocalFunctionCall{
+          function: :my_guard,
+          args: [
+            %IR.Variable{name: :a},
+            %IR.IntegerType{value: 2}
+          ]
+        }
+      ],
+      body: %IR.ListType{
+        data: [
+          %IR.IntegerType{value: 1},
+          %IR.IntegerType{value: 2}
+        ]
+      }
+    }
+
+    assert encode_ir(ir, %Context{module: MyModule}) ==
+             "{match: Type.tuple([Type.variablePattern(\"a\"), Type.variablePattern(\"b\")]), guards: [(context) => Elixir_MyModule[\"my_guard/2\"](context.vars.a, Type.integer(2n))], body: (context) => Type.list([Type.integer(1n), Type.integer(2n)])}"
+  end
+
+  describe "cond" do
+    test "sync" do
+      clause_1 = %IR.CondClause{
+        condition: %IR.RemoteFunctionCall{
+          module: %IR.AtomType{value: :erlang},
+          function: :<,
+          args: [
+            %IR.Variable{name: :x},
+            %IR.IntegerType{value: 1}
+          ]
+        },
+        body: %IR.Block{
+          expressions: [
+            %IR.IntegerType{value: 1}
+          ]
+        }
+      }
+
+      clause_2 = %IR.CondClause{
+        condition: %IR.RemoteFunctionCall{
+          module: %IR.AtomType{value: :erlang},
+          function: :<,
+          args: [
+            %IR.Variable{name: :x},
+            %IR.IntegerType{value: 2}
+          ]
+        },
+        body: %IR.Block{
+          expressions: [
+            %IR.IntegerType{value: 2}
+          ]
+        }
+      }
+
+      # cond do
+      #   :erlang.<(x, 1) -> 1
+      #   :erlang.<(x, 2) -> 2
+      # end
+      ir = %IR.Cond{clauses: [clause_1, clause_2]}
+
+      expected =
+        normalize_newlines("""
+        Interpreter.cond([{condition: (context) => Erlang["</2"](context.vars.x, Type.integer(1n)), body: (context) => {
+        return Type.integer(1n);
+        }}, {condition: (context) => Erlang["</2"](context.vars.x, Type.integer(2n)), body: (context) => {
+        return Type.integer(2n);
+        }}], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "async" do
+      ir = %IR.Cond{
+        clauses: [
+          %IR.CondClause{
+            condition: %IR.Variable{name: :x},
+            body: %IR.Block{
+              expressions: [%IR.IntegerType{value: 1}]
+            }
+          }
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        (await Interpreter.asyncCond([{condition: async (context) => context.vars.x, body: async (context) => {
+        return Type.integer(1n);
+        }}], context))\
+        """)
+
+      assert encode_ir(ir, %Context{async?: true}) == expected
+    end
+
+    test "records the line the last clause is on, which is where the BEAM reports it" do
+      ir = %IR.Cond{
+        clauses: [
+          %IR.CondClause{
+            condition: %IR.Variable{name: :x},
+            body: %IR.Block{expressions: [%IR.IntegerType{value: 1}]}
+          }
+        ],
+        line: 123
+      }
+
+      assert encode_ir(ir) ==
+               "(Interpreter.setFrameLine(123), Interpreter.cond([{condition: (context) => context.vars.x, body: (context) => {\nreturn Type.integer(1n);\n}}], context))"
+    end
+  end
+
+  test "cond clause" do
+    # :erlang.<(x, 3) ->
+    #   1
+    #   2
+    ir = %IR.CondClause{
+      condition: %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :<,
+        args: [
+          %IR.Variable{name: :x},
+          %IR.IntegerType{value: 3}
+        ]
+      },
+      body: %IR.Block{
+        expressions: [
+          %IR.IntegerType{value: 1},
+          %IR.IntegerType{value: 2}
+        ]
+      }
+    }
+
+    expected =
+      normalize_newlines("""
+      {condition: (context) => Erlang[\"</2\"](context.vars.x, Type.integer(3n)), body: (context) => {
+      Type.integer(1n);
+      return Type.integer(2n);
+      }}\
+      """)
+
+    assert encode_ir(ir) == expected
+  end
+
+  describe "cons operator" do
+    # [1 | [2, 3]]
+    @cons_operator_ir %IR.ConsOperator{
+      head: %IR.IntegerType{value: 1},
+      tail: %IR.ListType{data: [%IR.IntegerType{value: 2}, %IR.IntegerType{value: 3}]}
+    }
+
+    test "not inside pattern" do
+      assert encode_ir(@cons_operator_ir, %Context{pattern?: false}) ==
+               "Interpreter.consOperator(Type.integer(1n), Type.list([Type.integer(2n), Type.integer(3n)]))"
+    end
+
+    test "inside pattern" do
+      assert encode_ir(@cons_operator_ir, %Context{pattern?: true}) ==
+               "Type.consPattern(Type.integer(1n), Type.list([Type.integer(2n), Type.integer(3n)]))"
+    end
+  end
+
+  describe "dot operator" do
+    setup do
+      # my_module.my_key
+      ir = %IR.DotOperator{
+        left: %IR.Variable{name: :my_module},
+        right: %IR.AtomType{value: :my_key}
+      }
+
+      [ir: ir]
+    end
+
+    test "without a line", %{ir: ir} do
+      assert encode_ir(ir) ==
+               "Interpreter.dotOperator(context.vars.my_module, Type.atom(\"my_key\"))"
+    end
+
+    test "records the line the key is read on", %{ir: ir} do
+      assert encode_ir(%{ir | line: 123}) ==
+               "(Interpreter.setFrameLine(123), Interpreter.dotOperator(context.vars.my_module, Type.atom(\"my_key\")))"
+    end
+  end
+
+  describe "encode_closure/2 (private, tested indirectly)" do
+    test "nil" do
+      ir = %IR.CondClause{
+        condition: nil,
+        body: nil
+      }
+
+      assert encode_ir(ir) == "{condition: null, body: null}"
+    end
+
+    test "non-block, sync" do
+      ir = %IR.CondClause{
+        condition: %IR.RemoteFunctionCall{
+          module: %IR.AtomType{value: :erlang},
+          function: :<,
+          args: [
+            %IR.Variable{name: :x},
+            %IR.IntegerType{value: 3}
+          ]
+        },
+        body: %IR.Block{
+          expressions: [%IR.IntegerType{value: 1}]
+        }
+      }
+
+      expected =
+        normalize_newlines("""
+        {condition: (context) => Erlang[\"</2\"](context.vars.x, Type.integer(3n)), body: (context) => {
+        return Type.integer(1n);
+        }}\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "non-block, async" do
+      ir = %IR.CondClause{
+        condition: %IR.RemoteFunctionCall{
+          module: %IR.AtomType{value: :erlang},
+          function: :<,
+          args: [
+            %IR.Variable{name: :x},
+            %IR.IntegerType{value: 3}
+          ]
+        },
+        body: %IR.Block{
+          expressions: [%IR.IntegerType{value: 1}]
+        }
+      }
+
+      expected =
+        normalize_newlines("""
+        {condition: async (context) => Erlang[\"</2\"](context.vars.x, Type.integer(3n)), body: async (context) => {
+        return Type.integer(1n);
+        }}\
+        """)
+
+      assert encode_ir(ir, %Context{async?: true}) == expected
+    end
+
+    test "block, sync" do
+      ir = %IR.CondClause{
+        condition: %IR.AtomType{value: true},
+        body: %IR.Block{
+          expressions: [
+            %IR.IntegerType{value: 1},
+            %IR.IntegerType{value: 2}
+          ]
+        }
+      }
+
+      expected =
+        normalize_newlines("""
+        {condition: (context) => Type.atom("true"), body: (context) => {
+        Type.integer(1n);
+        return Type.integer(2n);
+        }}\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "block, async" do
+      ir = %IR.CondClause{
+        condition: %IR.AtomType{value: true},
+        body: %IR.Block{
+          expressions: [
+            %IR.IntegerType{value: 1},
+            %IR.IntegerType{value: 2}
+          ]
+        }
+      }
+
+      expected =
+        normalize_newlines("""
+        {condition: async (context) => Type.atom("true"), body: async (context) => {
+        Type.integer(1n);
+        return Type.integer(2n);
+        }}\
+        """)
+
+      assert encode_ir(ir, %Context{async?: true}) == expected
+    end
+  end
+
+  describe "encode_elixir_function/6" do
+    setup do
+      [
+        clauses: [
+          %IR.FunctionClause{
+            params: [%IR.IntegerType{value: 9}],
+            guards: [],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :expr_2}]
+            }
+          },
+          %IR.FunctionClause{
+            params: [%IR.Variable{name: :z}],
+            guards: [
+              %IR.RemoteFunctionCall{
+                module: %IR.AtomType{value: :erlang},
+                function: :is_float,
+                args: [%IR.Variable{name: :z}]
+              }
+            ],
+            body: %IR.Block{
+              expressions: [%IR.Variable{name: :z}]
+            }
+          }
+        ]
+      ]
+    end
+
+    test "sync", %{clauses: clauses} do
+      context = %Context{module: Aaa.Bbb}
+
+      expected =
+        normalize_newlines("""
+        Interpreter.defineElixirFunction("Aaa.Bbb", "fun_2", 1, "private", [{params: (context) => [Type.integer(9n)], guards: [], body: (context) => {
+        return Type.atom("expr_2");
+        }}, {params: (context) => [Type.variablePattern("z")], guards: [(context) => Erlang["is_float/1"](context.vars.z)], body: (context) => {
+        return context.vars.z;
+        }}]);\
+        """)
+
+      assert encode_elixir_function("Aaa.Bbb", :fun_2, 1, :private, clauses, context) == expected
+    end
+
+    test "async", %{clauses: clauses} do
+      async_mfas = MapSet.new([{Aaa.Bbb, :fun_2, 1}])
+      context = %Context{module: Aaa.Bbb, async_mfas: async_mfas}
+
+      expected =
+        normalize_newlines("""
+        Interpreter.defineElixirFunction("Aaa.Bbb", "fun_2", 1, "private", [{params: (context) => [Type.integer(9n)], guards: [], body: async (context) => {
+        return Type.atom("expr_2");
+        }}, {params: (context) => [Type.variablePattern("z")], guards: [(context) => Erlang["is_float/1"](context.vars.z)], body: async (context) => {
+        return context.vars.z;
+        }}]);\
+        """)
+
+      assert encode_elixir_function("Aaa.Bbb", :fun_2, 1, :private, clauses, context) == expected
+    end
+
+    test "declares one set for two guards that look up in the same literals" do
+      # def fun_3(x) when x === :a or x === :b, do: :expr_1
+      # def fun_3(x) when x === :a or x === :b, do: :expr_2
+      guard_ir =
+        orelse_chain_ir([
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.AtomType{value: :a}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.AtomType{value: :b})
+        ])
+
+      clauses = [
+        %IR.FunctionClause{
+          params: [%IR.Variable{name: :x}],
+          guards: [guard_ir],
+          body: %IR.Block{expressions: [%IR.AtomType{value: :expr_1}]}
+        },
+        %IR.FunctionClause{
+          params: [%IR.Variable{name: :x}],
+          guards: [guard_ir],
+          body: %IR.Block{expressions: [%IR.AtomType{value: :expr_2}]}
+        }
+      ]
+
+      expected =
+        normalize_newlines("""
+        {
+        const s0 = Interpreter.literalSet(() => [Type.atom("a"), Type.atom("b")]);
+        Interpreter.defineElixirFunction("Aaa.Bbb", "fun_3", 1, "public", [{params: (context) => [Type.variablePattern("x")], guards: [(context) => Type.boolean(s0.has(context.vars.x))], body: (context) => {
+        return Type.atom("expr_1");
+        }}, {params: (context) => [Type.variablePattern("x")], guards: [(context) => Type.boolean(s0.has(context.vars.x))], body: (context) => {
+        return Type.atom("expr_2");
+        }}]);
+        }\
+        """)
+
+      context = %Context{module: Aaa.Bbb}
+
+      assert encode_elixir_function("Aaa.Bbb", :fun_3, 1, :public, clauses, context) == expected
+    end
+
+    test "declares the literal sets of a guard in a clause body" do
+      # def fun_3(y) do
+      #   case y do
+      #     x when x === 1 or x === 2 -> :expr_1
+      #   end
+      # end
+      guard_ir =
+        orelse_chain_ir([
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 1}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 2})
+        ])
+
+      case_ir = %IR.Case{
+        condition: %IR.Variable{name: :y},
+        clauses: [
+          %IR.Clause{
+            match: %IR.Variable{name: :x},
+            guards: [guard_ir],
+            body: %IR.Block{expressions: [%IR.AtomType{value: :expr_1}]}
+          }
+        ]
+      }
+
+      clauses = [
+        %IR.FunctionClause{
+          params: [%IR.Variable{name: :y}],
+          guards: [],
+          body: %IR.Block{expressions: [case_ir]}
+        }
+      ]
+
+      expected =
+        normalize_newlines("""
+        {
+        const s0 = Interpreter.literalSet(() => [Type.integer(1n), Type.integer(2n)]);
+        Interpreter.defineElixirFunction("Aaa.Bbb", "fun_3", 1, "public", [{params: (context) => [Type.variablePattern("y")], guards: [], body: (context) => {
+        return Interpreter.case(context.vars.y, [{match: Type.variablePattern("x"), guards: [(context) => Type.boolean(s0.has(context.vars.x))], body: (context) => {
+        return Type.atom("expr_1");
+        }}], context);
+        }}]);
+        }\
+        """)
+
+      context = %Context{module: Aaa.Bbb}
+
+      assert encode_elixir_function("Aaa.Bbb", :fun_3, 1, :public, clauses, context) == expected
+    end
+
+    test "declares the literal sets of its guards in front of the definition, in the order they are used" do
+      # def fun_3(x) when x === :a or x === "b", do: :expr_1
+      # def fun_3(x) when x === 1 or x === 2.5, do: :expr_2
+      first_guard_ir =
+        orelse_chain_ir([
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.AtomType{value: :a}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.StringType{value: "b"})
+        ])
+
+      second_guard_ir =
+        orelse_chain_ir([
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 1}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.FloatType{value: 2.5})
+        ])
+
+      clauses = [
+        %IR.FunctionClause{
+          params: [%IR.Variable{name: :x}],
+          guards: [first_guard_ir],
+          body: %IR.Block{expressions: [%IR.AtomType{value: :expr_1}]}
+        },
+        %IR.FunctionClause{
+          params: [%IR.Variable{name: :x}],
+          guards: [second_guard_ir],
+          body: %IR.Block{expressions: [%IR.AtomType{value: :expr_2}]}
+        }
+      ]
+
+      expected =
+        normalize_newlines("""
+        {
+        const s0 = Interpreter.literalSet(() => [Type.atom("a"), Type.bitstring("b")]);
+        const s1 = Interpreter.literalSet(() => [Type.integer(1n), Type.float(2.5)]);
+        Interpreter.defineElixirFunction("Aaa.Bbb", "fun_3", 1, "public", [{params: (context) => [Type.variablePattern("x")], guards: [(context) => Type.boolean(s0.has(context.vars.x))], body: (context) => {
+        return Type.atom("expr_1");
+        }}, {params: (context) => [Type.variablePattern("x")], guards: [(context) => Type.boolean(s1.has(context.vars.x))], body: (context) => {
+        return Type.atom("expr_2");
+        }}]);
+        }\
+        """)
+
+      context = %Context{module: Aaa.Bbb}
+
+      assert encode_elixir_function("Aaa.Bbb", :fun_3, 1, :public, clauses, context) == expected
+    end
+
+    test "leaves nothing in the process dictionary" do
+      # def fun_3(x) when x === :a or x === :b, do: :expr_1
+      guard_ir =
+        orelse_chain_ir([
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.AtomType{value: :a}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.AtomType{value: :b})
+        ])
+
+      clauses = [
+        %IR.FunctionClause{
+          params: [%IR.Variable{name: :x}],
+          guards: [guard_ir],
+          body: %IR.Block{expressions: [%IR.AtomType{value: :expr_1}]}
+        }
+      ]
+
+      keys_before = Process.get_keys()
+
+      encode_elixir_function("Aaa.Bbb", :fun_3, 1, :public, clauses, %Context{module: Aaa.Bbb})
+
+      assert Process.get_keys() == keys_before
+    end
+
+    test "numbers the sets of each function from zero" do
+      # def fun_3(x) when x === :a or x === :b, do: :expr_1
+      # def fun_4(x) when x === :c or x === :d, do: :expr_1
+      clauses = fn first, second ->
+        guard_ir =
+          orelse_chain_ir([
+            strict_equality_ir(%IR.Variable{name: :x}, %IR.AtomType{value: first}),
+            strict_equality_ir(%IR.Variable{name: :x}, %IR.AtomType{value: second})
+          ])
+
+        [
+          %IR.FunctionClause{
+            params: [%IR.Variable{name: :x}],
+            guards: [guard_ir],
+            body: %IR.Block{expressions: [%IR.AtomType{value: :expr_1}]}
+          }
+        ]
+      end
+
+      context = %Context{module: Aaa.Bbb}
+
+      encode_elixir_function("Aaa.Bbb", :fun_3, 1, :public, clauses.(:a, :b), context)
+
+      assert encode_elixir_function("Aaa.Bbb", :fun_4, 1, :public, clauses.(:c, :d), context) =~
+               ~s'const s0 = Interpreter.literalSet(() => [Type.atom("c"), Type.atom("d")]);'
+    end
+
+    test "leaves nothing in the process dictionary when encoding raises" do
+      # def fun_3(x) when x === :a or x === :b, do: <IR the encoder has no clause for>
+      guard_ir =
+        orelse_chain_ir([
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.AtomType{value: :a}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.AtomType{value: :b})
+        ])
+
+      clauses = [
+        %IR.FunctionClause{
+          params: [%IR.Variable{name: :x}],
+          guards: [guard_ir],
+          body: %IR.Block{expressions: [:not_ir]}
+        }
+      ]
+
+      keys_before = Process.get_keys()
+
+      assert_raise FunctionClauseError, fn ->
+        encode_elixir_function("Aaa.Bbb", :fun_3, 1, :public, clauses, %Context{module: Aaa.Bbb})
+      end
+
+      assert Process.get_keys() == keys_before
+    end
+  end
+
+  describe "encode_module_metadata_registration/2" do
+    setup do
+      on_exit(fn -> Application.delete_env(:duskmoon_hologram, :client_stacktraces) end)
+      :ok
+    end
+
+    test "registers the metadata of each module the bundle defines" do
+      Application.put_env(:duskmoon_hologram, :client_stacktraces, true)
+
+      assert encode_module_metadata_registration([Hologram.Reflection], nil) ==
+               ~s/ERTS.registerModuleMetadata({"Hologram.Reflection": {app: "duskmoon_hologram", file: "apps\/duskmoon_hologram\/lib\/hologram\/reflection.ex"}});/
+    end
+
+    test "registers nothing when client stacktraces are disabled" do
+      Application.put_env(:duskmoon_hologram, :client_stacktraces, false)
+
+      assert encode_module_metadata_registration([Hologram.Reflection], nil) == ""
+    end
+
+    test "registers nothing for a module that can't be loaded" do
+      Application.put_env(:duskmoon_hologram, :client_stacktraces, true)
+
+      assert encode_module_metadata_registration([Aaa.Bbb], nil) == ""
+    end
+
+    test "renders a module from the map without reading the module" do
+      Application.put_env(:duskmoon_hologram, :client_stacktraces, true)
+
+      module_metadata = %{Aaa.Bbb => %{app: :my_app, file: "lib/aaa/bbb.ex"}}
+
+      assert encode_module_metadata_registration([Aaa.Bbb], module_metadata) ==
+               ~s/ERTS.registerModuleMetadata({"Aaa.Bbb": {app: "my_app", file: "lib\/aaa\/bbb.ex"}});/
+    end
+
+    test "reads a module absent from the map from the loaded module" do
+      Application.put_env(:duskmoon_hologram, :client_stacktraces, true)
+
+      assert encode_module_metadata_registration([Hologram.Reflection], %{}) ==
+               encode_module_metadata_registration([Hologram.Reflection], nil)
+    end
+
+    test "omits an application the map does not know" do
+      Application.put_env(:duskmoon_hologram, :client_stacktraces, true)
+
+      module_metadata = %{Aaa.Bbb => %{app: nil, file: "x.ex"}}
+
+      assert encode_module_metadata_registration([Aaa.Bbb], module_metadata) ==
+               ~s/ERTS.registerModuleMetadata({"Aaa.Bbb": {file: "x.ex"}});/
+    end
+
+    test "registers nothing when client stacktraces are disabled, whatever the map holds" do
+      Application.put_env(:duskmoon_hologram, :client_stacktraces, false)
+
+      module_metadata = %{Aaa.Bbb => %{app: :my_app, file: "lib/aaa/bbb.ex"}}
+
+      assert encode_module_metadata_registration([Aaa.Bbb], module_metadata) == ""
+    end
+  end
+
+  describe "encode_elixir_function_clause_heads/6" do
+    test "declares the literal sets of its guards in front of the registration" do
+      # (x) when :erlang.orelse(:erlang.=:=(x, :a), :erlang.=:=(x, :b)) do
+      #  :expr_1
+      guard_ir =
+        orelse_chain_ir([
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.AtomType{value: :a}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.AtomType{value: :b})
+        ])
+
+      clause = %IR.FunctionClause{
+        params: [%IR.Variable{name: :x}],
+        guards: [guard_ir],
+        body: %IR.Block{expressions: [%IR.AtomType{value: :expr_1}]},
+        line: 3,
+        blame: %{params: ["x"], guards: [{:or, {:leaf, "x === :a"}, {:leaf, "x === :b"}}]}
+      }
+
+      result =
+        encode_elixir_function_clause_heads("Aaa.Bbb", :my_fun, 1, :public, [clause], %Context{
+          module: Aaa.Bbb
+        })
+
+      expected =
+        normalize_newlines("""
+        {
+        const s0 = Interpreter.literalSet(() => [Type.atom("a"), Type.atom("b")]);
+        Interpreter.defineFunctionClauseHeads("Aaa.Bbb", "my_fun", 1, "public", [{params: (context) => [Type.variablePattern("x")], guards: [(context) => Type.boolean(s0.has(context.vars.x))], blame: {params: ["x"], guards: [{operator: "or", operands: [{source: "x === :a", test: (context) => Erlang["=:=/2"](context.vars.x, Type.atom("a"))}, {source: "x === :b", test: (context) => Erlang["=:=/2"](context.vars.x, Type.atom("b"))}]}]}}]);
+        }\
+        """)
+
+      assert result == expected
+    end
+
+    test "encodes the clause heads without their bodies" do
+      # (x) when :erlang.is_integer(x) do
+      #  :expr_1
+      clause = %IR.FunctionClause{
+        params: [%IR.Variable{name: :x}],
+        guards: [
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :is_integer,
+            args: [%IR.Variable{name: :x}]
+          }
+        ],
+        body: %IR.Block{expressions: [%IR.AtomType{value: :expr_1}]},
+        line: 3,
+        blame: %{params: ["x"], guards: [{:leaf, "is_integer(x)"}]}
+      }
+
+      result =
+        encode_elixir_function_clause_heads("Aaa.Bbb", :my_fun, 1, :public, [clause], %Context{
+          module: Aaa.Bbb
+        })
+
+      assert result ==
+               ~s/Interpreter.defineFunctionClauseHeads("Aaa.Bbb", "my_fun", 1, "public", [{params: (context) => [Type.variablePattern("x")], guards: [(context) => Erlang["is_integer\/1"](context.vars.x)], blame: {params: ["x"], guards: [{source: "is_integer(x)", test: (context) => Erlang["is_integer\/1"](context.vars.x)}]}}]);/
+    end
+
+    test "omits the blame metadata when client stacktraces are disabled" do
+      Application.put_env(:duskmoon_hologram, :client_stacktraces, false)
+      on_exit(fn -> Application.delete_env(:duskmoon_hologram, :client_stacktraces) end)
+
+      # (x) do
+      #  :expr_1
+      clause = %IR.FunctionClause{
+        params: [%IR.Variable{name: :x}],
+        guards: [],
+        body: %IR.Block{expressions: [%IR.AtomType{value: :expr_1}]},
+        blame: %{params: ["x"], guards: []}
+      }
+
+      result =
+        encode_elixir_function_clause_heads("Aaa.Bbb", :my_fun, 1, :public, [clause], %Context{
+          module: Aaa.Bbb
+        })
+
+      assert result ==
+               ~s/Interpreter.defineFunctionClauseHeads("Aaa.Bbb", "my_fun", 1, "public", [{params: (context) => [Type.variablePattern("x")], guards: []}]);/
+    end
+  end
+
+  describe "encode_erlang_function/4" do
+    test "when function is implemented" do
+      result = encode_erlang_function(:erlang, :+, 2, @erlang_js_dir)
+
+      expected =
+        normalize_newlines("""
+        Interpreter.defineErlangFunction("erlang", "+", 2, (left, right) => {
+            if (!Type.isNumber(left) || !Type.isNumber(right)) {
+              Interpreter.raiseBifError("badarith", "erlang", "+", [left, right]);
+            }
+
+            const [type, leftValue, rightValue] = Type.maybeNormalizeNumberTerms(left, right);
+
+            const result = leftValue.value + rightValue.value;
+
+            return type === "float" ? Type.float(result) : Type.integer(result);
+          });\
+        """)
+
+      assert result == expected
+    end
+
+    test "when function is not implemented" do
+      result = encode_erlang_function(:erlang, :not_implemented, 2, @erlang_js_dir)
+
+      assert result ==
+               ~s/Interpreter.defineNotImplementedErlangFunction("erlang", "not_implemented", 2);/
+    end
+  end
+
+  test "float type" do
+    # 1.23
+    assert encode_ir(%IR.FloatType{value: 1.23}) == "Type.float(1.23)"
+  end
+
+  describe "function clause" do
+    # (x, y) do
+    #  :expr_1
+    #  :expr_2
+    test "without guard" do
+      ir = %IR.FunctionClause{
+        params: [%IR.Variable{name: :x}, %IR.Variable{name: :y}],
+        guards: [],
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :expr_1}, %IR.AtomType{value: :expr_2}]
+        }
+      }
+
+      expected =
+        normalize_newlines("""
+        {params: (context) => [Type.variablePattern("x"), Type.variablePattern("y")], guards: [], body: (context) => {
+        Type.atom("expr_1");
+        return Type.atom("expr_2");
+        }}\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "with single guard" do
+      # (x, y) when :erlang.is_integer(x) do
+      #  :expr_1
+      #  :expr_2
+      ir = %IR.FunctionClause{
+        params: [%IR.Variable{name: :x}, %IR.Variable{name: :y}],
+        guards: [
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :is_integer,
+            args: [%IR.Variable{name: :x}]
+          }
+        ],
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :expr_1}, %IR.AtomType{value: :expr_2}]
+        }
+      }
+
+      expected =
+        normalize_newlines("""
+        {params: (context) => [Type.variablePattern("x"), Type.variablePattern("y")], guards: [(context) => Erlang["is_integer/1"](context.vars.x)], body: (context) => {
+        Type.atom("expr_1");
+        return Type.atom("expr_2");
+        }}\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "with multiple guards" do
+      # (x, y) when :erlang.is_integer(x) when :erlang.is_integer(y) do
+      #  :expr_1
+      #  :expr_2
+      ir = %IR.FunctionClause{
+        params: [%IR.Variable{name: :x}, %IR.Variable{name: :y}],
+        guards: [
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :is_integer,
+            args: [%IR.Variable{name: :x}]
+          },
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :is_integer,
+            args: [%IR.Variable{name: :y}]
+          }
+        ],
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :expr_1}, %IR.AtomType{value: :expr_2}]
+        }
+      }
+
+      expected =
+        normalize_newlines("""
+        {params: (context) => [Type.variablePattern("x"), Type.variablePattern("y")], guards: [(context) => Erlang["is_integer/1"](context.vars.x), (context) => Erlang["is_integer/1"](context.vars.y)], body: (context) => {
+        Type.atom("expr_1");
+        return Type.atom("expr_2");
+        }}\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "with match operator in param" do
+      # (x = 1 = y) do
+      #  :ok
+      ir = %IR.FunctionClause{
+        params: [
+          %IR.MatchOperator{
+            left: %IR.Variable{name: :x},
+            right: %IR.MatchOperator{
+              left: %IR.IntegerType{value: 1},
+              right: %IR.Variable{name: :y}
+            }
+          }
+        ],
+        guards: [],
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :ok}]
+        }
+      }
+
+      expected =
+        normalize_newlines("""
+        {params: (context) => [Type.matchPattern(Type.variablePattern("x"), Type.matchPattern(Type.integer(1n), Type.variablePattern("y")))], guards: [], body: (context) => {
+        return Type.atom("ok");
+        }}\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "async — guards stay sync, body becomes async" do
+      ir = %IR.FunctionClause{
+        params: [%IR.Variable{name: :x}],
+        guards: [
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :is_integer,
+            args: [%IR.Variable{name: :x}]
+          }
+        ],
+        body: %IR.Block{
+          expressions: [%IR.Variable{name: :x}]
+        }
+      }
+
+      expected =
+        normalize_newlines("""
+        {params: (context) => [Type.variablePattern("x")], guards: [(context) => Erlang["is_integer/1"](context.vars.x)], body: async (context) => {
+        return context.vars.x;
+        }}\
+        """)
+
+      assert encode_ir(ir, %Context{async?: true}) == expected
+    end
+
+    test "with line metadata" do
+      # (x) do
+      #  :expr_1
+      ir = %IR.FunctionClause{
+        params: [%IR.Variable{name: :x}],
+        guards: [],
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :expr_1}]
+        },
+        line: 3
+      }
+
+      expected =
+        normalize_newlines("""
+        {params: (context) => [Type.variablePattern("x")], guards: [], body: (context) => {
+        return Type.atom("expr_1");
+        }, line: 3}\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "without line metadata when client stacktraces are disabled" do
+      Application.put_env(:duskmoon_hologram, :client_stacktraces, false)
+      on_exit(fn -> Application.delete_env(:duskmoon_hologram, :client_stacktraces) end)
+
+      # (x) do
+      #  :expr_1
+      ir = %IR.FunctionClause{
+        params: [%IR.Variable{name: :x}],
+        guards: [],
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :expr_1}]
+        },
+        line: 3
+      }
+
+      expected =
+        normalize_newlines("""
+        {params: (context) => [Type.variablePattern("x")], guards: [], body: (context) => {
+        return Type.atom("expr_1");
+        }}\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "with blame metadata for a chain nested on the right" do
+      # (x) when :erlang.orelse(:erlang.=:=(x, 1), :erlang.orelse(:erlang.=:=(x, 2), :erlang.=:=(x, 3))) do
+      #  :expr_1
+      equals_ir = fn value ->
+        %IR.RemoteFunctionCall{
+          module: %IR.AtomType{value: :erlang},
+          function: :"=:=",
+          args: [%IR.Variable{name: :x}, %IR.IntegerType{value: value}]
+        }
+      end
+
+      orelse_ir = fn left, right ->
+        %IR.RemoteFunctionCall{
+          module: %IR.AtomType{value: :erlang},
+          function: :orelse,
+          args: [left, right]
+        }
+      end
+
+      first_ir = equals_ir.(1)
+      second_ir = equals_ir.(2)
+      third_ir = equals_ir.(3)
+
+      right_ir = orelse_ir.(second_ir, third_ir)
+      guard_ir = orelse_ir.(first_ir, right_ir)
+
+      ir = %IR.FunctionClause{
+        params: [%IR.Variable{name: :x}],
+        guards: [guard_ir],
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :expr_1}]
+        },
+        blame: %{
+          params: ["x"],
+          guards: [{:or, {:leaf, "x === 1"}, {:or, {:leaf, "x === 2"}, {:leaf, "x === 3"}}}]
+        }
+      }
+
+      assert encode_ir(ir) =~
+               ~s/blame: {params: ["x"], guards: [{operator: "or", operands: [{source: "x === 1", test: (context) => Erlang["=:=\/2"](context.vars.x, Type.integer(1n))}, {operator: "or", operands: [{source: "x === 2", test: (context) => Erlang["=:=\/2"](context.vars.x, Type.integer(2n))}, {source: "x === 3", test: (context) => Erlang["=:=\/2"](context.vars.x, Type.integer(3n))}]}]}]}}/
+    end
+
+    test "with blame metadata for a chain of three operands" do
+      # (x) when :erlang.orelse(:erlang.orelse(:erlang.=:=(x, 1), :erlang.=:=(x, 2)), :erlang.=:=(x, 3)) do
+      #  :expr_1
+      equals_ir = fn value ->
+        %IR.RemoteFunctionCall{
+          module: %IR.AtomType{value: :erlang},
+          function: :"=:=",
+          args: [%IR.Variable{name: :x}, %IR.IntegerType{value: value}]
+        }
+      end
+
+      orelse_ir = fn left, right ->
+        %IR.RemoteFunctionCall{
+          module: %IR.AtomType{value: :erlang},
+          function: :orelse,
+          args: [left, right]
+        }
+      end
+
+      first_ir = equals_ir.(1)
+      second_ir = equals_ir.(2)
+      third_ir = equals_ir.(3)
+
+      left_ir = orelse_ir.(first_ir, second_ir)
+      guard_ir = orelse_ir.(left_ir, third_ir)
+
+      ir = %IR.FunctionClause{
+        params: [%IR.Variable{name: :x}],
+        guards: [guard_ir],
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :expr_1}]
+        },
+        blame: %{
+          params: ["x"],
+          guards: [{:or, {:or, {:leaf, "x === 1"}, {:leaf, "x === 2"}}, {:leaf, "x === 3"}}]
+        }
+      }
+
+      assert encode_ir(ir) =~
+               ~s/blame: {params: ["x"], guards: [{operator: "or", operands: [{source: "x === 1", test: (context) => Erlang["=:=\/2"](context.vars.x, Type.integer(1n))}, {source: "x === 2", test: (context) => Erlang["=:=\/2"](context.vars.x, Type.integer(2n))}, {source: "x === 3", test: (context) => Erlang["=:=\/2"](context.vars.x, Type.integer(3n))}]}]}}/
+    end
+
+    test "with blame metadata for a clause without guards" do
+      # (x) do
+      #  :expr_1
+      ir = %IR.FunctionClause{
+        params: [%IR.Variable{name: :x}],
+        guards: [],
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :expr_1}]
+        },
+        blame: %{params: ["x"], guards: []}
+      }
+
+      expected =
+        normalize_newlines("""
+        {params: (context) => [Type.variablePattern("x")], guards: [], body: (context) => {
+        return Type.atom("expr_1");
+        }, blame: {params: ["x"], guards: []}}\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "with blame metadata for a clause with a guard" do
+      # (x) when :erlang.is_integer(x) do
+      #  :expr_1
+      ir = %IR.FunctionClause{
+        params: [%IR.Variable{name: :x}],
+        guards: [
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :is_integer,
+            args: [%IR.Variable{name: :x}]
+          }
+        ],
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :expr_1}]
+        },
+        blame: %{params: ["x"], guards: [{:leaf, "is_integer(x)"}]}
+      }
+
+      expected =
+        normalize_newlines("""
+        {params: (context) => [Type.variablePattern("x")], guards: [(context) => Erlang["is_integer/1"](context.vars.x)], body: (context) => {
+        return Type.atom("expr_1");
+        }, blame: {params: ["x"], guards: [{source: "is_integer(x)", test: (context) => Erlang["is_integer/1"](context.vars.x)}]}}\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "with blame metadata for a guard split at its and/or operators" do
+      # (x) when :erlang.is_integer(x) andalso :erlang.>(x, 1) do
+      #  :expr_1
+      left_ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :is_integer,
+        args: [%IR.Variable{name: :x}]
+      }
+
+      right_ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :>,
+        args: [%IR.Variable{name: :x}, %IR.IntegerType{value: 1}]
+      }
+
+      ir = %IR.FunctionClause{
+        params: [%IR.Variable{name: :x}],
+        guards: [
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :andalso,
+            args: [left_ir, right_ir]
+          }
+        ],
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :expr_1}]
+        },
+        blame: %{
+          params: ["x"],
+          guards: [{:and, {:leaf, "is_integer(x)"}, {:leaf, "x > 1"}}]
+        }
+      }
+
+      assert encode_ir(ir) =~
+               ~s/blame: {params: ["x"], guards: [{operator: "and", operands: [{source: "is_integer(x)", test: (context) => Erlang["is_integer\/1"](context.vars.x)}, {source: "x > 1", test: (context) => Erlang[">\/2"](context.vars.x, Type.integer(1n))}]}]}}/
+    end
+
+    test "with blame metadata for a leaf that stands for a chain of the guard's operator" do
+      # (x, y) when :erlang.andalso(struct_check, :erlang.>(y, 1)) do
+      #  :expr_1
+      #
+      # where struct_check is :erlang.andalso(:erlang.is_map(x), :erlang.is_map_key(:__struct__, x)),
+      # which the server renders as one expression, is_struct(x)
+      is_map_ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :is_map,
+        args: [%IR.Variable{name: :x}]
+      }
+
+      is_map_key_ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :is_map_key,
+        args: [%IR.AtomType{value: :__struct__}, %IR.Variable{name: :x}]
+      }
+
+      greater_ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :>,
+        args: [%IR.Variable{name: :y}, %IR.IntegerType{value: 1}]
+      }
+
+      andalso_ir = fn left, right ->
+        %IR.RemoteFunctionCall{
+          module: %IR.AtomType{value: :erlang},
+          function: :andalso,
+          args: [left, right]
+        }
+      end
+
+      struct_check_ir = andalso_ir.(is_map_ir, is_map_key_ir)
+      guard_ir = andalso_ir.(struct_check_ir, greater_ir)
+
+      ir = %IR.FunctionClause{
+        params: [%IR.Variable{name: :x}, %IR.Variable{name: :y}],
+        guards: [guard_ir],
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :expr_1}]
+        },
+        blame: %{
+          params: ["x", "y"],
+          guards: [{:and, {:leaf, "is_struct(x)"}, {:leaf, "y > 1"}}]
+        }
+      }
+
+      assert encode_ir(ir) =~
+               ~s/blame: {params: ["x", "y"], guards: [{operator: "and", operands: [{source: "is_struct(x)", test: (context) => (Interpreter.toBoolean(Erlang["is_map\/1"](context.vars.x)) ? Erlang["is_map_key\/2"](Type.atom("__struct__"), context.vars.x) : Type.boolean(false))}, {source: "y > 1", test: (context) => Erlang[">\/2"](context.vars.y, Type.integer(1n))}]}]}}/
+    end
+
+    test "without blame metadata when client stacktraces are disabled" do
+      Application.put_env(:duskmoon_hologram, :client_stacktraces, false)
+      on_exit(fn -> Application.delete_env(:duskmoon_hologram, :client_stacktraces) end)
+
+      # (x) do
+      #  :expr_1
+      ir = %IR.FunctionClause{
+        params: [%IR.Variable{name: :x}],
+        guards: [],
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :expr_1}]
+        },
+        blame: %{params: ["x"], guards: []}
+      }
+
+      expected =
+        normalize_newlines("""
+        {params: (context) => [Type.variablePattern("x")], guards: [], body: (context) => {
+        return Type.atom("expr_1");
+        }}\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+  end
+
+  test "integer type" do
+    # 123
+    assert encode_ir(%IR.IntegerType{value: 123}) == "Type.integer(123n)"
+  end
+
+  describe "list type" do
+    test "empty" do
+      # []
+      assert encode_ir(%IR.ListType{data: []}) == "Type.list([])"
+    end
+
+    test "non-empty" do
+      # [1, :abc]
+      ir = %IR.ListType{
+        data: [
+          %IR.IntegerType{value: 1},
+          %IR.AtomType{value: :abc}
+        ]
+      }
+
+      assert encode_ir(ir) == ~s/Type.list([Type.integer(1n), Type.atom("abc")])/
+    end
+  end
+
+  describe "literal run" do
+    test "a call as the subject makes a run in a guard" do
+      # elem(t, 0) === 1 or elem(t, 0) === 2
+      subject_ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :element,
+        args: [%IR.IntegerType{value: 1}, %IR.Variable{name: :t}]
+      }
+
+      ir =
+        orelse_chain_ir([
+          strict_equality_ir(subject_ir, %IR.IntegerType{value: 1}),
+          strict_equality_ir(subject_ir, %IR.IntegerType{value: 2})
+        ])
+
+      assert encode_ir(ir, %Context{guard?: true, literal_sets?: true}) ==
+               ~s'Type.boolean(s0.has(Erlang["element/2"](Type.integer(1n), context.vars.t)))'
+    end
+
+    test "a call as the subject makes no run outside a guard" do
+      # elem(t, 0) === 1 or elem(t, 0) === 2
+      subject_ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :element,
+        args: [%IR.IntegerType{value: 1}, %IR.Variable{name: :t}]
+      }
+
+      ir =
+        orelse_chain_ir([
+          strict_equality_ir(subject_ir, %IR.IntegerType{value: 1}),
+          strict_equality_ir(subject_ir, %IR.IntegerType{value: 2})
+        ])
+
+      assert encode_ir(ir, %Context{literal_sets?: true}) ==
+               ~s'(Interpreter.toBoolean(Erlang["=:=/2"](Erlang["element/2"](Type.integer(1n), context.vars.t), Type.integer(1n))) ? Type.boolean(true) : Erlang["=:=/2"](Erlang["element/2"](Type.integer(1n), context.vars.t), Type.integer(2n)))'
+    end
+
+    test "a chain that is one run" do
+      # x === 1 or x === 2 or x === 3
+      ir =
+        orelse_chain_ir([
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 1}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 2}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 3})
+        ])
+
+      assert encode_ir(ir, %Context{guard?: true, literal_sets?: true}) ==
+               ~s'Type.boolean(s0.has(context.vars.x))'
+    end
+
+    test "a comparison with a term that is not a literal ends a run" do
+      # x === 1 or x === 2 or x === y or x === 3
+      ir =
+        orelse_chain_ir([
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 1}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 2}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.Variable{name: :y}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 3})
+        ])
+
+      assert encode_ir(ir, %Context{guard?: true, literal_sets?: true}) ==
+               ~s'(s0.has(context.vars.x) || Interpreter.toBoolean(Erlang["=:=/2"](context.vars.x, context.vars.y)) ? Type.boolean(true) : Erlang["=:=/2"](context.vars.x, Type.integer(3n)))'
+    end
+
+    test "a list or a tuple holding a term that is not a literal is not a literal" do
+      # x === [y] or x === {1, y}
+      ir =
+        orelse_chain_ir([
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.ListType{data: [%IR.Variable{name: :y}]}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.TupleType{
+            data: [%IR.IntegerType{value: 1}, %IR.Variable{name: :y}]
+          })
+        ])
+
+      assert encode_ir(ir, %Context{guard?: true, literal_sets?: true}) ==
+               ~s'(Interpreter.toBoolean(Erlang["=:=/2"](context.vars.x, Type.list([context.vars.y]))) ? Type.boolean(true) : Erlang["=:=/2"](context.vars.x, Type.tuple([Type.integer(1n), context.vars.y])))'
+    end
+
+    test "a literal on the left of a comparison makes no run" do
+      # 1 === x or 2 === x
+      ir =
+        orelse_chain_ir([
+          strict_equality_ir(%IR.IntegerType{value: 1}, %IR.Variable{name: :x}),
+          strict_equality_ir(%IR.IntegerType{value: 2}, %IR.Variable{name: :x})
+        ])
+
+      assert encode_ir(ir, %Context{guard?: true, literal_sets?: true}) ==
+               ~s'(Interpreter.toBoolean(Erlang["=:=/2"](Type.integer(1n), context.vars.x)) ? Type.boolean(true) : Erlang["=:=/2"](Type.integer(2n), context.vars.x))'
+    end
+
+    test "a run after another operand" do
+      # is_atom(x) or x === 1 or x === 2
+      ir =
+        orelse_chain_ir([
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :is_atom,
+            args: [%IR.Variable{name: :x}]
+          },
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 1}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 2})
+        ])
+
+      assert encode_ir(ir, %Context{guard?: true, literal_sets?: true}) ==
+               ~s'(Interpreter.toBoolean(Erlang["is_atom/1"](context.vars.x)) ? Type.boolean(true) : Type.boolean(s0.has(context.vars.x)))'
+    end
+
+    test "a run as a tested operand of an :erlang.andalso/2 chain" do
+      # (x === 1 or x === 2) and is_integer(x)
+      ir =
+        %IR.RemoteFunctionCall{
+          module: %IR.AtomType{value: :erlang},
+          function: :andalso,
+          args: [
+            orelse_chain_ir([
+              strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 1}),
+              strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 2})
+            ]),
+            %IR.RemoteFunctionCall{
+              module: %IR.AtomType{value: :erlang},
+              function: :is_integer,
+              args: [%IR.Variable{name: :x}]
+            }
+          ]
+        }
+
+      assert encode_ir(ir, %Context{guard?: true, literal_sets?: true}) ==
+               ~s'((s0.has(context.vars.x)) ? Erlang["is_integer/1"](context.vars.x) : Type.boolean(false))'
+    end
+
+    test "a run as the last operand of an :erlang.andalso/2 chain" do
+      # is_integer(x) and (x === 1 or x === 2)
+      ir =
+        %IR.RemoteFunctionCall{
+          module: %IR.AtomType{value: :erlang},
+          function: :andalso,
+          args: [
+            %IR.RemoteFunctionCall{
+              module: %IR.AtomType{value: :erlang},
+              function: :is_integer,
+              args: [%IR.Variable{name: :x}]
+            },
+            orelse_chain_ir([
+              strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 1}),
+              strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 2})
+            ])
+          ]
+        }
+
+      assert encode_ir(ir, %Context{guard?: true, literal_sets?: true}) ==
+               ~s'(Interpreter.toBoolean(Erlang["is_integer/1"](context.vars.x)) ? Type.boolean(s0.has(context.vars.x)) : Type.boolean(false))'
+    end
+
+    test "a run before another operand" do
+      # x === 1 or x === 2 or is_atom(x)
+      ir =
+        orelse_chain_ir([
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 1}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 2}),
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :is_atom,
+            args: [%IR.Variable{name: :x}]
+          }
+        ])
+
+      assert encode_ir(ir, %Context{guard?: true, literal_sets?: true}) ==
+               ~s'(s0.has(context.vars.x) ? Type.boolean(true) : Erlang["is_atom/1"](context.vars.x))'
+    end
+
+    test "a single comparison is not a run" do
+      # x === 1 or is_atom(x)
+      ir =
+        orelse_chain_ir([
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 1}),
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :is_atom,
+            args: [%IR.Variable{name: :x}]
+          }
+        ])
+
+      assert encode_ir(ir, %Context{guard?: true, literal_sets?: true}) ==
+               ~s'(Interpreter.toBoolean(Erlang["=:=/2"](context.vars.x, Type.integer(1n))) ? Type.boolean(true) : Erlang["is_atom/1"](context.vars.x))'
+    end
+
+    test "a variable as the subject makes a run outside a guard" do
+      # x === 1 or x === 2
+      ir =
+        orelse_chain_ir([
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 1}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 2})
+        ])
+
+      assert encode_ir(ir, %Context{literal_sets?: true}) ==
+               ~s'Type.boolean(s0.has(context.vars.x))'
+    end
+
+    test "an :erlang.andalso/2 chain of comparisons is not a run" do
+      # x === 1 and x === 2
+      ir =
+        %IR.RemoteFunctionCall{
+          module: %IR.AtomType{value: :erlang},
+          function: :andalso,
+          args: [
+            strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 1}),
+            strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 2})
+          ]
+        }
+
+      assert encode_ir(ir, %Context{guard?: true, literal_sets?: true}) ==
+               ~s'(Interpreter.toBoolean(Erlang["=:=/2"](context.vars.x, Type.integer(1n))) ? Erlang["=:=/2"](context.vars.x, Type.integer(2n)) : Type.boolean(false))'
+    end
+
+    test "literals of every kind make a run" do
+      # x === :a or x === 1.5 or x === 1 or x === [1, :a] or x === "abc" or x === {1, :a}
+      ir =
+        orelse_chain_ir([
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.AtomType{value: :a}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.FloatType{value: 1.5}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 1}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.ListType{
+            data: [%IR.IntegerType{value: 1}, %IR.AtomType{value: :a}]
+          }),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.StringType{value: "abc"}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.TupleType{
+            data: [%IR.IntegerType{value: 1}, %IR.AtomType{value: :a}]
+          })
+        ])
+
+      assert encode_ir(ir, %Context{guard?: true, literal_sets?: true}) ==
+               ~s'Type.boolean(s0.has(context.vars.x))'
+    end
+
+    test "no run where the context has no place to declare a set" do
+      # x === 1 or x === 2
+      ir =
+        orelse_chain_ir([
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 1}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 2})
+        ])
+
+      assert encode_ir(ir, %Context{guard?: true}) ==
+               ~s'(Interpreter.toBoolean(Erlang["=:=/2"](context.vars.x, Type.integer(1n))) ? Type.boolean(true) : Erlang["=:=/2"](context.vars.x, Type.integer(2n)))'
+    end
+
+    test "runs of different literals get sets numbered in the order they are used" do
+      # x === 1 or x === 2 or y === 3 or y === 4
+      ir =
+        orelse_chain_ir([
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 1}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 2}),
+          strict_equality_ir(%IR.Variable{name: :y}, %IR.IntegerType{value: 3}),
+          strict_equality_ir(%IR.Variable{name: :y}, %IR.IntegerType{value: 4})
+        ])
+
+      assert encode_ir(ir, %Context{guard?: true, literal_sets?: true}) ==
+               ~s'(s0.has(context.vars.x) ? Type.boolean(true) : Type.boolean(s1.has(context.vars.y)))'
+    end
+
+    test "runs of the same literals share a set" do
+      # x === 1 or x === 2 or y === 1 or y === 2
+      ir =
+        orelse_chain_ir([
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 1}),
+          strict_equality_ir(%IR.Variable{name: :x}, %IR.IntegerType{value: 2}),
+          strict_equality_ir(%IR.Variable{name: :y}, %IR.IntegerType{value: 1}),
+          strict_equality_ir(%IR.Variable{name: :y}, %IR.IntegerType{value: 2})
+        ])
+
+      assert encode_ir(ir, %Context{guard?: true, literal_sets?: true}) ==
+               ~s'(s0.has(context.vars.x) ? Type.boolean(true) : Type.boolean(s0.has(context.vars.y)))'
+    end
+  end
+
+  describe "local function call" do
+    setup do
+      # my_fun!(1, 2)
+      ir = %IR.LocalFunctionCall{
+        function: :my_fun!,
+        args: [%IR.IntegerType{value: 1}, %IR.IntegerType{value: 2}]
+      }
+
+      [ir: ir]
+    end
+
+    test "without a line", %{ir: ir} do
+      assert encode_ir(ir, %Context{module: Aaa.Bbb.Ccc}) ==
+               "Elixir_Aaa_Bbb_Ccc[\"my_fun!/2\"](Type.integer(1n), Type.integer(2n))"
+    end
+
+    test "records the line it is called on", %{ir: ir} do
+      assert encode_ir(%{ir | line: 123}, %Context{module: Aaa.Bbb.Ccc}) ==
+               "(Interpreter.setFrameLine(123), Elixir_Aaa_Bbb_Ccc[\"my_fun!/2\"](Type.integer(1n), Type.integer(2n)))"
+    end
+
+    test "records no line inside a guard, which never raises", %{ir: ir} do
+      context = %Context{guard?: true, module: Aaa.Bbb.Ccc}
+
+      assert encode_ir(%{ir | line: 123}, context) ==
+               "Elixir_Aaa_Bbb_Ccc[\"my_fun!/2\"](Type.integer(1n), Type.integer(2n))"
+    end
+  end
+
+  describe "map type" do
+    test "empty" do
+      # %{}
+      assert encode_ir(%IR.MapType{data: []}) == "Type.map([])"
+    end
+
+    test "single key" do
+      # %{a: 1}
+      ir = %IR.MapType{
+        data: [
+          {
+            %IR.AtomType{value: :a},
+            %IR.IntegerType{value: 1}
+          }
+        ]
+      }
+
+      assert encode_ir(ir) == ~s/Type.map([[Type.atom("a"), Type.integer(1n)]])/
+    end
+
+    test "multiple keys" do
+      # %{a: 1, b: 2}
+      ir = %IR.MapType{
+        data: [
+          {%IR.AtomType{value: :a}, %IR.IntegerType{value: 1}},
+          {%IR.AtomType{value: :b}, %IR.IntegerType{value: 2}}
+        ]
+      }
+
+      assert encode_ir(ir) ==
+               ~s/Type.map([[Type.atom("a"), Type.integer(1n)], [Type.atom("b"), Type.integer(2n)]])/
+    end
+
+    test "keys are sorted" do
+      # %{x: 9, b: 1, a: 2, y: 8}
+      ir = %IR.MapType{
+        data: [
+          {%IR.AtomType{value: :x}, %IR.IntegerType{value: 9}},
+          {%IR.AtomType{value: :b}, %IR.IntegerType{value: 1}},
+          {%IR.AtomType{value: :a}, %IR.IntegerType{value: 2}},
+          {%IR.AtomType{value: :y}, %IR.IntegerType{value: 8}}
+        ]
+      }
+
+      assert encode_ir(ir) ==
+               ~s/Type.map([[Type.atom("a"), Type.integer(2n)], [Type.atom("b"), Type.integer(1n)], [Type.atom("x"), Type.integer(9n)], [Type.atom("y"), Type.integer(8n)]])/
+    end
+  end
+
+  describe "match operator" do
+    test "literal value on both sides" do
+      # 1 = 2
+      ir = %IR.MatchOperator{
+        left: %IR.IntegerType{value: 1},
+        right: %IR.IntegerType{value: 2}
+      }
+
+      assert encode_ir(ir) ==
+               "Interpreter.matchOperator(Type.integer(2n), Type.integer(1n), context)"
+    end
+
+    test "variable in pattern" do
+      # x = 2
+      ir = %IR.MatchOperator{
+        left: %IR.Variable{name: :x},
+        right: %IR.IntegerType{value: 2}
+      }
+
+      assert encode_ir(ir) ==
+               ~s/Interpreter.matchOperator(Type.integer(2n), Type.variablePattern("x"), context)/
+    end
+
+    test "records the line the match is made on" do
+      # x = 2
+      ir = %IR.MatchOperator{
+        left: %IR.Variable{name: :x},
+        right: %IR.IntegerType{value: 2},
+        line: 123
+      }
+
+      assert encode_ir(ir) ==
+               ~s/(Interpreter.setFrameLine(123), Interpreter.matchOperator(Type.integer(2n), Type.variablePattern("x"), context))/
+    end
+
+    test "records the line of a match nested in another match" do
+      # y = x = 2
+      ir = %IR.MatchOperator{
+        left: %IR.Variable{name: :x},
+        right: %IR.IntegerType{value: 2},
+        line: 123
+      }
+
+      assert encode_ir(ir, %Context{match_operator?: true}) ==
+               ~s/(Interpreter.setFrameLine(123), Interpreter.matchOperator(Type.integer(2n), Type.variablePattern("x"), context))/
+    end
+
+    test "variable in expression" do
+      # 1 = x
+      ir = %IR.MatchOperator{
+        left: %IR.IntegerType{value: 1},
+        right: %IR.Variable{name: :x}
+      }
+
+      assert encode_ir(ir) ==
+               "Interpreter.matchOperator(context.vars.x, Type.integer(1n), context)"
+    end
+
+    test "nested, variable in pattern" do
+      # x = 2 = 3
+      ir = %IR.MatchOperator{
+        left: %IR.Variable{name: :x},
+        right: %IR.MatchOperator{
+          left: %IR.IntegerType{value: 2},
+          right: %IR.IntegerType{value: 3}
+        }
+      }
+
+      assert encode_ir(ir) ==
+               ~s/Interpreter.matchOperator(Interpreter.matchOperator(Type.integer(3n), Type.integer(2n), context), Type.variablePattern("x"), context)/
+    end
+
+    test "nested, variable in the middle" do
+      # 1 = x = 3
+      ir = %IR.MatchOperator{
+        left: %IR.IntegerType{value: 1},
+        right: %IR.MatchOperator{
+          left: %IR.Variable{name: :x},
+          right: %IR.IntegerType{value: 3}
+        }
+      }
+
+      assert encode_ir(ir) ==
+               ~s/Interpreter.matchOperator(Interpreter.matchOperator(Type.integer(3n), Type.variablePattern("x"), context), Type.integer(1n), context)/
+    end
+
+    test "nested, variable in expression" do
+      # 1 = 2 = x
+      ir = %IR.MatchOperator{
+        left: %IR.IntegerType{value: 1},
+        right: %IR.MatchOperator{
+          left: %IR.IntegerType{value: 2},
+          right: %IR.Variable{name: :x}
+        }
+      }
+
+      assert encode_ir(ir) ==
+               "Interpreter.matchOperator(Interpreter.matchOperator(context.vars.x, Type.integer(2n), context), Type.integer(1n), context)"
+    end
+
+    test "nested multiple-times" do
+      # {a = b, 2, 3} = {1, c = d, 3} = {1, 2, e = f}
+      ir = %IR.MatchOperator{
+        left: %IR.TupleType{
+          data: [
+            %IR.MatchOperator{
+              left: %IR.Variable{name: :a},
+              right: %IR.Variable{name: :b}
+            },
+            %IR.IntegerType{value: 2},
+            %IR.IntegerType{value: 3}
+          ]
+        },
+        right: %IR.MatchOperator{
+          left: %IR.TupleType{
+            data: [
+              %IR.IntegerType{value: 1},
+              %IR.MatchOperator{
+                left: %IR.Variable{name: :c},
+                right: %IR.Variable{name: :d}
+              },
+              %IR.IntegerType{value: 3}
+            ]
+          },
+          right: %IR.TupleType{
+            data: [
+              %IR.IntegerType{value: 1},
+              %IR.IntegerType{value: 2},
+              %IR.MatchOperator{
+                left: %IR.Variable{name: :e},
+                right: %IR.Variable{name: :f}
+              }
+            ]
+          }
+        }
+      }
+
+      assert encode_ir(ir) ==
+               ~s/Interpreter.matchOperator(Interpreter.matchOperator(Type.tuple([Type.integer(1n), Type.integer(2n), Interpreter.matchOperator(context.vars.f, Type.variablePattern("e"), context)]), Type.tuple([Type.integer(1n), Type.matchPattern(Type.variablePattern("c"), Type.variablePattern("d")), Type.integer(3n)]), context), Type.tuple([Type.matchPattern(Type.variablePattern("a"), Type.variablePattern("b")), Type.integer(2n), Type.integer(3n)]), context)/
+    end
+  end
+
+  test "match placeholder" do
+    # _abc
+    assert encode_ir(%IR.MatchPlaceholder{}) == "Type.matchPlaceholder()"
+  end
+
+  describe "module attribute operator" do
+    test "without special characters" do
+      # @abc
+      assert encode_ir(%IR.ModuleAttributeOperator{name: :abc}) == ~s'context.vars["@abc"]'
+    end
+
+    test "with special characters" do
+      # @abc?
+      assert encode_ir(%IR.ModuleAttributeOperator{name: :abc?}) == ~s'context.vars["@abc?"]'
+    end
+  end
+
+  describe "module definition" do
+    test "valid IR" do
+      # defmodule Aaa.Bbb do
+      #   def fun_1(9, 8), :expr_1
+
+      #   def fun_1(c) when :erlang.is_integer(c), do: c
+
+      #   def fun_1(a, b) do
+      #     :erlang.+(a, b)
+      #   end
+
+      #   defp fun_2(x, y) do
+      #     :erlang.*(x, y)
+      #   end
+
+      #   defp fun_2(9), do: :expr_2
+
+      #   defp fun_2(z) when :erlang.is_float(z), do: z
+      # end
+      ir = %IR.ModuleDefinition{
+        module: %IR.AtomType{value: Aaa.Bbb},
+        body: %IR.Block{
+          expressions: [
+            %IR.FunctionDefinition{
+              name: :fun_1,
+              arity: 2,
+              visibility: :public,
+              clause: %IR.FunctionClause{
+                params: [
+                  %IR.IntegerType{value: 9},
+                  %IR.IntegerType{value: 8}
+                ],
+                guards: [],
+                body: %IR.Block{
+                  expressions: [%IR.AtomType{value: :expr_1}]
+                }
+              }
+            },
+            %IR.FunctionDefinition{
+              name: :fun_1,
+              arity: 1,
+              visibility: :public,
+              clause: %IR.FunctionClause{
+                params: [%IR.Variable{name: :c}],
+                guards: [
+                  %IR.RemoteFunctionCall{
+                    module: %IR.AtomType{value: :erlang},
+                    function: :is_integer,
+                    args: [%IR.Variable{name: :c}]
+                  }
+                ],
+                body: %IR.Block{
+                  expressions: [%IR.Variable{name: :c}]
+                }
+              }
+            },
+            %IR.FunctionDefinition{
+              name: :fun_1,
+              arity: 2,
+              visibility: :public,
+              clause: %IR.FunctionClause{
+                params: [
+                  %IR.Variable{name: :a},
+                  %IR.Variable{name: :b}
+                ],
+                guards: [],
+                body: %IR.Block{
+                  expressions: [
+                    %IR.RemoteFunctionCall{
+                      module: %IR.AtomType{value: :erlang},
+                      function: :+,
+                      args: [
+                        %IR.Variable{name: :a},
+                        %IR.Variable{name: :b}
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            %IR.FunctionDefinition{
+              name: :fun_2,
+              arity: 2,
+              visibility: :private,
+              clause: %IR.FunctionClause{
+                params: [
+                  %IR.Variable{name: :x},
+                  %IR.Variable{name: :y}
+                ],
+                guards: [],
+                body: %IR.Block{
+                  expressions: [
+                    %IR.RemoteFunctionCall{
+                      module: %IR.AtomType{value: :erlang},
+                      function: :*,
+                      args: [
+                        %IR.Variable{name: :x},
+                        %IR.Variable{name: :y}
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            %IR.FunctionDefinition{
+              name: :fun_2,
+              arity: 1,
+              visibility: :private,
+              clause: %IR.FunctionClause{
+                params: [%IR.IntegerType{value: 9}],
+                guards: [],
+                body: %IR.Block{
+                  expressions: [%IR.AtomType{value: :expr_2}]
+                }
+              }
+            },
+            %IR.FunctionDefinition{
+              name: :fun_2,
+              arity: 1,
+              visibility: :private,
+              clause: %IR.FunctionClause{
+                params: [%IR.Variable{name: :z}],
+                guards: [
+                  %IR.RemoteFunctionCall{
+                    module: %IR.AtomType{value: :erlang},
+                    function: :is_float,
+                    args: [%IR.Variable{name: :z}]
+                  }
+                ],
+                body: %IR.Block{
+                  expressions: [%IR.Variable{name: :z}]
+                }
+              }
+            }
+          ]
+        }
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.defineElixirFunction("Aaa.Bbb", "fun_1", 1, "public", [{params: (context) => [Type.variablePattern("c")], guards: [(context) => Erlang["is_integer/1"](context.vars.c)], body: (context) => {
+        return context.vars.c;
+        }}]);
+
+        Interpreter.defineElixirFunction("Aaa.Bbb", "fun_1", 2, "public", [{params: (context) => [Type.integer(9n), Type.integer(8n)], guards: [], body: (context) => {
+        return Type.atom("expr_1");
+        }}, {params: (context) => [Type.variablePattern("a"), Type.variablePattern("b")], guards: [], body: (context) => {
+        return Erlang["+/2"](context.vars.a, context.vars.b);
+        }}]);
+
+        Interpreter.defineElixirFunction("Aaa.Bbb", "fun_2", 1, "private", [{params: (context) => [Type.integer(9n)], guards: [], body: (context) => {
+        return Type.atom("expr_2");
+        }}, {params: (context) => [Type.variablePattern("z")], guards: [(context) => Erlang["is_float/1"](context.vars.z)], body: (context) => {
+        return context.vars.z;
+        }}]);
+
+        Interpreter.defineElixirFunction("Aaa.Bbb", "fun_2", 2, "private", [{params: (context) => [Type.variablePattern("x"), Type.variablePattern("y")], guards: [], body: (context) => {
+        return Erlang["*/2"](context.vars.x, context.vars.y);
+        }}]);\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "invalid IR" do
+      ir = %IR.ModuleDefinition{
+        module: %IR.AtomType{value: Aaa.Bbb},
+        body: %IR.Block{
+          expressions: [
+            %IR.FunctionDefinition{
+              name: :fun_1,
+              arity: 2,
+              visibility: :public,
+              clause: %IR.FunctionClause{
+                params: [
+                  %IR.IntegerType{value: 9},
+                  %IR.IntegerType{value: 8}
+                ],
+                guards: [],
+                body: %IR.Block{
+                  expressions: [
+                    %IR.RemoteFunctionCall{
+                      module: %IR.AtomType{value: :erlang},
+                      function: :apply,
+                      args: [
+                        %IR.AtomType{value: MyModule},
+                        # intentional error (it should be %IR.AtomType{value: :my_fun} or %IR.Variable{name: :my_fun})
+                        :my_fun,
+                        %IR.ListType{data: [%IR.IntegerType{value: 1}, %IR.IntegerType{value: 2}]}
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+
+      expected_msg =
+        normalize_newlines("""
+        can't encode Aaa.Bbb module definition
+        no function clause matching in Hologram.Compiler.Encoder.encode_ir/2\
+        """)
+
+      assert_raise RuntimeError, expected_msg, fn -> encode_ir(ir) end
+    end
+  end
+
+  test "pid" do
+    # #PID<0.11.222>
+    ir = %IR.PIDType{value: pid("0.11.222")}
+
+    assert encode_ir(ir) == ~s/Type.pid("nonode@nohost", [0, 11, 222])/
+  end
+
+  test "pin operator" do
+    # ^abc
+    assert encode_ir(%IR.PinOperator{variable: %IR.Variable{name: :abc, version: 2}}) ==
+             "context.vars.abc_2"
+  end
+
+  test "port" do
+    # #Port<0.11>
+    ir = %IR.PortType{value: port("0.11")}
+
+    assert encode_ir(ir) == ~s/Type.port("nonode@nohost", [0, 11])/
+  end
+
+  describe "reference" do
+    test "NEWER_REFERENCE_EXT with SMALL_ATOM_UTF8_EXT (tag 119)" do
+      # Build reference binary in Erlang External Term Format:
+      # 131 - VERSION_NUMBER
+      # 90 - NEWER_REFERENCE_EXT tag
+      # 3::16 - number of ID words (big-endian 16-bit)
+      # 119 - SMALL_ATOM_UTF8_EXT tag for node name
+      # 13::8 - node name length (8-bit)
+      # "nonode@nohost" - node name bytes
+      # 0::32 - creation number (32-bit)
+      # 1::32, 2::32, 3::32 - three ID words (each 32-bit)
+      binary = <<131, 90, 3::16, 119, 13::8, "nonode@nohost", 0::32, 1::32, 2::32, 3::32>>
+
+      ref = :erlang.binary_to_term(binary, [:safe])
+      ir = %IR.ReferenceType{value: ref}
+
+      assert encode_ir(ir) == ~s/Type.reference("nonode@nohost", 0, [1, 2, 3])/
+    end
+
+    test "NEWER_REFERENCE_EXT with ATOM_EXT (tag 100)" do
+      # Build reference binary in Erlang External Term Format:
+      # 131 - VERSION_NUMBER
+      # 90 - NEWER_REFERENCE_EXT tag
+      # 3::16 - number of ID words (big-endian 16-bit)
+      # 100 - ATOM_EXT tag for node name (Latin-1 encoded)
+      # 13::16 - node name length (16-bit)
+      # "nonode@nohost" - node name bytes
+      # 0::32 - creation number (32-bit)
+      # 1::32, 2::32, 3::32 - three ID words (each 32-bit)
+      binary = <<131, 90, 3::16, 100, 13::16, "nonode@nohost", 0::32, 1::32, 2::32, 3::32>>
+
+      ref = :erlang.binary_to_term(binary, [:safe])
+      ir = %IR.ReferenceType{value: ref}
+
+      assert encode_ir(ir) == ~s/Type.reference("nonode@nohost", 0, [1, 2, 3])/
+    end
+  end
+
+  describe "remote function call" do
+    test "called on a module alias" do
+      # Aaa.Bbb.Ccc.my_fun!(1, 2)
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: Aaa.Bbb.Ccc},
+        function: :my_fun!,
+        args: [%IR.IntegerType{value: 1}, %IR.IntegerType{value: 2}]
+      }
+
+      assert encode_ir(ir) ==
+               "Elixir_Aaa_Bbb_Ccc[\"my_fun!/2\"](Type.integer(1n), Type.integer(2n))"
+    end
+
+    test "records the line it is called on" do
+      # Aaa.Bbb.Ccc.my_fun!(1, 2)
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: Aaa.Bbb.Ccc},
+        function: :my_fun!,
+        args: [%IR.IntegerType{value: 1}, %IR.IntegerType{value: 2}],
+        line: 123
+      }
+
+      assert encode_ir(ir) ==
+               "(Interpreter.setFrameLine(123), Elixir_Aaa_Bbb_Ccc[\"my_fun!/2\"](Type.integer(1n), Type.integer(2n)))"
+    end
+
+    test "records no line when client stacktraces are disabled" do
+      Application.put_env(:duskmoon_hologram, :client_stacktraces, false)
+      on_exit(fn -> Application.delete_env(:duskmoon_hologram, :client_stacktraces) end)
+
+      # Aaa.Bbb.Ccc.my_fun!(1, 2)
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: Aaa.Bbb.Ccc},
+        function: :my_fun!,
+        args: [%IR.IntegerType{value: 1}, %IR.IntegerType{value: 2}],
+        line: 123
+      }
+
+      assert encode_ir(ir) ==
+               "Elixir_Aaa_Bbb_Ccc[\"my_fun!/2\"](Type.integer(1n), Type.integer(2n))"
+    end
+
+    test "called on variable" do
+      # x.my_fun!(1, 2)
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.Variable{name: :x},
+        function: :my_fun!,
+        args: [%IR.IntegerType{value: 1}, %IR.IntegerType{value: 2}]
+      }
+
+      assert encode_ir(ir) ==
+               ~s'Interpreter.callNamedFunction(context.vars.x, Type.atom("my_fun!"), Type.list([Type.integer(1n), Type.integer(2n)]), context)'
+    end
+
+    test "called on expression" do
+      # (case my_var do
+      #   :a -> MyModule1
+      #   :b -> MyModule2
+      # end).my_fun!(1, 2)
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.Case{
+          condition: %IR.Variable{name: :my_var},
+          clauses: [
+            %IR.Clause{
+              match: %IR.AtomType{value: :a},
+              guards: [],
+              body: %IR.Block{
+                expressions: [%IR.AtomType{value: MyModule1}]
+              }
+            },
+            %IR.Clause{
+              match: %IR.AtomType{value: :b},
+              guards: [],
+              body: %IR.Block{
+                expressions: [%IR.AtomType{value: MyModule2}]
+              }
+            }
+          ]
+        },
+        function: :my_fun!,
+        args: [
+          %IR.IntegerType{value: 1},
+          %IR.IntegerType{value: 2}
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.callNamedFunction(Interpreter.case(context.vars.my_var, [{match: Type.atom("a"), guards: [], body: (context) => {
+        return Type.atom("Elixir.MyModule1");
+        }}, {match: Type.atom("b"), guards: [], body: (context) => {
+        return Type.atom("Elixir.MyModule2");
+        }}], context), Type.atom("my_fun!"), Type.list([Type.integer(1n), Type.integer(2n)]), context)\
+        """)
+
+      assert encode_ir(ir, %Context{module: MyModule}) == expected
+    end
+
+    test ":erlang.andalso/2 call" do
+      # :erlang.andalso(1, 2)
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :andalso,
+        args: [
+          %IR.IntegerType{value: 1},
+          %IR.IntegerType{value: 2}
+        ]
+      }
+
+      assert encode_ir(ir) ==
+               "(Interpreter.toBoolean(Type.integer(1n)) ? Type.integer(2n) : Type.boolean(false))"
+    end
+
+    test ":erlang.andalso/2 chain" do
+      # :erlang.andalso(:erlang.andalso(1, 2), 3)
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :andalso,
+        args: [
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :andalso,
+            args: [%IR.IntegerType{value: 1}, %IR.IntegerType{value: 2}]
+          },
+          %IR.IntegerType{value: 3}
+        ]
+      }
+
+      assert encode_ir(ir) ==
+               "(Interpreter.toBoolean(Type.integer(1n)) && Interpreter.toBoolean(Type.integer(2n)) ? Type.integer(3n) : Type.boolean(false))"
+    end
+
+    test ":erlang.andalso/2 checks carry the line of the call that makes them" do
+      # :erlang.andalso(:erlang.andalso(1, 2), 3), the inner call on line 10 and the outer one on line 11
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :andalso,
+        args: [
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :andalso,
+            args: [%IR.IntegerType{value: 1}, %IR.IntegerType{value: 2}],
+            line: 10
+          },
+          %IR.IntegerType{value: 3}
+        ],
+        line: 11
+      }
+
+      assert encode_ir(ir) ==
+               "(Interpreter.setFrameLine(11), (Interpreter.toBoolean(Type.integer(1n), 10) && Interpreter.toBoolean(Type.integer(2n), 11) ? Type.integer(3n) : Type.boolean(false)))"
+    end
+
+    test ":erlang.andalso/2 with an :erlang.orelse/2 chain as a tested operand" do
+      # :erlang.andalso(:erlang.orelse(1, 2), 3)
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :andalso,
+        args: [
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :orelse,
+            args: [%IR.IntegerType{value: 1}, %IR.IntegerType{value: 2}]
+          },
+          %IR.IntegerType{value: 3}
+        ]
+      }
+
+      assert encode_ir(ir) ==
+               "((Interpreter.toBoolean(Type.integer(1n)) || Interpreter.toBoolean(Type.integer(2n))) ? Type.integer(3n) : Type.boolean(false))"
+    end
+
+    test ":erlang.apply/3 call with non-variable args" do
+      # :erlang.apply(MyModule, :my_fun, [1, 2])
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :apply,
+        args: [
+          %IR.AtomType{value: MyModule},
+          %IR.AtomType{value: :my_fun},
+          %IR.ListType{
+            data: [
+              %IR.IntegerType{value: 1},
+              %IR.IntegerType{value: 2}
+            ]
+          }
+        ]
+      }
+
+      assert encode_ir(ir) ==
+               ~s'Interpreter.callNamedFunction(Type.atom("Elixir.MyModule"), Type.atom("my_fun"), Type.list([Type.integer(1n), Type.integer(2n)]), context)'
+    end
+
+    test ":erlang.apply/3 call with variable args" do
+      # :erlang.apply(module, fun, args)
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :apply,
+        args: [
+          %IR.Variable{name: :module},
+          %IR.Variable{name: :fun},
+          %IR.Variable{name: :args}
+        ]
+      }
+
+      assert encode_ir(ir) ==
+               "Interpreter.callNamedFunction(context.vars.module, context.vars.fun, context.vars.args, context)"
+    end
+
+    test ":erlang.orelse/2 call" do
+      # :erlang.orelse(1, 2)
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :orelse,
+        args: [
+          %IR.IntegerType{value: 1},
+          %IR.IntegerType{value: 2}
+        ]
+      }
+
+      assert encode_ir(ir) ==
+               "(Interpreter.toBoolean(Type.integer(1n)) ? Type.boolean(true) : Type.integer(2n))"
+    end
+
+    test ":erlang.orelse/2 chain nested to the left" do
+      # :erlang.orelse(:erlang.orelse(1, 2), 3)
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :orelse,
+        args: [
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :orelse,
+            args: [%IR.IntegerType{value: 1}, %IR.IntegerType{value: 2}]
+          },
+          %IR.IntegerType{value: 3}
+        ]
+      }
+
+      assert encode_ir(ir) ==
+               "(Interpreter.toBoolean(Type.integer(1n)) || Interpreter.toBoolean(Type.integer(2n)) ? Type.boolean(true) : Type.integer(3n))"
+    end
+
+    test ":erlang.orelse/2 chain nested to the right" do
+      # :erlang.orelse(1, :erlang.orelse(2, 3))
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :orelse,
+        args: [
+          %IR.IntegerType{value: 1},
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :orelse,
+            args: [%IR.IntegerType{value: 2}, %IR.IntegerType{value: 3}]
+          }
+        ]
+      }
+
+      assert encode_ir(ir) ==
+               "(Interpreter.toBoolean(Type.integer(1n)) || Interpreter.toBoolean(Type.integer(2n)) ? Type.boolean(true) : Type.integer(3n))"
+    end
+
+    test ":erlang.orelse/2 checks carry no line in a guard" do
+      # :erlang.orelse(:erlang.orelse(1, 2), 3), the inner call on line 10 and the outer one on line 11
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :orelse,
+        args: [
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :orelse,
+            args: [%IR.IntegerType{value: 1}, %IR.IntegerType{value: 2}],
+            line: 10
+          },
+          %IR.IntegerType{value: 3}
+        ],
+        line: 11
+      }
+
+      assert encode_ir(ir, %Context{guard?: true}) ==
+               "(Interpreter.toBoolean(Type.integer(1n)) || Interpreter.toBoolean(Type.integer(2n)) ? Type.boolean(true) : Type.integer(3n))"
+    end
+
+    test ":erlang.orelse/2 checks carry no line when client stacktraces are disabled" do
+      Application.put_env(:duskmoon_hologram, :client_stacktraces, false)
+      on_exit(fn -> Application.delete_env(:duskmoon_hologram, :client_stacktraces) end)
+
+      # :erlang.orelse(:erlang.orelse(1, 2), 3), the inner call on line 10 and the outer one on line 11
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :orelse,
+        args: [
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :orelse,
+            args: [%IR.IntegerType{value: 1}, %IR.IntegerType{value: 2}],
+            line: 10
+          },
+          %IR.IntegerType{value: 3}
+        ],
+        line: 11
+      }
+
+      assert encode_ir(ir) ==
+               "(Interpreter.toBoolean(Type.integer(1n)) || Interpreter.toBoolean(Type.integer(2n)) ? Type.boolean(true) : Type.integer(3n))"
+    end
+
+    test ":erlang.orelse/2 checks carry the line of the call that makes them" do
+      # :erlang.orelse(:erlang.orelse(1, 2), 3), the inner call on line 10 and the outer one on line 11
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :orelse,
+        args: [
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :orelse,
+            args: [%IR.IntegerType{value: 1}, %IR.IntegerType{value: 2}],
+            line: 10
+          },
+          %IR.IntegerType{value: 3}
+        ],
+        line: 11
+      }
+
+      assert encode_ir(ir) ==
+               "(Interpreter.setFrameLine(11), (Interpreter.toBoolean(Type.integer(1n), 10) || Interpreter.toBoolean(Type.integer(2n), 11) ? Type.boolean(true) : Type.integer(3n)))"
+    end
+
+    test ":erlang.orelse/2 checks in a tested :erlang.andalso/2 chain carry the line of the call that makes them" do
+      # :erlang.orelse(:erlang.andalso(1, 2), 3), the inner call on line 10 and the outer one on line 11
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :orelse,
+        args: [
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :andalso,
+            args: [%IR.IntegerType{value: 1}, %IR.IntegerType{value: 2}],
+            line: 10
+          },
+          %IR.IntegerType{value: 3}
+        ],
+        line: 11
+      }
+
+      assert encode_ir(ir) ==
+               "(Interpreter.setFrameLine(11), ((Interpreter.toBoolean(Type.integer(1n), 10) && Interpreter.toBoolean(Type.integer(2n), 11)) ? Type.boolean(true) : Type.integer(3n)))"
+    end
+
+    test ":erlang.orelse/2 with an :erlang.andalso/2 chain as a tested operand" do
+      # :erlang.orelse(:erlang.andalso(1, 2), 3)
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :orelse,
+        args: [
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :andalso,
+            args: [%IR.IntegerType{value: 1}, %IR.IntegerType{value: 2}]
+          },
+          %IR.IntegerType{value: 3}
+        ]
+      }
+
+      assert encode_ir(ir) ==
+               "((Interpreter.toBoolean(Type.integer(1n)) && Interpreter.toBoolean(Type.integer(2n))) ? Type.boolean(true) : Type.integer(3n))"
+    end
+
+    test ":erlang.orelse/2 with an :erlang.andalso/2 chain as the last operand" do
+      # :erlang.orelse(1, :erlang.andalso(2, 3))
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :orelse,
+        args: [
+          %IR.IntegerType{value: 1},
+          %IR.RemoteFunctionCall{
+            module: %IR.AtomType{value: :erlang},
+            function: :andalso,
+            args: [%IR.IntegerType{value: 2}, %IR.IntegerType{value: 3}]
+          }
+        ]
+      }
+
+      assert encode_ir(ir) ==
+               "(Interpreter.toBoolean(Type.integer(1n)) ? Type.boolean(true) : (Interpreter.toBoolean(Type.integer(2n)) ? Type.integer(3n) : Type.boolean(false)))"
+    end
+
+    test "async - wraps call with await when target MFA is in async_mfas" do
+      # Aaa.Bbb.my_fun(1, 2)
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: Aaa.Bbb},
+        function: :my_fun,
+        args: [%IR.IntegerType{value: 1}, %IR.IntegerType{value: 2}]
+      }
+
+      async_mfas = MapSet.new([{Aaa.Bbb, :my_fun, 2}])
+      context = %Context{async_mfas: async_mfas}
+
+      assert encode_ir(ir, context) ==
+               "(await Elixir_Aaa_Bbb[\"my_fun/2\"](Type.integer(1n), Type.integer(2n)))"
+    end
+
+    test "async - no await when target MFA is not in async_mfas" do
+      # Aaa.Bbb.my_fun(1, 2)
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: Aaa.Bbb},
+        function: :my_fun,
+        args: [%IR.IntegerType{value: 1}, %IR.IntegerType{value: 2}]
+      }
+
+      async_mfas = MapSet.new([{Aaa.Bbb, :other_fun, 2}])
+      context = %Context{async_mfas: async_mfas}
+
+      assert encode_ir(ir, context) ==
+               "Elixir_Aaa_Bbb[\"my_fun/2\"](Type.integer(1n), Type.integer(2n))"
+    end
+
+    test "async - dynamic named function call" do
+      # x.my_fun!(1, 2)
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.Variable{name: :x},
+        function: :my_fun!,
+        args: [%IR.IntegerType{value: 1}, %IR.IntegerType{value: 2}]
+      }
+
+      assert encode_ir(ir, %Context{async?: true}) ==
+               ~s'(await Interpreter.callNamedFunction(context.vars.x, Type.atom("my_fun!"), Type.list([Type.integer(1n), Type.integer(2n)]), context))'
+    end
+
+    test "async - :erlang.apply/3 call" do
+      # :erlang.apply(MyModule, :my_fun, [1, 2])
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :apply,
+        args: [
+          %IR.AtomType{value: MyModule},
+          %IR.AtomType{value: :my_fun},
+          %IR.ListType{
+            data: [
+              %IR.IntegerType{value: 1},
+              %IR.IntegerType{value: 2}
+            ]
+          }
+        ]
+      }
+
+      assert encode_ir(ir, %Context{async?: true}) ==
+               ~s'(await Interpreter.callNamedFunction(Type.atom("Elixir.MyModule"), Type.atom("my_fun"), Type.list([Type.integer(1n), Type.integer(2n)]), context))'
+    end
+
+    test "async - :erlang.orelse/2 operands are awaited in place" do
+      # :erlang.orelse(Aaa.Bbb.my_fun(), Aaa.Bbb.my_fun())
+      my_fun_call = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: Aaa.Bbb},
+        function: :my_fun,
+        args: []
+      }
+
+      ir = %IR.RemoteFunctionCall{
+        module: %IR.AtomType{value: :erlang},
+        function: :orelse,
+        args: [my_fun_call, my_fun_call]
+      }
+
+      async_mfas = MapSet.new([{Aaa.Bbb, :my_fun, 0}])
+      context = %Context{async?: true, async_mfas: async_mfas}
+
+      assert encode_ir(ir, context) ==
+               ~s'(Interpreter.toBoolean((await Elixir_Aaa_Bbb["my_fun/0"]())) ? Type.boolean(true) : (await Elixir_Aaa_Bbb["my_fun/0"]()))'
+    end
+  end
+
+  describe "stacktrace" do
+    test "encodes as the context's stacktrace field" do
+      # __STACKTRACE__
+      ir = %IR.Stacktrace{}
+
+      assert encode_ir(ir) == "context.stacktrace"
+    end
+  end
+
+  describe "string type" do
+    test "printable ASCII char" do
+      # "a"
+      ir = %IR.StringType{value: "a"}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("a")/
+    end
+
+    test "printable Unicode char" do
+      # "全"
+      ir = %IR.StringType{value: "全"}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("全")/
+    end
+
+    test "multiple printable chars" do
+      # "abc全息图"
+      ir = %IR.StringType{value: "abc全息图"}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("abc全息图")/
+    end
+
+    test "backslash char" do
+      # "\\"
+      ir = %IR.StringType{value: "\\"}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\\\\")/
+    end
+
+    test "double quote char" do
+      # "\""
+      ir = %IR.StringType{value: "\""}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\\\"")/
+    end
+
+    test "line feed char" do
+      # "\n"
+      ir = %IR.StringType{value: "\n"}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\\n")/
+    end
+
+    test "carriage return char" do
+      # "\r"
+      ir = %IR.StringType{value: "\r"}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\\r")/
+    end
+
+    test "null char" do
+      # <<0>>
+      ir = %IR.StringType{value: <<0>>}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\\u{0}")/
+    end
+
+    test "less-than char" do
+      # "<"
+      ir = %IR.StringType{value: "<"}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\\u{3C}")/
+    end
+
+    test "closing script tag" do
+      # An unescaped "<" would end the script element the encoded term is printed into,
+      # cutting the page's inline script short and spilling the rest onto the page.
+      ir = %IR.StringType{value: "</script>"}
+
+      assert encode_ir(ir) == ~s|Type.bitstring("\\u{3C}/script>")|
+    end
+
+    test "greater-than char travels as itself" do
+      # ">"
+      ir = %IR.StringType{value: ">"}
+
+      assert encode_ir(ir) == ~s/Type.bitstring(">")/
+    end
+
+    test "beep char travels as itself" do
+      # "\a"
+      ir = %IR.StringType{value: "\a"}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\a")/
+    end
+
+    test "backspace char travels as itself" do
+      # "\b"
+      ir = %IR.StringType{value: "\b"}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\b")/
+    end
+
+    test "form feed char travels as itself" do
+      # "\f"
+      ir = %IR.StringType{value: "\f"}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\f")/
+    end
+
+    test "horizontal tab char travels as itself" do
+      # "\t"
+      ir = %IR.StringType{value: "\t"}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\t")/
+    end
+
+    test "vertical tab char travels as itself" do
+      # "\v"
+      ir = %IR.StringType{value: "\v"}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\v")/
+    end
+
+    test "escape char travels as itself" do
+      # "\e"
+      ir = %IR.StringType{value: "\e"}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\e")/
+    end
+
+    test "delete char travels as itself" do
+      # <<127>>
+      ir = %IR.StringType{value: <<127>>}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\d")/
+    end
+
+    test "line separator char travels as itself" do
+      # <<0x2028::utf8>>
+      ir = %IR.StringType{value: <<0x2028::utf8>>}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\u2028")/
+    end
+
+    test "paragraph separator char travels as itself" do
+      # <<0x2029::utf8>>
+      ir = %IR.StringType{value: <<0x2029::utf8>>}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\u2029")/
+    end
+
+    test "C1 control char travels as itself" do
+      # <<0x85::utf8>> (equivalent to <<194, 133>>)
+      ir = %IR.StringType{value: <<0x85::utf8>>}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\u0085")/
+    end
+
+    test "multiple C1 control chars travel as themselves" do
+      # <<0x85::utf8, 0x86::utf8, 0x87::utf8>>
+      ir = %IR.StringType{value: <<0x85::utf8, 0x86::utf8, 0x87::utf8>>}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\u0085\u0086\u0087")/
+    end
+
+    test "last char before the printable Unicode range travels as itself" do
+      # <<0x9F::utf8>> (equivalent to <<194, 159>>)
+      ir = %IR.StringType{value: <<0x9F::utf8>>}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\u009F")/
+    end
+
+    test "first printable char after the C1 range" do
+      # <<0xA0::utf8>> (equivalent to <<194, 160>>)
+      ir = %IR.StringType{value: <<0xA0::utf8>>}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\u00A0")/
+    end
+
+    test "last printable char before the noncharacters" do
+      # <<0xFFFD::utf8>>
+      ir = %IR.StringType{value: <<0xFFFD::utf8>>}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\uFFFD")/
+    end
+
+    test "noncharacter U+FFFE travels as itself" do
+      # <<0xFFFE::utf8>>
+      ir = %IR.StringType{value: <<0xFFFE::utf8>>}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\uFFFE")/
+    end
+
+    test "noncharacter U+FFFF travels as itself" do
+      # <<0xFFFF::utf8>>
+      ir = %IR.StringType{value: <<0xFFFF::utf8>>}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\uFFFF")/
+    end
+
+    test "printable char above the BMP" do
+      # "\u{1F600}"
+      ir = %IR.StringType{value: <<0x1F600::utf8>>}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("\u{1F600}")/
+    end
+
+    test "a byte that is not valid UTF-8 travels as hex" do
+      ir = %IR.StringType{value: <<240>>}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("f0", "hex")/
+    end
+
+    test "bytes that are not valid UTF-8 travel as hex" do
+      ir = %IR.StringType{value: <<240, 145, 163>>}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("f091a3", "hex")/
+    end
+
+    test "escapable chars next to a byte that is not valid UTF-8 travel as hex with it" do
+      # Nothing is escaped in hex, since hex holds none of the chars that have to be escaped.
+      ir = %IR.StringType{value: "a" <> <<240>> <> "\"<\n"}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("61f0223c0a", "hex")/
+    end
+
+    test "text next to a byte that is not valid UTF-8 travels as hex with it" do
+      # A binary is text or it is not - a string literal cannot say which of its chars are bytes.
+      ir = %IR.StringType{value: "全" <> <<240>>}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("e585a8f0", "hex")/
+    end
+
+    test "the UTF-8 spelling of a surrogate is not text" do
+      # A JavaScript string can hold a lone surrogate and TextEncoder turns one into U+FFFD, so
+      # these bytes must never travel as text. String.valid?/1 rejects them.
+      ir = %IR.StringType{value: <<237, 160, 128>>}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("eda080", "hex")/
+    end
+
+    test "multiple chars that travel as themselves and chars that do not" do
+      # "abc\n全息图\t" <> <<0x85::utf8>>
+      ir = %IR.StringType{value: "abc\n全息图\t" <> <<0x85::utf8>>}
+
+      assert encode_ir(ir) == ~s/Type.bitstring("abc\\n全息图\t\u0085")/
+    end
+
+    test "long string" do
+      # 25 KB, mixing plain chars with escapes so the result is assembled from many parts
+      ir = %IR.StringType{value: String.duplicate("ab\"c\n", 5_000)}
+
+      expected = ~s/Type.bitstring("/ <> String.duplicate(~S|ab\"c\n|, 5_000) <> ~s/")/
+
+      assert encode_ir(ir) == expected
+    end
+  end
+
+  describe "string type (property)" do
+    # Text escaping is a native scan over the chars that have to be escaped, and a binary that is
+    # not text is not escaped at all but spelled as hex. Nothing else in the suite would notice
+    # either drifting from the rule it implements, so both are checked here against the rule
+    # written out directly.
+
+    test "text escapes the same as walking it char by char" do
+      # Seeded so a failure reproduces.
+      :rand.seed(:exsss, {1, 2, 3})
+
+      for _index <- 1..2_000 do
+        value = random_text(40)
+
+        assert encode_ir(%IR.StringType{value: value}) ==
+                 ~s/Type.bitstring("/ <> reference_escape(value) <> ~s/")/,
+               "failed for #{inspect(value, binaries: :as_binaries)}"
+      end
+    end
+
+    test "a binary that is not text travels as the hex of its bytes" do
+      # Seeded so a failure reproduces.
+      :rand.seed(:exsss, {4, 5, 6})
+
+      for _index <- 1..2_000 do
+        # 0xFF is valid UTF-8 nowhere, so whatever surrounds it the binary is not text.
+        value = random_bytes(30) <> <<0xFF>> <> random_bytes(30)
+
+        assert encode_ir(%IR.StringType{value: value}) ==
+                 ~s/Type.bitstring("/ <> reference_hex(value) <> ~s/", "hex")/,
+               "failed for #{inspect(value, binaries: :as_binaries)}"
+      end
+    end
+  end
+
+  describe "try" do
+    test "body" do
+      # try do
+      #   :ok
+      # end
+      ir = %IR.Try{
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :ok}]
+        },
+        rescue_clauses: [],
+        catch_clauses: [],
+        else_clauses: [],
+        after_block: nil
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.try((context) => {
+        return Type.atom("ok");
+        }, [], [], [], null, context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "single rescue clause / without variable / with single module" do
+      # try do
+      #   :ok
+      # rescue
+      #   RuntimeError -> :error
+      # end
+      ir = %IR.Try{
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :ok}]
+        },
+        rescue_clauses: [
+          %IR.TryRescueClause{
+            variable: nil,
+            modules: [%IR.AtomType{value: RuntimeError}],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :error}]
+            }
+          }
+        ],
+        catch_clauses: [],
+        else_clauses: [],
+        after_block: nil
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.try((context) => {
+        return Type.atom("ok");
+        }, [{variable: null, modules: [Type.atom("Elixir.RuntimeError")], body: (context) => {
+        return Type.atom("error");
+        }}], [], [], null, context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "multiple rescue clauses" do
+      # try do
+      #   :ok
+      # rescue
+      #   ArgumentError -> :error_1
+      #   RuntimeError -> :error_2
+      # end
+      ir = %IR.Try{
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :ok}]
+        },
+        rescue_clauses: [
+          %IR.TryRescueClause{
+            variable: nil,
+            modules: [%IR.AtomType{value: ArgumentError}],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :error_1}]
+            }
+          },
+          %IR.TryRescueClause{
+            variable: nil,
+            modules: [%IR.AtomType{value: RuntimeError}],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :error_2}]
+            }
+          }
+        ],
+        catch_clauses: [],
+        else_clauses: [],
+        after_block: nil
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.try((context) => {
+        return Type.atom("ok");
+        }, [{variable: null, modules: [Type.atom("Elixir.ArgumentError")], body: (context) => {
+        return Type.atom("error_1");
+        }}, {variable: null, modules: [Type.atom("Elixir.RuntimeError")], body: (context) => {
+        return Type.atom("error_2");
+        }}], [], [], null, context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "with variable" do
+      # try do
+      #   :ok
+      # rescue
+      #   e -> :error
+      # end
+      ir = %IR.Try{
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :ok}]
+        },
+        rescue_clauses: [
+          %IR.TryRescueClause{
+            variable: %IR.Variable{name: :e},
+            modules: [],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :error}]
+            }
+          }
+        ],
+        catch_clauses: [],
+        else_clauses: [],
+        after_block: nil
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.try((context) => {
+        return Type.atom("ok");
+        }, [{variable: Type.variablePattern("e"), modules: [], body: (context) => {
+        return Type.atom("error");
+        }}], [], [], null, context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "with multiple modules" do
+      # try do
+      #   :ok
+      # rescue
+      #   [ArgumentError, RuntimeError]-> :error
+      # end
+      ir = %IR.Try{
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :ok}]
+        },
+        rescue_clauses: [
+          %IR.TryRescueClause{
+            variable: nil,
+            modules: [
+              %IR.AtomType{value: ArgumentError},
+              %IR.AtomType{value: RuntimeError}
+            ],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :error}]
+            }
+          }
+        ],
+        catch_clauses: [],
+        else_clauses: [],
+        after_block: nil
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.try((context) => {
+        return Type.atom("ok");
+        }, [{variable: null, modules: [Type.atom("Elixir.ArgumentError"), Type.atom("Elixir.RuntimeError")], body: (context) => {
+        return Type.atom("error");
+        }}], [], [], null, context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "async" do
+      ir = %IR.Try{
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :ok}]
+        },
+        rescue_clauses: [],
+        catch_clauses: [],
+        else_clauses: [],
+        after_block: nil
+      }
+
+      expected =
+        normalize_newlines("""
+        (await Interpreter.asyncTry(async (context) => {
+        return Type.atom("ok");
+        }, [], [], [], null, context))\
+        """)
+
+      assert encode_ir(ir, %Context{async?: true}) == expected
+    end
+
+    test "with a catch clause" do
+      # try do
+      #   :ok
+      # catch
+      #   :throw, value -> value
+      # end
+      ir = %IR.Try{
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :ok}]
+        },
+        rescue_clauses: [],
+        catch_clauses: [
+          %IR.TryCatchClause{
+            kind: %IR.AtomType{value: :throw},
+            value: %IR.Variable{name: :value},
+            guards: [],
+            body: %IR.Block{
+              expressions: [%IR.Variable{name: :value}]
+            }
+          }
+        ],
+        else_clauses: [],
+        after_block: nil
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.try((context) => {
+        return Type.atom("ok");
+        }, [], [{kind: Type.atom("throw"), value: Type.variablePattern("value"), guards: [], body: (context) => {
+        return context.vars.value;
+        }}], [], null, context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "with an else clause" do
+      # try do
+      #   :ok
+      # else
+      #   :ok -> :matched
+      # end
+      ir = %IR.Try{
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :ok}]
+        },
+        rescue_clauses: [],
+        catch_clauses: [],
+        else_clauses: [
+          %IR.Clause{
+            match: %IR.AtomType{value: :ok},
+            guards: [],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :matched}]
+            }
+          }
+        ],
+        after_block: nil
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.try((context) => {
+        return Type.atom("ok");
+        }, [], [], [{match: Type.atom("ok"), guards: [], body: (context) => {
+        return Type.atom("matched");
+        }}], null, context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "with an after block" do
+      # try do
+      #   :ok
+      # after
+      #   :cleanup
+      # end
+      ir = %IR.Try{
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :ok}]
+        },
+        rescue_clauses: [],
+        catch_clauses: [],
+        else_clauses: [],
+        after_block: %IR.Block{
+          expressions: [%IR.AtomType{value: :cleanup}]
+        }
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.try((context) => {
+        return Type.atom("ok");
+        }, [], [], [], (context) => {
+        return Type.atom("cleanup");
+        }, context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "with rescue, catch, else and after" do
+      # try do
+      #   :ok
+      # rescue
+      #   e -> :rescued
+      # catch
+      #   :throw, value -> value
+      # else
+      #   :ok -> :matched
+      # after
+      #   :cleanup
+      # end
+      ir = %IR.Try{
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :ok}]
+        },
+        rescue_clauses: [
+          %IR.TryRescueClause{
+            variable: %IR.Variable{name: :e},
+            modules: [],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :rescued}]
+            }
+          }
+        ],
+        catch_clauses: [
+          %IR.TryCatchClause{
+            kind: %IR.AtomType{value: :throw},
+            value: %IR.Variable{name: :value},
+            guards: [],
+            body: %IR.Block{
+              expressions: [%IR.Variable{name: :value}]
+            }
+          }
+        ],
+        else_clauses: [
+          %IR.Clause{
+            match: %IR.AtomType{value: :ok},
+            guards: [],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :matched}]
+            }
+          }
+        ],
+        after_block: %IR.Block{
+          expressions: [%IR.AtomType{value: :cleanup}]
+        }
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.try((context) => {
+        return Type.atom("ok");
+        }, [{variable: Type.variablePattern("e"), modules: [], body: (context) => {
+        return Type.atom("rescued");
+        }}], [{kind: Type.atom("throw"), value: Type.variablePattern("value"), guards: [], body: (context) => {
+        return context.vars.value;
+        }}], [{match: Type.atom("ok"), guards: [], body: (context) => {
+        return Type.atom("matched");
+        }}], (context) => {
+        return Type.atom("cleanup");
+        }, context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "async with an after block" do
+      ir = %IR.Try{
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :ok}]
+        },
+        rescue_clauses: [],
+        catch_clauses: [],
+        else_clauses: [],
+        after_block: %IR.Block{
+          expressions: [%IR.AtomType{value: :cleanup}]
+        }
+      }
+
+      expected =
+        normalize_newlines("""
+        (await Interpreter.asyncTry(async (context) => {
+        return Type.atom("ok");
+        }, [], [], [], async (context) => {
+        return Type.atom("cleanup");
+        }, context))\
+        """)
+
+      assert encode_ir(ir, %Context{async?: true}) == expected
+    end
+
+    test "catch clause / without guards" do
+      # catch
+      #   :throw, value -> :caught
+      ir = %IR.TryCatchClause{
+        kind: %IR.AtomType{value: :throw},
+        value: %IR.Variable{name: :value},
+        guards: [],
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :caught}]
+        }
+      }
+
+      assert encode_ir(ir) ==
+               "{kind: Type.atom(\"throw\"), value: Type.variablePattern(\"value\"), guards: [], body: (context) => {\nreturn Type.atom(\"caught\");\n}}"
+    end
+
+    test "catch clause / with variable kind" do
+      # catch
+      #   kind, value -> :caught
+      ir = %IR.TryCatchClause{
+        kind: %IR.Variable{name: :kind},
+        value: %IR.Variable{name: :value},
+        guards: [],
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :caught}]
+        }
+      }
+
+      assert encode_ir(ir) ==
+               "{kind: Type.variablePattern(\"kind\"), value: Type.variablePattern(\"value\"), guards: [], body: (context) => {\nreturn Type.atom(\"caught\");\n}}"
+    end
+
+    test "catch clause / with guards" do
+      # catch
+      #   :throw, value when guard -> :caught
+      ir = %IR.TryCatchClause{
+        kind: %IR.AtomType{value: :throw},
+        value: %IR.Variable{name: :value},
+        guards: [%IR.Variable{name: :guard}],
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :caught}]
+        }
+      }
+
+      assert encode_ir(ir) ==
+               "{kind: Type.atom(\"throw\"), value: Type.variablePattern(\"value\"), guards: [(context) => context.vars.guard], body: (context) => {\nreturn Type.atom(\"caught\");\n}}"
+    end
+
+    test "catch clause / async - guards stay sync, body becomes async" do
+      ir = %IR.TryCatchClause{
+        kind: %IR.AtomType{value: :throw},
+        value: %IR.Variable{name: :value},
+        guards: [%IR.Variable{name: :guard}],
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :caught}]
+        }
+      }
+
+      assert encode_ir(ir, %Context{async?: true}) ==
+               "{kind: Type.atom(\"throw\"), value: Type.variablePattern(\"value\"), guards: [(context) => context.vars.guard], body: async (context) => {\nreturn Type.atom(\"caught\");\n}}"
+    end
+
+    test "records the line the try is on" do
+      ir = %IR.Try{
+        body: %IR.Block{expressions: [%IR.AtomType{value: :ok}]},
+        rescue_clauses: [],
+        catch_clauses: [],
+        else_clauses: [],
+        after_block: nil,
+        line: 123
+      }
+
+      result = encode_ir(ir)
+
+      assert String.starts_with?(result, "(Interpreter.setFrameLine(123), Interpreter.try(")
+    end
+  end
+
+  describe "tuple type" do
+    test "empty" do
+      # {}
+      assert encode_ir(%IR.TupleType{data: []}) == "Type.tuple([])"
+    end
+
+    test "non-empty" do
+      # {1, :abc}
+      ir = %IR.TupleType{
+        data: [
+          %IR.IntegerType{value: 1},
+          %IR.AtomType{value: :abc}
+        ]
+      }
+
+      assert encode_ir(ir) == ~s/Type.tuple([Type.integer(1n), Type.atom("abc")])/
+    end
+  end
+
+  describe "variable" do
+    test "not inside pattern, without special characters, non-versioned" do
+      # my_var
+      assert encode_ir(%IR.Variable{name: :my_var, version: nil}, %Context{pattern?: false}) ==
+               "context.vars.my_var"
+    end
+
+    test "not inside pattern, with special characters, non-versioned" do
+      # my_var?
+      assert encode_ir(%IR.Variable{name: :my_var?, version: nil}, %Context{pattern?: false}) ==
+               ~s'context.vars["my_var?"]'
+    end
+
+    test "inside pattern, without special characters, non-versioned" do
+      # my_var
+      assert encode_ir(%IR.Variable{name: :my_var, version: nil}, %Context{pattern?: true}) ==
+               ~s/Type.variablePattern("my_var")/
+    end
+
+    test "inside pattern, with special characters, non-versioned" do
+      # my_var?
+      assert encode_ir(%IR.Variable{name: :my_var?, version: nil}, %Context{pattern?: true}) ==
+               ~s/Type.variablePattern("my_var?")/
+    end
+
+    test "not inside pattern, without special characters, versioned" do
+      # my_var
+      assert encode_ir(%IR.Variable{name: :my_var, version: 3}, %Context{pattern?: false}) ==
+               "context.vars.my_var_3"
+    end
+
+    test "not inside pattern, with special characters, versioned" do
+      # my_var?
+      assert encode_ir(%IR.Variable{name: :my_var?, version: 3}, %Context{pattern?: false}) ==
+               ~s'context.vars["my_var?_3"]'
+    end
+
+    test "inside pattern, without special characters, versioned" do
+      # my_var
+      assert encode_ir(%IR.Variable{name: :my_var, version: 3}, %Context{pattern?: true}) ==
+               ~s/Type.variablePattern("my_var_3")/
+    end
+
+    test "inside pattern, with special characters, versioned" do
+      # my_var?
+      assert encode_ir(%IR.Variable{name: :my_var?, version: 3}, %Context{pattern?: true}) ==
+               ~s/Type.variablePattern("my_var?_3")/
+    end
+  end
+
+  describe "with" do
+    test "single-expression body" do
+      # with do
+      #   :ok
+      # end
+      ir = %IR.With{
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :ok}]
+        },
+        clauses: [],
+        else_clauses: []
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.with((context) => {
+        return Type.atom("ok");
+        }, [], [], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "multi-expression body" do
+      # with do
+      #   :a
+      #   :b
+      # end
+      ir = %IR.With{
+        body: %IR.Block{
+          expressions: [
+            %IR.AtomType{value: :a},
+            %IR.AtomType{value: :b}
+          ]
+        },
+        clauses: [],
+        else_clauses: []
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.with((context) => {
+        Type.atom("a");
+        return Type.atom("b");
+        }, [], [], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "empty body" do
+      # with do
+      # end
+      ir = %IR.With{
+        body: %IR.Block{expressions: []},
+        clauses: [],
+        else_clauses: []
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.with((context) => {
+        return Type.atom("nil");
+        }, [], [], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "match clause without guard" do
+      # with x <- :ok do
+      #   x
+      # end
+      ir = %IR.With{
+        body: %IR.Block{
+          expressions: [%IR.Variable{name: :x}]
+        },
+        clauses: [
+          %IR.WithMatchClause{
+            match: %IR.Variable{name: :x},
+            guards: [],
+            expression: %IR.AtomType{value: :ok}
+          }
+        ],
+        else_clauses: []
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.with((context) => {
+        return context.vars.x;
+        }, [{match: Type.variablePattern("x"), guards: [], expression: (context) => Type.atom("ok")}], [], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "match clause with single guard" do
+      # with x when :erlang.is_integer(x) <- :ok do
+      #   x
+      # end
+      ir = %IR.With{
+        body: %IR.Block{
+          expressions: [%IR.Variable{name: :x}]
+        },
+        clauses: [
+          %IR.WithMatchClause{
+            match: %IR.Variable{name: :x},
+            guards: [
+              %IR.RemoteFunctionCall{
+                module: %IR.AtomType{value: :erlang},
+                function: :is_integer,
+                args: [%IR.Variable{name: :x}]
+              }
+            ],
+            expression: %IR.AtomType{value: :ok}
+          }
+        ],
+        else_clauses: []
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.with((context) => {
+        return context.vars.x;
+        }, [{match: Type.variablePattern("x"), guards: [(context) => Erlang["is_integer/1"](context.vars.x)], expression: (context) => Type.atom("ok")}], [], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "match clause with multiple guards" do
+      # with x when :erlang.is_integer(x) when :erlang.>(x, 0) <- :ok do
+      #   x
+      # end
+      ir = %IR.With{
+        body: %IR.Block{
+          expressions: [%IR.Variable{name: :x}]
+        },
+        clauses: [
+          %IR.WithMatchClause{
+            match: %IR.Variable{name: :x},
+            guards: [
+              %IR.RemoteFunctionCall{
+                module: %IR.AtomType{value: :erlang},
+                function: :is_integer,
+                args: [%IR.Variable{name: :x}]
+              },
+              %IR.RemoteFunctionCall{
+                module: %IR.AtomType{value: :erlang},
+                function: :>,
+                args: [%IR.Variable{name: :x}, %IR.IntegerType{value: 0}]
+              }
+            ],
+            expression: %IR.AtomType{value: :ok}
+          }
+        ],
+        else_clauses: []
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.with((context) => {
+        return context.vars.x;
+        }, [{match: Type.variablePattern("x"), guards: [(context) => Erlang["is_integer/1"](context.vars.x), (context) => Erlang[">/2"](context.vars.x, Type.integer(0n))], expression: (context) => Type.atom("ok")}], [], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "match clause's match is encoded in pattern mode" do
+      # key = :ok
+      #
+      # with ^key <- :ok do
+      #   :matched
+      # end
+      ir = %IR.With{
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :matched}]
+        },
+        clauses: [
+          %IR.WithMatchClause{
+            match: %IR.PinOperator{variable: %IR.Variable{name: :key}},
+            guards: [],
+            expression: %IR.AtomType{value: :ok}
+          }
+        ],
+        else_clauses: []
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.with((context) => {
+        return Type.atom("matched");
+        }, [{match: context.vars.key, guards: [], expression: (context) => Type.atom("ok")}], [], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "bare clause" do
+      # with :erlang.foo(5) do
+      #   :ok
+      # end
+      ir = %IR.With{
+        body: %IR.Block{
+          expressions: [%IR.AtomType{value: :ok}]
+        },
+        clauses: [
+          %IR.WithBareClause{
+            expression: %IR.RemoteFunctionCall{
+              module: %IR.AtomType{value: :erlang},
+              function: :foo,
+              args: [%IR.IntegerType{value: 5}]
+            }
+          }
+        ],
+        else_clauses: []
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.with((context) => {
+        return Type.atom("ok");
+        }, [{expression: (context) => Erlang["foo/1"](Type.integer(5n))}], [], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "multiple clauses" do
+      # with x <- :a,
+      #      y = :b,
+      #      z when :erlang.is_atom(z) <- :c do
+      #   z
+      # end
+      ir = %IR.With{
+        body: %IR.Block{
+          expressions: [%IR.Variable{name: :z}]
+        },
+        clauses: [
+          %IR.WithMatchClause{
+            match: %IR.Variable{name: :x},
+            guards: [],
+            expression: %IR.AtomType{value: :a}
+          },
+          %IR.WithBareClause{
+            expression: %IR.MatchOperator{
+              left: %IR.Variable{name: :y},
+              right: %IR.AtomType{value: :b}
+            }
+          },
+          %IR.WithMatchClause{
+            match: %IR.Variable{name: :z},
+            guards: [
+              %IR.RemoteFunctionCall{
+                module: %IR.AtomType{value: :erlang},
+                function: :is_atom,
+                args: [%IR.Variable{name: :z}]
+              }
+            ],
+            expression: %IR.AtomType{value: :c}
+          }
+        ],
+        else_clauses: []
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.with((context) => {
+        return context.vars.z;
+        }, [{match: Type.variablePattern("x"), guards: [], expression: (context) => Type.atom("a")}, {expression: (context) => Interpreter.matchOperator(Type.atom("b"), Type.variablePattern("y"), context)}, {match: Type.variablePattern("z"), guards: [(context) => Erlang["is_atom/1"](context.vars.z)], expression: (context) => Type.atom("c")}], [], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "single else clause" do
+      # with x <- :ok do
+      #   x
+      # else
+      #   :error -> :failed
+      # end
+      ir = %IR.With{
+        body: %IR.Block{
+          expressions: [%IR.Variable{name: :x}]
+        },
+        clauses: [
+          %IR.WithMatchClause{
+            match: %IR.Variable{name: :x},
+            guards: [],
+            expression: %IR.AtomType{value: :ok}
+          }
+        ],
+        else_clauses: [
+          %IR.Clause{
+            match: %IR.AtomType{value: :error},
+            guards: [],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :failed}]
+            }
+          }
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.with((context) => {
+        return context.vars.x;
+        }, [{match: Type.variablePattern("x"), guards: [], expression: (context) => Type.atom("ok")}], [{match: Type.atom("error"), guards: [], body: (context) => {
+        return Type.atom("failed");
+        }}], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "multiple else clauses" do
+      # with x <- :ok do
+      #   x
+      # else
+      #   :error -> :failed
+      #   :timeout -> :timed_out
+      # end
+      ir = %IR.With{
+        body: %IR.Block{
+          expressions: [%IR.Variable{name: :x}]
+        },
+        clauses: [
+          %IR.WithMatchClause{
+            match: %IR.Variable{name: :x},
+            guards: [],
+            expression: %IR.AtomType{value: :ok}
+          }
+        ],
+        else_clauses: [
+          %IR.Clause{
+            match: %IR.AtomType{value: :error},
+            guards: [],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :failed}]
+            }
+          },
+          %IR.Clause{
+            match: %IR.AtomType{value: :timeout},
+            guards: [],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :timed_out}]
+            }
+          }
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.with((context) => {
+        return context.vars.x;
+        }, [{match: Type.variablePattern("x"), guards: [], expression: (context) => Type.atom("ok")}], [{match: Type.atom("error"), guards: [], body: (context) => {
+        return Type.atom("failed");
+        }}, {match: Type.atom("timeout"), guards: [], body: (context) => {
+        return Type.atom("timed_out");
+        }}], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "else clause with single guard" do
+      # with x <- :ok do
+      #   x
+      # else
+      #   status when :erlang.is_atom(status) -> :failed
+      # end
+      ir = %IR.With{
+        body: %IR.Block{
+          expressions: [%IR.Variable{name: :x}]
+        },
+        clauses: [
+          %IR.WithMatchClause{
+            match: %IR.Variable{name: :x},
+            guards: [],
+            expression: %IR.AtomType{value: :ok}
+          }
+        ],
+        else_clauses: [
+          %IR.Clause{
+            match: %IR.Variable{name: :status},
+            guards: [
+              %IR.RemoteFunctionCall{
+                module: %IR.AtomType{value: :erlang},
+                function: :is_atom,
+                args: [%IR.Variable{name: :status}]
+              }
+            ],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :failed}]
+            }
+          }
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.with((context) => {
+        return context.vars.x;
+        }, [{match: Type.variablePattern("x"), guards: [], expression: (context) => Type.atom("ok")}], [{match: Type.variablePattern("status"), guards: [(context) => Erlang["is_atom/1"](context.vars.status)], body: (context) => {
+        return Type.atom("failed");
+        }}], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "else clause with multiple guards" do
+      # with x <- :ok do
+      #   x
+      # else
+      #   status when :erlang.is_atom(status) when :erlang.is_integer(status) -> :failed
+      # end
+      ir = %IR.With{
+        body: %IR.Block{
+          expressions: [%IR.Variable{name: :x}]
+        },
+        clauses: [
+          %IR.WithMatchClause{
+            match: %IR.Variable{name: :x},
+            guards: [],
+            expression: %IR.AtomType{value: :ok}
+          }
+        ],
+        else_clauses: [
+          %IR.Clause{
+            match: %IR.Variable{name: :status},
+            guards: [
+              %IR.RemoteFunctionCall{
+                module: %IR.AtomType{value: :erlang},
+                function: :is_atom,
+                args: [%IR.Variable{name: :status}]
+              },
+              %IR.RemoteFunctionCall{
+                module: %IR.AtomType{value: :erlang},
+                function: :is_integer,
+                args: [%IR.Variable{name: :status}]
+              }
+            ],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :failed}]
+            }
+          }
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.with((context) => {
+        return context.vars.x;
+        }, [{match: Type.variablePattern("x"), guards: [], expression: (context) => Type.atom("ok")}], [{match: Type.variablePattern("status"), guards: [(context) => Erlang["is_atom/1"](context.vars.status), (context) => Erlang["is_integer/1"](context.vars.status)], body: (context) => {
+        return Type.atom("failed");
+        }}], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "else clause's match is encoded in pattern mode" do
+      # expected_error = :timeout
+      # with x <- :ok do
+      #   x
+      # else
+      #   ^expected_error -> :failed
+      # end
+      ir = %IR.With{
+        body: %IR.Block{
+          expressions: [%IR.Variable{name: :x}]
+        },
+        clauses: [
+          %IR.WithMatchClause{
+            match: %IR.Variable{name: :x},
+            guards: [],
+            expression: %IR.AtomType{value: :ok}
+          }
+        ],
+        else_clauses: [
+          %IR.Clause{
+            match: %IR.PinOperator{variable: %IR.Variable{name: :expected_error}},
+            guards: [],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :failed}]
+            }
+          }
+        ]
+      }
+
+      expected =
+        normalize_newlines("""
+        Interpreter.with((context) => {
+        return context.vars.x;
+        }, [{match: Type.variablePattern("x"), guards: [], expression: (context) => Type.atom("ok")}], [{match: context.vars.expected_error, guards: [], body: (context) => {
+        return Type.atom("failed");
+        }}], context)\
+        """)
+
+      assert encode_ir(ir) == expected
+    end
+
+    test "async" do
+      # with x when :erlang.is_atom(x) <- :ok do
+      #   x
+      # else
+      #   :error -> :failed
+      # end
+      ir = %IR.With{
+        body: %IR.Block{
+          expressions: [%IR.Variable{name: :x}]
+        },
+        clauses: [
+          %IR.WithMatchClause{
+            match: %IR.Variable{name: :x},
+            guards: [
+              %IR.RemoteFunctionCall{
+                module: %IR.AtomType{value: :erlang},
+                function: :is_atom,
+                args: [%IR.Variable{name: :x}]
+              }
+            ],
+            expression: %IR.AtomType{value: :ok}
+          }
+        ],
+        else_clauses: [
+          %IR.Clause{
+            match: %IR.AtomType{value: :error},
+            guards: [],
+            body: %IR.Block{
+              expressions: [%IR.AtomType{value: :failed}]
+            }
+          }
+        ]
+      }
+
+      # Body, match-clause expression, and else-clause body are async; guards stay sync.
+      expected =
+        normalize_newlines("""
+        (await Interpreter.asyncWith(async (context) => {
+        return context.vars.x;
+        }, [{match: Type.variablePattern("x"), guards: [(context) => Erlang["is_atom/1"](context.vars.x)], expression: async (context) => Type.atom("ok")}], [{match: Type.atom("error"), guards: [], body: async (context) => {
+        return Type.atom("failed");
+        }}], context))\
+        """)
+
+      assert encode_ir(ir, %Context{async?: true}) == expected
+    end
+
+    test "records the line the with is on" do
+      ir = %IR.With{
+        clauses: [%IR.WithBareClause{expression: %IR.AtomType{value: :ok}}],
+        else_clauses: [],
+        body: %IR.Block{expressions: [%IR.AtomType{value: :ok}]},
+        line: 123
+      }
+
+      result = encode_ir(ir)
+
+      assert String.starts_with?(result, "(Interpreter.setFrameLine(123), Interpreter.with(")
+    end
+  end
+
+  describe "encode_as_class_name/1" do
+    test "Elixir module alias without camel case segments" do
+      assert encode_as_class_name(Aaa.Bbb.Ccc) == "Elixir_Aaa_Bbb_Ccc"
+    end
+
+    test "Elixir module alias with camel case segments" do
+      assert encode_as_class_name(AaaBbb.CccDdd) == "Elixir_AaaBbb_CccDdd"
+    end
+
+    test ":erlang alias" do
+      assert encode_as_class_name(:erlang) == "Erlang"
+    end
+
+    test "single-segment Erlang module alias" do
+      assert encode_as_class_name(:aaa) == "Erlang_Aaa"
+    end
+
+    test "multiple-segment Erlang module alias" do
+      assert encode_as_class_name(:aaa_bbb) == "Erlang_Aaa_Bbb"
+    end
+  end
+
+  describe "encode_as_string/1" do
+    test "wraps the text in double quotes" do
+      assert encode_as_string("abc") == ~s/"abc"/
+    end
+
+    # The per-char rules are pinned under "string type" - this pins that the public function
+    # applies them and quotes the result.
+    test "escapes what a script element cannot carry raw" do
+      assert encode_as_string(~S|a"b\c</script>| <> "\n\r" <> <<0>>) ==
+               ~S|"a\"b\\c\u{3C}/script>\n\r\u{0}"|
+    end
+  end
+
+  describe "encode_term/1" do
+    test "can be encoded into JavaScript" do
+      assert encode_term(123) == {:ok, "Type.integer(123n)"}
+    end
+
+    test "can't be encoded into JavaScript" do
+      expected_msg =
+        if SystemUtils.otp_version() >= 23 do
+          "term contains a function that is not a named function capture"
+        else
+          "term contains a function that is not a remote function capture"
+        end
+
+      assert encode_term(fn x -> x end) == {:error, expected_msg}
+    end
+  end
+
+  describe "encode_term!/1" do
+    test "anonymous function (non-capture)" do
+      expected_msg =
+        if SystemUtils.otp_version() >= 23 do
+          "term contains a function that is not a named function capture"
+        else
+          "term contains a function that is not a remote function capture"
+        end
+
+      assert_error ArgumentError, expected_msg, fn -> encode_term!(fn x, y -> x * y end) end
+    end
+
+    test "anonymous function (capture)" do
+      expected =
+        normalize_newlines("""
+        Type.functionCapture("DateTime", "now", 2, [{params: (context) => [Type.variablePattern("$1"), Type.variablePattern("$2")], guards: [], body: (context) => {
+        return Elixir_DateTime["now/2"](context.vars["$1"], context.vars["$2"]);
+        }}], context)\
+        """)
+
+      assert encode_term!(&DateTime.now/2) == expected
+    end
+
+    test "atom" do
+      assert encode_term!(:abc) == ~s/Type.atom("abc")/
+    end
+
+    test "bitstring" do
+      assert encode_term!("abc") == ~s/Type.bitstring("abc")/
+    end
+
+    test "bitstring that is not valid UTF-8" do
+      assert encode_term!(<<240, 145, 163>>) == ~s/Type.bitstring("f091a3", "hex")/
+    end
+
+    test "bitstring that is not byte-aligned and not valid UTF-8" do
+      # Macro.escape makes this a one-bit integer segment followed by the rest as a binary.
+      assert encode_term!(<<255, 1::1>>) ==
+               ~s/Type.bitstring([Type.bitstringSegment(Type.integer(1n), {type: "integer", size: Type.integer(1n)}), Type.bitstringSegment(Type.bitstring("ff", "hex"), {type: "binary"})])/
+    end
+
+    test "float, non-zero" do
+      assert encode_term!(1.23) == "Type.float(1.23)"
+    end
+
+    test "float, signed zero, positive" do
+      assert encode_term!(+0.0) == "Type.float(0.0)"
+    end
+
+    test "float, signed zero, negative" do
+      assert encode_term!(-0.0) == "Type.float(-0.0)"
+    end
+
+    test "integer" do
+      assert encode_term!(123) == "Type.integer(123n)"
+    end
+
+    test "list" do
+      assert encode_term!([:abc, 123]) == ~s/Type.list([Type.atom("abc"), Type.integer(123n)])/
+    end
+
+    test "map" do
+      assert encode_term!(%{:a => 1, "b" => 2.0}) ==
+               ~s/Type.map([[Type.atom("a"), Type.integer(1n)], [Type.bitstring("b"), Type.float(2.0)]])/
+    end
+
+    test "pid" do
+      assert encode_term!(pid("0.11.222")) == ~s/Type.pid("nonode@nohost", [0, 11, 222])/
+    end
+
+    test "port" do
+      assert encode_term!(port("0.11")) == ~s/Type.port("nonode@nohost", [0, 11])/
+    end
+
+    test "reference" do
+      assert encode_term!(ref("0.1.2.3")) == ~s/Type.reference("nonode@nohost", 0, [3, 2, 1])/
+    end
+
+    test "tuple" do
+      assert encode_term!({:abc, 123}) == ~s/Type.tuple([Type.atom("abc"), Type.integer(123n)])/
+    end
+  end
+
+  defp random_bytes(max_length) do
+    for _index <- 1..:rand.uniform(max_length), into: <<>>, do: <<:rand.uniform(256) - 1>>
+  end
+
+  defp random_text(max_length) do
+    for _index <- 1..:rand.uniform(max_length), into: <<>> do
+      code =
+        case :rand.uniform(6) do
+          # the chars that have to be escaped
+          1 -> Enum.random([0, ?\n, ?\r, ?", ?<, ?\\])
+          # printable ASCII
+          2 -> 0x20 + :rand.uniform(0x5F) - 1
+          # the rest of the control chars
+          3 -> :rand.uniform(0x20) - 1
+          # the C1 range, two bytes behind the same lead byte
+          4 -> 0x80 + :rand.uniform(0x20) - 1
+          # chars an earlier escaping treated specially, and one above the BMP
+          5 -> Enum.random([0x2028, 0x2029, 0xFFFD, 0xFFFE, 0xFFFF, 0x1F600])
+          # anything else in the BMP
+          6 -> :rand.uniform(0xD7FF)
+        end
+
+      <<code::utf8>>
+    end
+  end
+
+  # The escaping rules, written out as a plain walk. Deliberately not the implementation's
+  # shape - this is what the implementation is checked against.
+  defp reference_escape(str) do
+    str
+    |> reference_escape_parts()
+    |> IO.iodata_to_binary()
+  end
+
+  defp reference_escape_parts(<<0, rest::binary>>), do: ["\\u{0}" | reference_escape_parts(rest)]
+  defp reference_escape_parts("\n" <> rest), do: ["\\n" | reference_escape_parts(rest)]
+  defp reference_escape_parts("\r" <> rest), do: ["\\r" | reference_escape_parts(rest)]
+  defp reference_escape_parts("\"" <> rest), do: ["\\\"" | reference_escape_parts(rest)]
+  defp reference_escape_parts("<" <> rest), do: ["\\u{3C}" | reference_escape_parts(rest)]
+  defp reference_escape_parts("\\" <> rest), do: ["\\\\" | reference_escape_parts(rest)]
+
+  defp reference_escape_parts(<<char::utf8, rest::binary>>) do
+    [<<char::utf8>> | reference_escape_parts(rest)]
+  end
+
+  defp reference_escape_parts(""), do: []
+
+  # The hex spelling, written out as a plain walk: two lowercase digits per byte, in order.
+  defp reference_hex(binary) do
+    for <<byte <- binary>>, into: "" do
+      byte
+      |> Integer.to_string(16)
+      |> String.downcase()
+      |> String.pad_leading(2, "0")
+    end
+  end
+end

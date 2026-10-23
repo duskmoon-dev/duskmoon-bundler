@@ -1,0 +1,83 @@
+defmodule Hologram.Runtime.Connection do
+  @moduledoc false
+
+  # TODO: legacy WebSocket transport (app transport is POST + SSE), retire rather than
+  # move when splitting up Hologram.Runtime
+
+  @behaviour WebSock
+
+  alias Hologram.Assets.PageDigestRegistry
+  alias Hologram.Runtime.Deserializer
+
+  @type state :: %{plug_conn: Plug.Conn.t()}
+
+  @impl WebSock
+  def init(plug_conn) do
+    connection_id = UUID.uuid4()
+
+    # context = gproc_context(Hologram.env())
+    # :gproc.reg({:n, context, {:hologram_connection, connection_id}})
+
+    state = %{
+      connection_id: connection_id,
+      plug_conn: plug_conn
+    }
+
+    {:ok, state}
+  end
+
+  @impl WebSock
+  def handle_in({message, [opcode: :text]}, state) do
+    {message_type, message_payload, correlation_id} = decode(message)
+
+    {reply_type, reply_payload, new_state} = handle_message(message_type, message_payload, state)
+    reply = encode(reply_type, reply_payload, correlation_id)
+
+    {:reply, :ok, {:text, reply}, new_state}
+  end
+
+  @impl WebSock
+  def handle_info(_arg, state) do
+    {:ok, state}
+  end
+
+  # @impl WebSock
+  # def terminate(_reason, state) do
+  #   context = gproc_context(Hologram.env())
+  #   :gproc.unreg({:n, context, {:hologram_connection, state.connection_id}})
+
+  #   :ok
+  # end
+
+  defp decode(message) do
+    case Jason.decode!(message) do
+      [type, payload, correlation_id] ->
+        {type, Deserializer.deserialize(payload), correlation_id}
+
+      type ->
+        {type, nil, nil}
+    end
+  end
+
+  defp encode(type, :__no_payload__, nil) do
+    Jason.encode!(type)
+  end
+
+  defp encode(type, payload, correlation_id) do
+    Jason.encode!([type, payload, correlation_id])
+  end
+
+  # defp gproc_context(:dev), do: :l
+
+  # defp gproc_context(:test), do: :l
+
+  # defp gproc_context(_env), do: :g
+
+  defp handle_message("page_digest", page_module, connection_state) do
+    {"reply", PageDigestRegistry.lookup(page_module), connection_state}
+  end
+
+  defp handle_message("ping", nil, connection_state) do
+    {"pong", :__no_payload__, connection_state}
+  end
+end

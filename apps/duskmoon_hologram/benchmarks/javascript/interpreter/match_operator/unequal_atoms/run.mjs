@@ -1,0 +1,22 @@
+"use strict";
+
+import Interpreter from "../../../../../assets/js/interpreter.mjs";
+import Type from "../../../../../assets/js/type.mjs";
+
+import {benchmark} from "../../../support/helpers.mjs";
+
+import {
+  contextFixture,
+  defineRuntimeGlobals,
+} from "../../../../../test/javascript/support/helpers.mjs";
+
+defineRuntimeGlobals();
+
+const context = contextFixture();
+
+benchmark(() => {
+  try {
+    Interpreter.matchOperator(Type.atom("abc"), Type.atom("xyz"), context, false);
+    // oxlint-disable-next-line no-empty
+  } catch {}
+});

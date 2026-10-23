@@ -42,6 +42,50 @@ defmodule DuskmoonBundler.JsCheckTest do
     assert output =~ "broken.ts"
   end
 
+  test "named profiles isolate discovery, formatting and lint rules" do
+    profile = :js_check_profile
+    original = Application.get_env(:duskmoon_bundler, profile)
+
+    on_exit(fn ->
+      if original,
+        do: Application.put_env(:duskmoon_bundler, profile, original),
+        else: Application.delete_env(:duskmoon_bundler, profile)
+    end)
+
+    File.write!(Path.join(@tmp_dir, "outside.ts"), "const = ;\n")
+    scoped = Path.join(@tmp_dir, "scoped")
+    vendor = Path.join(scoped, "vendor")
+    File.mkdir_p!(vendor)
+    File.write!(Path.join(vendor, "untouched.mjs"), "const = ;\n")
+    source = Path.join(scoped, "app.mjs")
+    File.write!(source, "export const value={ answer:42 };\n")
+
+    Application.put_env(:duskmoon_bundler, profile,
+      root: scoped,
+      sources: ["**/*.mjs"],
+      ignore: ["vendor/**"],
+      format: [bracket_spacing: false],
+      lint: [rules: %{"no-debugger" => :deny}]
+    )
+
+    capture_io(fn -> Mix.Tasks.DuskmoonBundler.Js.Format.run(["js_check_profile"]) end)
+    assert File.read!(source) == "export const value = {answer: 42};\n"
+    assert File.read!(Path.join(vendor, "untouched.mjs")) == "const = ;\n"
+
+    output = capture_io(fn -> Mix.Tasks.DuskmoonBundler.Js.Check.run(["js_check_profile"]) end)
+    assert output =~ "All 1 files formatted"
+
+    File.write!(source, "debugger;\n")
+
+    output =
+      capture_io(:stderr, fn ->
+        assert catch_exit(Mix.Tasks.DuskmoonBundler.Js.Check.run(["js_check_profile"])) ==
+                 {:shutdown, 1}
+      end)
+
+    assert output =~ "no-debugger"
+  end
+
   test "type-aware check reports tsgolint diagnostics" do
     File.write!(Path.join(@tmp_dir, "typed.ts"), "export const value = Promise.resolve(1)\n")
     tsgolint = fake_tsgolint!(@tmp_dir)

@@ -1,0 +1,235 @@
+defmodule HologramFeatureTests.TypesTest do
+  use HologramFeatureTests.TestCase, async: true
+
+  alias Hologram.Commons.SystemUtils
+  alias HologramFeatureTests.TypesPage
+
+  feature "atom", %{session: session} do
+    session
+    |> visit(TypesPage)
+    |> click(css("button[id='atom']"))
+    |> assert_text(css("#result"), inspect(:abc))
+  end
+
+  describe "bitstring" do
+    feature "binary", %{session: session} do
+      expected = inspect("abc")
+
+      session
+      |> visit(TypesPage)
+      |> click(css("button[id='bitstring (binary)']"))
+      |> assert_text(css("#result"), expected)
+    end
+
+    # The term starts on the client and comes back inside the action the server sends. The way
+    # back is what is under test: the server writes the term into JavaScript, and a byte that is
+    # not valid UTF-8 has no place in a string literal.
+    feature "binary, not valid UTF-8", %{session: session} do
+      expected = inspect(<<240, 145, 163>>)
+
+      session
+      |> visit(TypesPage)
+      |> click(css("button[id='bitstring (binary, not valid UTF-8)']"))
+      |> assert_text(css("#result"), expected)
+    end
+
+    feature "non-binary", %{session: session} do
+      expected = inspect(<<1::1, 0::1, 1::1, 0::1>>)
+
+      session
+      |> visit(TypesPage)
+      |> click(css("button[id='bitstring (non-binary)']"))
+      |> assert_text(css("#result"), expected)
+    end
+
+    # Macro.escape splits this into a one-bit integer segment and a one-byte binary segment; the
+    # binary segment is the part that has to travel as bytes.
+    feature "non-binary, not valid UTF-8", %{session: session} do
+      expected = inspect(<<255, 1::1>>)
+
+      session
+      |> visit(TypesPage)
+      |> click(css("button[id='bitstring (non-binary, not valid UTF-8)']"))
+      |> assert_text(css("#result"), expected)
+    end
+  end
+
+  feature "float", %{session: session} do
+    session
+    |> visit(TypesPage)
+    |> click(css("button[id='float']"))
+    |> assert_text(css("#result"), inspect(1.23))
+  end
+
+  describe "function" do
+    feature "anonymous (client origin, non-capture)", %{session: session} do
+      assert_js_error(
+        session,
+        "cannot serialize function: not a named function capture",
+        fn ->
+          session
+          |> visit(TypesPage)
+          |> click(css("button[id='anonymous function (client origin, non-capture)']"))
+        end
+      )
+
+      assert_text(session, css("#result"), inspect(8))
+    end
+
+    feature "anonymous (server origin, non-capture)", %{session: session} do
+      expected_msg =
+        if SystemUtils.otp_version() >= 23 do
+          "command failed: term contains a function that is not a named function capture"
+        else
+          "command failed: term contains a function that is not a remote function capture"
+        end
+
+      assert_js_error(session, expected_msg, fn ->
+        session
+        |> visit(TypesPage)
+        |> click(css("button[id='anonymous function (server origin, non-capture)']"))
+      end)
+    end
+
+    feature "anonymous (server origin, capture)", %{session: session} do
+      expected_msg =
+        if SystemUtils.otp_version() >= 23 do
+          "command failed: term contains a function that is not a named function capture"
+        else
+          "command failed: term contains a function that is not a remote function capture"
+        end
+
+      assert_js_error(session, expected_msg, fn ->
+        session
+        |> visit(TypesPage)
+        |> click(css("button[id='anonymous function (server origin, capture)']"))
+      end)
+    end
+
+    feature "anonymous (client origin, capture)", %{session: session} do
+      assert_js_error(
+        session,
+        "cannot serialize function: not a named function capture",
+        fn ->
+          session
+          |> visit(TypesPage)
+          |> click(css("button[id='anonymous function (client origin, capture)']"))
+        end
+      )
+
+      assert_text(session, css("#result"), inspect(8))
+    end
+
+    feature "local capture (client origin)", %{session: session} do
+      session
+      |> visit(TypesPage)
+      |> click(css("button[id='local function capture (client origin)']"))
+      |> assert_text(css("#result"), "client = 8, server = 8")
+    end
+
+    feature "local capture (server origin)", %{session: session} do
+      if SystemUtils.otp_version() >= 23 do
+        session
+        |> visit(TypesPage)
+        |> click(css("button[id='local function capture (server origin)']"))
+        |> assert_text(css("#result"), inspect(8))
+      else
+        assert_js_error(
+          session,
+          "command failed: term contains a function that is not a remote function capture",
+          fn ->
+            session
+            |> visit(TypesPage)
+            |> click(css("button[id='local function capture (server origin)']"))
+          end
+        )
+      end
+    end
+
+    feature "remote capture (client origin)", %{session: session} do
+      session
+      |> visit(TypesPage)
+      |> click(css("button[id='remote function capture (client origin)']"))
+      |> assert_text(css("#result"), "client = 8, server = 8")
+    end
+
+    feature "remote capture (server origin)", %{session: session} do
+      session
+      |> visit(TypesPage)
+      |> click(css("button[id='remote function capture (server origin)']"))
+      |> assert_text(css("#result"), inspect(8))
+    end
+  end
+
+  feature "integer", %{session: session} do
+    session
+    |> visit(TypesPage)
+    |> click(css("button[id='integer']"))
+    |> assert_text(css("#result"), inspect(123))
+  end
+
+  feature "list", %{session: session} do
+    session
+    |> visit(TypesPage)
+    |> click(css("button[id='list']"))
+    |> assert_text(css("#result"), inspect([123, :abc]))
+  end
+
+  feature "map", %{session: session} do
+    expected = inspect(%{a: 123, b: "abc"})
+
+    session
+    |> visit(TypesPage)
+    |> click(css("button[id='map']"))
+    |> assert_text(css("#result"), expected)
+  end
+
+  describe "PID" do
+    feature "client origin", %{session: session} do
+      assert_js_error(
+        session,
+        "cannot serialize PID: origin is client but destination is server",
+        fn ->
+          session
+          |> visit(TypesPage)
+          |> click(css("button[id='pid (client origin)']"))
+        end
+      )
+    end
+
+    feature "server origin", %{session: session} do
+      expected =
+        "0.11.222"
+        |> pid()
+        |> inspect()
+
+      session
+      |> visit(TypesPage)
+      |> click(css("button[id='pid (server origin)']"))
+      |> assert_text(css("#result"), expected)
+    end
+  end
+
+  describe "reference" do
+    feature "client origin", %{session: session} do
+      session
+      |> visit(TypesPage)
+      |> click(css("button[id='reference (client origin)']"))
+      |> assert_text(css("#result"), "#Reference<0.1.2.3>")
+    end
+
+    feature "server origin", %{session: session} do
+      session
+      |> visit(TypesPage)
+      |> click(css("button[id='reference (server origin)']"))
+      |> assert_text(css("#result"), "#Reference<1.2.3.4>")
+    end
+  end
+
+  feature "tuple", %{session: session} do
+    session
+    |> visit(TypesPage)
+    |> click(css("button[id='tuple']"))
+    |> assert_text(css("#result"), inspect({123, :abc}))
+  end
+end

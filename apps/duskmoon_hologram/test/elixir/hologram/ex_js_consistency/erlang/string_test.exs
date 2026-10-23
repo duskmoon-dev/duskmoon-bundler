@@ -1,0 +1,1256 @@
+defmodule Hologram.ExJsConsistency.Erlang.StringTest do
+  @moduledoc """
+  IMPORTANT!
+  Each Elixir consistency test has a related JavaScript test in test/javascript/erlang/string_test.mjs
+  Always update both together.
+  """
+
+  use Hologram.Test.BasicCase, async: true
+
+  @moduletag :consistency
+
+  describe "find/2" do
+    test "delegates to find/3 with :leading direction" do
+      assert :string.find("ab..cd..ef", "..") == :string.find("ab..cd..ef", "..", :leading)
+    end
+  end
+
+  describe "find/3" do
+    # Direction variations
+
+    test "with direction :leading finds first occurrence" do
+      assert :string.find("ab..cd..ef", "..", :leading) == "..cd..ef"
+    end
+
+    test "with direction :trailing finds last occurrence" do
+      assert :string.find("ab..cd..ef", "..", :trailing) == "..ef"
+    end
+
+    # Pattern not found
+
+    test "returns :nomatch with :leading direction" do
+      assert :string.find("ab..cd..ef", "x", :leading) == :nomatch
+    end
+
+    test "returns :nomatch with :trailing direction" do
+      assert :string.find("ab..cd..ef", "x", :trailing) == :nomatch
+    end
+
+    # Pattern position edge cases
+
+    test "when pattern is at the start of the string" do
+      assert :string.find("..abcd", "..", :leading) == "..abcd"
+    end
+
+    test "when pattern is at the end of the string" do
+      assert :string.find("abcd..", "..", :trailing) == ".."
+    end
+
+    test "with single character pattern" do
+      assert :string.find("ab..cd..ef", ".", :leading) == "..cd..ef"
+    end
+
+    # Input edge cases
+
+    test "with empty pattern returns string as-is" do
+      assert :string.find("Hello World", "", :leading) == "Hello World"
+    end
+
+    test "with empty string and empty pattern" do
+      assert :string.find("", "", :leading) == ""
+    end
+
+    test "with empty string and non-empty pattern" do
+      assert :string.find("", "x", :leading) == :nomatch
+    end
+
+    test "with unicode pattern" do
+      assert :string.find("Hello 👋 World 👋 End", "👋", :trailing) == "👋 End"
+    end
+
+    test "when pattern equals string" do
+      assert :string.find("abc", "abc", :leading) == "abc"
+    end
+
+    # Charlist input
+
+    test "with charlist string and charlist pattern" do
+      assert :string.find(~c"ab..cd..ef", ~c"..", :leading) == ~c"..cd..ef"
+    end
+
+    test "with charlist string and binary pattern" do
+      assert :string.find(~c"ab..cd..ef", "..", :trailing) == ~c"..ef"
+    end
+
+    test "with binary string and charlist pattern" do
+      assert :string.find("ab..cd..ef", ~c"..", :leading) == "..cd..ef"
+    end
+
+    test "returns :nomatch for charlist when pattern not found" do
+      assert :string.find(~c"ab..cd..ef", ~c"x", :leading) == :nomatch
+    end
+
+    test "with empty pattern returns charlist as-is" do
+      assert :string.find(~c"Hello World", ~c"", :leading) == ~c"Hello World"
+    end
+
+    # Error cases
+
+    test "raises MatchError if the first argument is not valid chardata" do
+      assert_error MatchError, build_match_error_msg(:abc), fn ->
+        :string.find(:abc, "_", :leading)
+      end
+    end
+
+    test "raises MatchError if the first argument is a non-binary bitstring" do
+      assert_error MatchError, build_match_error_msg(<<1::3>>), fn ->
+        :string.find(<<1::3>>, "x", :leading)
+      end
+    end
+
+    test "raises ArgumentError if the second argument is not valid chardata" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not valid character data (an iodata term)"),
+                   fn ->
+                     :string.find("Hello World", :abc, :leading)
+                   end
+    end
+
+    test "raises ArgumentError if the second argument is a non-binary bitstring" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not valid character data (an iodata term)"),
+                   fn ->
+                     :string.find("Hello World", <<1::3>>, :leading)
+                   end
+    end
+
+    test "raises FunctionClauseError if the third argument is not an atom" do
+      assert_error FunctionClauseError,
+                   build_function_clause_error_msg(":string.find/3", [
+                     "Hello World",
+                     " ",
+                     "leading"
+                   ]),
+                   fn ->
+                     :string.find("Hello World", " ", "leading")
+                   end
+    end
+
+    test "raises FunctionClauseError if the third argument is an unrecognized atom" do
+      assert_error FunctionClauseError,
+                   build_function_clause_error_msg(":string.find/3", ["Hello World", " ", :all]),
+                   fn ->
+                     :string.find("Hello World", " ", :all)
+                   end
+    end
+
+    test "error frame carries args and error_info for an invalid pattern" do
+      search_pattern = wrap_term(:xyz)
+
+      top_frame =
+        try do
+          :string.find("abc", search_pattern, :leading)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      # The server converts the pattern in Erlang code inside unicode.erl,
+      # so its frame location also carries the OTP-internal file and line,
+      # which the client doesn't mirror.
+      assert {:unicode, :characters_to_list, [:xyz], location} = wrap_term(top_frame)
+      assert location[:error_info] == %{module: :erl_stdlib_errors}
+    end
+
+    test "error frame carries args for an unrecognized direction" do
+      direction = wrap_term(:bad)
+
+      top_frame =
+        try do
+          :string.find("abc", "b", direction)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      # The server implements this function in Erlang code inside string.erl,
+      # so its frame location also carries the OTP-internal file and line,
+      # which the client doesn't mirror.
+      assert {:string, :find, ["abc", "b", :bad], location} = wrap_term(top_frame)
+      assert location[:error_info] == nil
+    end
+  end
+
+  # :string.jaro_similarity/2 was introduced in Erlang/OTP 27.
+  if String.to_integer(System.otp_release()) >= 27 do
+    describe "jaro_similarity/2" do
+      test "returns 1.0 for identical strings" do
+        assert :string.jaro_similarity("hello", "hello") == 1.0
+      end
+
+      test "returns 1.0 when both inputs are empty" do
+        assert :string.jaro_similarity("", "") == 1.0
+      end
+
+      test "returns 0.0 for completely different inputs" do
+        assert :string.jaro_similarity("abc", "xyz") == 0.0
+      end
+
+      test "returns 0.0 when first input is empty" do
+        assert :string.jaro_similarity("", "hello") == 0.0
+      end
+
+      test "returns 0.0 when second input is empty" do
+        assert :string.jaro_similarity("hello", "") == 0.0
+      end
+
+      test "returns 1.0 for identical single characters" do
+        assert :string.jaro_similarity("a", "a") == 1.0
+      end
+
+      test "returns 0.0 for different single characters" do
+        assert :string.jaro_similarity("a", "b") == 0.0
+      end
+
+      test "returns 0.0 for completely transposed two-character string" do
+        assert :string.jaro_similarity("ab", "ba") == 0.0
+      end
+
+      test "returns similarity score with partial transposition" do
+        assert :string.jaro_similarity("abcd", "abdc") == 0.9166666666666666
+      end
+
+      test "handles slight deviations" do
+        assert :string.jaro_similarity("martha", "marhta") == 0.9444444444444445
+        assert :string.jaro_similarity("dwayne", "duane") == 0.8222222222222223
+        assert :string.jaro_similarity("dixon", "dicksonx") == 0.7666666666666666
+      end
+
+      test "is case sensitive" do
+        assert :string.jaro_similarity("Hello", "hello") == 0.8666666666666667
+      end
+
+      test "compares by grapheme cluster, not codepoint" do
+        # "e̊" (e + U+030A combining ring above) is a single grapheme cluster,
+        # so "e̊llo" has 4 graphemes versus 5 in "hello".
+        assert :string.jaro_similarity("e̊llo", "hello") == 0.7833333333333333
+      end
+    end
+  end
+
+  describe "join/2" do
+    test "single element" do
+      assert :string.join([~c"hello"], ~c", ") == ~c"hello"
+    end
+
+    test "multiple elements" do
+      assert :string.join([~c"one", ~c"two", ~c"three"], ~c", ") == ~c"one, two, three"
+    end
+
+    test "no elements" do
+      assert :string.join([], ~c", ") == []
+    end
+
+    test "single-character separator" do
+      assert :string.join([~c"apple", ~c"banana", ~c"cherry"], ~c",") ==
+               ~c"apple,banana,cherry"
+    end
+
+    test "multi-character separator" do
+      assert :string.join([~c"apple", ~c"banana", ~c"cherry"], ~c" and ") ==
+               ~c"apple and banana and cherry"
+    end
+
+    test "empty separator" do
+      assert :string.join([~c"hello", ~c"world"], ~c"") == ~c"helloworld"
+    end
+
+    test "empty charlists in list" do
+      assert :string.join([~c"", ~c"hello", ~c"", ~c"world", ~c""], ~c"-") == ~c"-hello--world-"
+    end
+
+    test "lists with non-integer elements" do
+      assert :string.join([[:a, :b], [:c, :d]], ~c"abc") == [:a, :b, 97, 98, 99, :c, :d]
+    end
+
+    # The server joins as H ++ lists:append([Sep ++ X || X <- T]), so an element
+    # that isn't a list becomes the tail of the concatenation it is part of -
+    # and the last one has nothing following it to fail against.
+    test "an element that isn't a list ends the result when it is the last one" do
+      assert :string.join([~c"a", :bad], ~c"-") == [97, 45 | :bad]
+    end
+
+    test "an element that isn't a list fails the concatenation that follows it" do
+      assert_error ArgumentError, "argument error", fn ->
+        :string.join([~c"a", :bad, ~c"c"], ~c"-")
+      end
+    end
+
+    test "error frame carries args and error_info for a non-list first element" do
+      elements = wrap_term([:bad, ~c"a"])
+
+      top_frame =
+        try do
+          :string.join(elements, ~c"-")
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :++, [:bad, ~c"-a"], [error_info: %{module: :erl_erts_errors}]}
+    end
+
+    test "raises FunctionClauseError if the first argument is not a list" do
+      assert_error FunctionClauseError,
+                   build_function_clause_error_msg(":string.join/2", [:not_a_list, ~c", "]),
+                   fn ->
+                     :string.join(:not_a_list, ~c", ")
+                   end
+    end
+
+    test "raises ErlangError if the first argument is an improper list" do
+      list = [~c"hello" | :tail]
+
+      assert_error ErlangError, "Erlang error: {:bad_generator, :tail}", fn ->
+        :string.join(list, ~c", ")
+      end
+    end
+
+    test "raises FunctionClauseError for empty list with non-list separator" do
+      assert_error FunctionClauseError,
+                   build_function_clause_error_msg(":string.join/2", [[], :not_a_list]),
+                   fn ->
+                     :string.join([], :not_a_list)
+                   end
+    end
+
+    test "raises ArgumentError for multiple elements with non-list separator" do
+      assert_error ArgumentError, "argument error", fn ->
+        :string.join([~c"hello", ~c"world"], :not_a_list)
+      end
+    end
+
+    test "error frame carries args for a non-list first argument" do
+      list = wrap_term(:not_a_list)
+
+      top_frame =
+        try do
+          :string.join(list, ~c", ")
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      # The server implements this function in Erlang code inside string.erl,
+      # so its frame location also carries the OTP-internal file and line,
+      # which the client doesn't mirror.
+      assert {:string, :join, [:not_a_list, ~c", "], location} = wrap_term(top_frame)
+      assert location[:error_info] == nil
+    end
+
+    test "error frame carries args and error_info for a single non-list element" do
+      list = wrap_term([:abc])
+
+      top_frame =
+        try do
+          :string.join(list, ~c", ")
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :++, [:abc, []], [error_info: %{module: :erl_erts_errors}]}
+    end
+
+    test "error frame carries args and error_info for a non-list separator" do
+      separator = wrap_term(:sep)
+
+      top_frame =
+        try do
+          :string.join([~c"a", ~c"b"], separator)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :++, [:sep, ~c"b"], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "length/1" do
+    # Binary string input
+
+    test "returns 0 for empty binary string" do
+      assert :string.length("") == 0
+    end
+
+    test "returns length of simple ASCII string" do
+      assert :string.length("hello") == 5
+    end
+
+    test "returns 1 for single character" do
+      assert :string.length("a") == 1
+    end
+
+    test "counts grapheme clusters, not codepoints" do
+      # "e̊" is e (101) + combining ring above (778) = 1 grapheme cluster
+      assert :string.length("e̊") == 1
+    end
+
+    test "counts grapheme clusters in mixed string" do
+      # "ß↑e̊" = 3 grapheme clusters (from Erlang docs)
+      assert :string.length("ß↑e̊") == 3
+    end
+
+    test "counts emoji as single grapheme cluster" do
+      assert :string.length("👋") == 1
+    end
+
+    test "counts string with multiple emoji" do
+      assert :string.length("Hello 👋 World 🌍") == 15
+    end
+
+    test "handles multi-byte UTF-8 characters" do
+      # Same as "ß↑e̊" in binary form (from Erlang docs)
+      assert :string.length(<<195, 159, 226, 134, 145, 101, 204, 138>>) == 3
+    end
+
+    test "handles string with only combining characters after base" do
+      # "a" + combining acute accent + combining ring above = 1 grapheme
+      assert :string.length("á̊") == 1
+    end
+
+    test "counts flag emoji as single grapheme cluster" do
+      assert :string.length("🇺🇸") == 1
+    end
+
+    test "counts ZWJ emoji sequence as single grapheme cluster" do
+      assert :string.length("👩‍💻") == 1
+    end
+
+    test "counts string with newlines and tabs" do
+      assert :string.length("a\nb\tc") == 5
+    end
+
+    # Charlist input
+
+    test "returns 0 for empty charlist" do
+      assert :string.length([]) == 0
+    end
+
+    test "returns length of simple charlist" do
+      assert :string.length(~c"hello") == 5
+    end
+
+    test "counts grapheme clusters in charlist with combining characters" do
+      # e (101) + combining ring above (778) = 1 grapheme cluster
+      assert :string.length([101, 778]) == 1
+    end
+
+    # Mixed chardata input
+
+    test "handles mixed chardata with binary in list" do
+      assert :string.length(["hello"]) == 5
+    end
+
+    test "handles mixed chardata with integers and binaries" do
+      # [104, "ello"] = "hello" = 5
+      assert :string.length([104, "ello"]) == 5
+    end
+
+    test "handles nested list chardata" do
+      assert :string.length([[104, 101], "llo"]) == 5
+    end
+
+    # Error cases
+
+    test "raises FunctionClauseError for atom input" do
+      expected_msg = build_function_clause_error_msg(":unicode_util.cp/1", [:atom])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :string.length(:atom)
+      end
+    end
+
+    test "raises FunctionClauseError for integer input" do
+      expected_msg = build_function_clause_error_msg(":unicode_util.cp/1", [42])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :string.length(42)
+      end
+    end
+
+    test "raises FunctionClauseError for non-binary bitstring" do
+      expected_msg = build_function_clause_error_msg(":unicode_util.cp/1", [<<1::1, 0::1, 1::1>>])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :string.length(<<1::1, 0::1, 1::1>>)
+      end
+    end
+
+    test "raises FunctionClauseError for list with atom element" do
+      expected_msg = build_function_clause_error_msg(":unicode_util.cp/1", [:atom])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :string.length([:atom])
+      end
+    end
+
+    test "raises FunctionClauseError for list with non-binary bitstring" do
+      expected_msg = build_function_clause_error_msg(":unicode_util.cp/1", [<<1::1, 0::1, 1::1>>])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :string.length([<<1::1, 0::1, 1::1>>])
+      end
+    end
+
+    test "raises FunctionClauseError for negative codepoint in list" do
+      expected_msg = build_function_clause_error_msg(":unicode_util.cp/1", [-1])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :string.length([-1])
+      end
+    end
+
+    test "raises FunctionClauseError for very large codepoint in list" do
+      expected_msg = build_function_clause_error_msg(":unicode_util.cp/1", [9_999_999])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :string.length([9_999_999])
+      end
+    end
+
+    test "raises FunctionClauseError for improper list" do
+      expected_msg = build_function_clause_error_msg(":unicode_util.cp/1", [:tail])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :string.length([104 | :tail])
+      end
+    end
+
+    test "raises ArgumentError for invalid bytes in binary" do
+      assert_error ArgumentError, "argument error: <<255, 255>>", fn ->
+        :string.length(<<255, 255>>)
+      end
+    end
+
+    test "error frame carries args for non-chardata input" do
+      string = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :string.length(string)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      # The server fails matching a clause in Erlang code inside
+      # unicode_util.erl, so its frame location also carries the OTP-internal
+      # file and line, which the client doesn't mirror.
+      assert {:unicode_util, :cp, [:abc], location} = wrap_term(top_frame)
+      assert location[:error_info] == nil
+    end
+  end
+
+  describe "replace/3" do
+    test "delegates to replace/4 with :leading direction" do
+      # Use a string with multiple occurrences of the pattern to verify :leading (not :all or :trailing)
+      result = :string.replace("a-b-c", "-", "_")
+
+      assert result == ["a", "_", "b-c"]
+      assert result == :string.replace("a-b-c", "-", "_", :leading)
+    end
+  end
+
+  describe "replace/4" do
+    # Direction variations
+
+    test "with direction :all" do
+      result = :string.replace("Hello World !", " ", "_", :all)
+
+      assert result == ["Hello", "_", "World", "_", "!"]
+    end
+
+    test "with direction :leading" do
+      result = :string.replace("Hello World !", " ", "_", :leading)
+
+      assert result == ["Hello", "_", "World !"]
+    end
+
+    test "with direction :trailing" do
+      result = :string.replace("Hello World !", " ", "_", :trailing)
+
+      assert result == ["Hello World", "_", "!"]
+    end
+
+    # Pattern position edge cases
+
+    test "when pattern is at the start of the string" do
+      result = :string.replace("Hello", "He", "A", :leading)
+
+      assert result == ["", "A", "llo"]
+    end
+
+    test "when pattern is at the end of the string" do
+      result = :string.replace("Hello", "lo", "p", :trailing)
+
+      assert result == ["Hel", "p", ""]
+    end
+
+    test "with consecutive patterns" do
+      result = :string.replace("lololo", "lo", "ha", :all)
+
+      assert result == ["", "ha", "", "ha", "", "ha", ""]
+    end
+
+    # Input edge cases
+
+    test "with empty pattern" do
+      result = :string.replace("Hello World !", "", "_", :all)
+
+      assert result == ["Hello World !"]
+    end
+
+    test "when pattern is not found" do
+      result = :string.replace("Hello World !", ".", "_", :all)
+
+      assert result == ["Hello World !"]
+    end
+
+    test "with empty replacement" do
+      result = :string.replace("Hello World", " ", "", :all)
+
+      assert result == ["Hello", "", "World"]
+    end
+
+    test "with unicode pattern" do
+      result = :string.replace("Hello 👋 World", "👋", "🌍", :all)
+
+      assert result == ["Hello ", "🌍", " World"]
+    end
+
+    # Replacement type variations
+
+    test "accepts atom as replacement and inserts it as-is" do
+      result = :string.replace("Hello World !", " ", :_, :all)
+
+      assert result == ["Hello", :_, "World", :_, "!"]
+    end
+
+    test "accepts charlist as replacement and inserts it as-is" do
+      result = :string.replace("Hello World !", " ", ~c"_", :all)
+
+      assert result == ["Hello", ~c"_", "World", ~c"_", "!"]
+    end
+
+    # Error cases
+
+    test "raises MatchError if the first argument is not valid chardata" do
+      assert_error MatchError, build_match_error_msg(:hello_world), fn ->
+        :string.replace(:hello_world, "_", " ", :all)
+      end
+    end
+
+    test "raises ArgumentError if the second argument is not valid chardata" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not valid character data (an iodata term)"),
+                   fn ->
+                     :string.replace("Hello_World_!", :_, " ", :all)
+                   end
+    end
+
+    test "raises CaseClauseError if the fourth argument is not an atom" do
+      assert_error CaseClauseError, build_case_clause_error_msg("all"), fn ->
+        :string.replace("Hello World !", " ", "_", "all")
+      end
+    end
+
+    test "raises CaseClauseError if the fourth argument is an unrecognized atom" do
+      assert_error CaseClauseError, build_case_clause_error_msg(:invalid), fn ->
+        :string.replace("Hello World", " ", "_", :invalid)
+      end
+    end
+
+    test "error frame carries args and error_info for an invalid pattern" do
+      pattern = wrap_term(:xyz)
+
+      top_frame =
+        try do
+          :string.replace("abc", pattern, "x", :all)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      # The server converts the pattern in Erlang code inside unicode.erl,
+      # so its frame location also carries the OTP-internal file and line,
+      # which the client doesn't mirror.
+      assert {:unicode, :characters_to_list, [:xyz], location} = wrap_term(top_frame)
+      assert location[:error_info] == %{module: :erl_stdlib_errors}
+    end
+  end
+
+  describe "split/2" do
+    test "delegates to split/3 with :leading direction" do
+      assert :string.split("a-b-c", "-") == :string.split("a-b-c", "-", :leading)
+    end
+  end
+
+  describe "split/3" do
+    test "with empty pattern" do
+      result = :string.split("Hello World !", "", :all)
+
+      assert result == ["Hello World !"]
+    end
+
+    test "with pattern not found in subject" do
+      result = :string.split("Hello World !", ".", :all)
+
+      assert result == ["Hello World !"]
+    end
+
+    test "with direction :all" do
+      result = :string.split("Hello World !", " ", :all)
+
+      assert result == ["Hello", "World", "!"]
+    end
+
+    test "with direction :leading" do
+      result = :string.split("Hello World !", " ", :leading)
+
+      assert result == ["Hello", "World !"]
+    end
+
+    test "with direction :trailing" do
+      result = :string.split("Hello World !", " ", :trailing)
+
+      assert result == ["Hello World", "!"]
+    end
+
+    test "with pattern at the start of the subject" do
+      result = :string.split("Hello World !", "H", :leading)
+
+      assert result == ["", "ello World !"]
+    end
+
+    test "with pattern at the end of the subject" do
+      result = :string.split("Hello World !", "!", :trailing)
+
+      assert result == ["Hello World ", ""]
+    end
+
+    test "with consecutive pattern" do
+      result = :string.split("Hello World !", "l", :all)
+
+      assert result == ["He", "", "o Wor", "d !"]
+    end
+
+    test "with unicode pattern" do
+      result = :string.split("Hello 👋 World", "👋", :all)
+
+      assert result == ["Hello ", " World"]
+    end
+
+    test "with charlist subject and charlist pattern" do
+      result = :string.split(~c"Hello World", ~c" ", :all)
+
+      assert result == [~c"Hello", ~c"World"]
+    end
+
+    test "with charlist subject and binary pattern" do
+      result = :string.split(~c"Hello World", " ", :all)
+
+      assert result == [~c"Hello", ~c"World"]
+    end
+
+    test "with binary subject and charlist pattern" do
+      result = :string.split("Hello World", ~c" ", :all)
+
+      assert result == ["Hello", "World"]
+    end
+
+    test "raises MatchError if the first argument is not valid chardata" do
+      assert_error MatchError, build_match_error_msg(:hello_world), fn ->
+        :string.split(:hello_world, "_", :all)
+      end
+    end
+
+    test "raises MatchError if the first argument is a non-binary bitstring" do
+      assert_error MatchError, build_match_error_msg(<<1::3>>), fn ->
+        :string.split(<<1::3>>, " ", :all)
+      end
+    end
+
+    test "raises ArgumentError if the second argument is not valid chardata" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not valid character data (an iodata term)"),
+                   fn ->
+                     :string.split("Hello_World_!", :_, :all)
+                   end
+    end
+
+    test "raises ArgumentError if the second argument is a non-binary bitstring" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not valid character data (an iodata term)"),
+                   fn ->
+                     :string.split("Hello World", <<1::3>>, :all)
+                   end
+    end
+
+    test "raises CaseClauseError if the third argument is not an atom" do
+      assert_error CaseClauseError, build_case_clause_error_msg("all"), fn ->
+        :string.split("Hello World !", " ", "all")
+      end
+    end
+
+    test "raises CaseClauseError if the third argument is an unrecognized atom" do
+      assert_error CaseClauseError, build_case_clause_error_msg(:invalid), fn ->
+        :string.split("hello world", " ", :invalid)
+      end
+    end
+
+    test "error frame carries args and error_info for an invalid pattern" do
+      pattern = wrap_term(:xyz)
+
+      top_frame =
+        try do
+          :string.split("abc", pattern, :all)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      # The server converts the pattern in Erlang code inside unicode.erl,
+      # so its frame location also carries the OTP-internal file and line,
+      # which the client doesn't mirror.
+      assert {:unicode, :characters_to_list, [:xyz], location} = wrap_term(top_frame)
+      assert location[:error_info] == %{module: :erl_stdlib_errors}
+    end
+  end
+
+  describe "titlecase/1" do
+    # Section: with binary input
+
+    test "returns empty binary for empty string" do
+      assert :string.titlecase("") == ""
+    end
+
+    test "uppercases first character of ASCII string" do
+      assert :string.titlecase("hello") == "Hello"
+    end
+
+    test "handles already uppercase first character" do
+      assert :string.titlecase("Hello") == "Hello"
+    end
+
+    test "handles single lowercase character" do
+      assert :string.titlecase("a") == "A"
+    end
+
+    test "handles single uppercase character" do
+      assert :string.titlecase("Z") == "Z"
+    end
+
+    test "uses custom mapping for German ß (223 → [83, 115] = 'Ss')" do
+      assert :string.titlecase("ßtest") == "Sstest"
+    end
+
+    test "uses range check for Georgian character (codepoint 4304)" do
+      input = <<4304::utf8, "test">>
+      expected = <<4304::utf8, "test">>
+
+      assert :string.titlecase(input) == expected
+    end
+
+    test "uses range check for Greek character (codepoint 8072)" do
+      input = <<8072::utf8, "test">>
+      expected = <<8072::utf8, "test">>
+
+      assert :string.titlecase(input) == expected
+    end
+
+    test "uses range check for Greek character (codepoint 8088)" do
+      input = <<8088::utf8>>
+      expected = <<8088::utf8>>
+
+      assert :string.titlecase(input) == expected
+    end
+
+    test "uses range check for Greek character (codepoint 8104)" do
+      input = <<8104::utf8>>
+      expected = <<8104::utf8>>
+
+      assert :string.titlecase(input) == expected
+    end
+
+    test "uses range check for Greek character (codepoint 8111)" do
+      input = <<8111::utf8, "end">>
+      expected = <<8111::utf8, "end">>
+
+      assert :string.titlecase(input) == expected
+    end
+
+    test "titlecases Garay character (codepoint 68976)" do
+      input = <<68_976::utf8>>
+      expected = <<68_944::utf8>>
+
+      assert :string.titlecase(input) == expected
+    end
+
+    test "uses custom mapping from MAPPING object (452 → 453)" do
+      input = <<452::utf8, "test">>
+      expected = <<453::utf8, "test">>
+
+      assert :string.titlecase(input) == expected
+    end
+
+    test "uses custom mapping for ligature ﬁ (64257 → [70, 105] = 'Fi')" do
+      input = <<64_257::utf8, "re">>
+
+      assert :string.titlecase(input) == "Fire"
+    end
+
+    test "uses custom mapping that expands to multiple codepoints (8114 → [8122, 837])" do
+      input = <<8114::utf8, "x">>
+      expected = <<8122::utf8, 837::utf8, "x">>
+
+      assert :string.titlecase(input) == expected
+    end
+
+    test "uses custom mapping for ligature ﬃ (64259 → [70, 102, 105] = 'Ffi')" do
+      input = <<64_259::utf8>>
+
+      assert :string.titlecase(input) == "Ffi"
+    end
+
+    test "titlecases word without special case rules" do
+      assert :string.titlecase("world") == "World"
+    end
+
+    test "raises ArgumentError for invalid UTF-8 binary" do
+      invalid_binary = <<255, 255>>
+
+      assert_error ArgumentError, "argument error: <<255, 255>>", fn ->
+        :string.titlecase(invalid_binary)
+      end
+    end
+
+    test "raises ArgumentError for surrogate pair codepoint" do
+      # Create a binary with surrogate pair codepoint (55296)
+      invalid_binary = <<0xED, 0xA0, 0x80>>
+
+      assert_error ArgumentError, "argument error: <<237, 160, 128>>", fn ->
+        :string.titlecase(invalid_binary)
+      end
+    end
+
+    # Section: with list of integers (charlist)
+
+    test "returns empty list for empty list" do
+      assert :string.titlecase([]) == []
+    end
+
+    test "uppercases first codepoint in charlist" do
+      assert :string.titlecase([97, 98, 99]) == [65, 98, 99]
+    end
+
+    test "handles already uppercase first codepoint" do
+      assert :string.titlecase([72, 105]) == [72, 105]
+    end
+
+    test "handles single lowercase codepoint" do
+      assert :string.titlecase([122]) == [90]
+    end
+
+    test "expands first codepoint to multiple codepoints (ß = 223 → [83, 115])" do
+      assert :string.titlecase([223, 97]) == [83, 115, 97]
+    end
+
+    test "expands first codepoint to three codepoints (64259 → [70, 102, 105])" do
+      assert :string.titlecase([64_259, 120]) == [70, 102, 105, 120]
+    end
+
+    test "uses range check for codepoint 4304" do
+      assert :string.titlecase([4304, 97]) == [4304, 97]
+    end
+
+    test "uses custom mapping for codepoint 452" do
+      assert :string.titlecase([452, 97]) == [453, 97]
+    end
+
+    test "uses custom mapping that expands for codepoint 8114" do
+      assert :string.titlecase([8114, 120]) == [8122, 837, 120]
+    end
+
+    test "titlecases codepoint without special case rules" do
+      assert :string.titlecase([119]) == [87]
+    end
+
+    test "does not validate surrogate pair codepoint in charlist" do
+      # Erlang does not validate surrogate pairs in charlists
+      assert :string.titlecase([55_296]) == [55_296]
+    end
+
+    # Section: with list starting with binary
+
+    test "processes single character binary" do
+      assert :string.titlecase(["a", 98]) == [65, "", 98]
+    end
+
+    test "processes multi-character binary" do
+      assert :string.titlecase(["hello", 97]) == [72, "ello", 97]
+    end
+
+    test "processes binary alone in list" do
+      assert :string.titlecase(["test"]) == [84, "est"]
+    end
+
+    test "expands binary first char to multiple codepoints (ß)" do
+      assert :string.titlecase(["ßx", 97]) == [83, 115, "x", 97]
+    end
+
+    test "expands ligature ﬁ (64257) to nested list when binary has trailing content" do
+      input = [<<64_257::utf8, "le">>]
+
+      assert :string.titlecase(input) == [[70, 105], "le"]
+    end
+
+    test "expands ligature ﬁ (64257) to flat list when followed by separate binary" do
+      input = [<<64_257::utf8>>, "ox"]
+
+      assert :string.titlecase(input) == [70, 105, "", "ox"]
+    end
+
+    test "expands ligature ﬁ (64257) to flat list when alone in list" do
+      input = [<<64_257::utf8>>]
+
+      assert :string.titlecase(input) == [70, 105]
+    end
+
+    test "expands ligature ﬁ (64257) to flat list when followed by separate empty binary" do
+      input = [<<64_257::utf8>>, ""]
+
+      assert :string.titlecase(input) == [70, 105, "", ""]
+    end
+
+    test "expands ligature ﬁ (64257) to flat list when followed by separate integer" do
+      input = [<<64_257::utf8>>, 97]
+
+      assert :string.titlecase(input) == [70, 105, "", 97]
+    end
+
+    test "expands ligature ﬀ (64256) to nested list when binary has trailing content" do
+      input = [<<64_256::utf8, "ox">>]
+
+      assert :string.titlecase(input) == [[70, 102], "ox"]
+    end
+
+    test "expands ligature ﬀ (64256) to flat list when followed by separate binary" do
+      input = [<<64_256::utf8>>, "ox"]
+
+      assert :string.titlecase(input) == [70, 102, "", "ox"]
+    end
+
+    test "expands ligature ﬄ (64260) to nested list when binary has trailing content" do
+      input = [<<64_260::utf8, "at">>]
+
+      assert :string.titlecase(input) == [[70, 102, 108], "at"]
+    end
+
+    test "expands ligature ﬄ (64260) to flat list when followed by separate binary" do
+      input = [<<64_260::utf8>>, "at"]
+
+      assert :string.titlecase(input) == [70, 102, 108, "", "at"]
+    end
+
+    test "raises ArgumentError for invalid UTF-8 binary in list" do
+      invalid_binary = <<255, 255>>
+
+      assert_error ArgumentError, "argument error: <<255, 255>>", fn ->
+        :string.titlecase([invalid_binary])
+      end
+    end
+
+    test "returns empty list for empty binary in list" do
+      assert :string.titlecase([""]) == []
+    end
+
+    # Section: with nested list
+
+    test "processes nested list with single integer, rest is single integer" do
+      assert :string.titlecase([[97], 98]) == [65, 98]
+    end
+
+    test "processes nested list with multiple integers, rest is multiple integers" do
+      assert :string.titlecase([[104, 101], 108, 108]) == [72, 101, 108, 108]
+    end
+
+    test "processes nested list where rest starts with binary" do
+      assert :string.titlecase([[97], "test", 99]) == [65, "test", 99]
+    end
+
+    test "processes nested list where rest starts with binary, no remainder" do
+      assert :string.titlecase([[97], "test"]) == [65, "test"]
+    end
+
+    test "processes nested list with binary inside, multiple rest elements" do
+      assert :string.titlecase([["ab"], 99, 100]) == [65, "b", 99, 100]
+    end
+
+    test "processes nested list with binary inside, single rest element" do
+      assert :string.titlecase([["ab"], 99]) == [65, "b", 99]
+    end
+
+    test "processes nested list with no rest" do
+      assert :string.titlecase([[120]]) == [88]
+    end
+
+    test "processes deeply nested list" do
+      assert :string.titlecase([[[97]]]) == [65]
+    end
+
+    test "processes nested list with binary that expands" do
+      assert :string.titlecase([["ß"]]) == [83, 115]
+    end
+
+    test "processes nested list with integer that expands" do
+      assert :string.titlecase([[223], 97]) == [83, 115, 97]
+    end
+
+    # Section: edge cases
+
+    test "returns empty list for empty nested list" do
+      assert :string.titlecase([[]]) == []
+    end
+
+    test "returns zero codepoint as-is" do
+      assert :string.titlecase([0]) == [0]
+    end
+
+    test "returns large codepoint outside BMP as-is" do
+      # 😀 emoji
+      assert :string.titlecase([128_512]) == [128_512]
+    end
+
+    test "handles multiple empty binaries in list" do
+      assert :string.titlecase(["", "", 97]) == [65]
+    end
+
+    test "handles nested list with empty binary" do
+      assert :string.titlecase([[""], 97]) == [65]
+    end
+
+    test "raises FunctionClauseError for negative integer" do
+      expected_msg = build_function_clause_error_msg(":unicode_util.cp/1", [-1])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :string.titlecase([-1])
+      end
+    end
+
+    test "raises FunctionClauseError for very large integer" do
+      expected_msg = build_function_clause_error_msg(":unicode_util.cp/1", [9_999_999])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :string.titlecase([9_999_999])
+      end
+    end
+
+    test "raises FunctionClauseError for non-byte-aligned bitstring" do
+      expected_msg =
+        build_function_clause_error_msg(":string.titlecase/1", [<<1::1, 0::1, 1::1>>])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :string.titlecase(<<1::1, 0::1, 1::1>>)
+      end
+    end
+
+    test "raises FunctionClauseError for list with non-byte-aligned bitstring" do
+      expected_msg = build_function_clause_error_msg(":unicode_util.cp/1", [<<1::1, 0::1, 1::1>>])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :string.titlecase([<<1::1, 0::1, 1::1>>])
+      end
+    end
+
+    # Section: error handling
+
+    test "raises FunctionClauseError for integer input" do
+      expected_msg = build_function_clause_error_msg(":string.titlecase/1", [42])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :string.titlecase(42)
+      end
+    end
+
+    test "raises FunctionClauseError for atom input" do
+      expected_msg = build_function_clause_error_msg(":string.titlecase/1", [:test])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :string.titlecase(:test)
+      end
+    end
+
+    test "raises FunctionClauseError for float input" do
+      expected_msg = build_function_clause_error_msg(":string.titlecase/1", [3.14])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :string.titlecase(3.14)
+      end
+    end
+
+    test "raises FunctionClauseError for list with atom first element" do
+      expected_msg = build_function_clause_error_msg(":unicode_util.cp/1", [:invalid])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :string.titlecase([:invalid])
+      end
+    end
+
+    test "raises FunctionClauseError for list with float first element" do
+      expected_msg = build_function_clause_error_msg(":unicode_util.cp/1", [3.14])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :string.titlecase([3.14])
+      end
+    end
+
+    test "error frame carries args for non-chardata input" do
+      subject = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :string.titlecase(subject)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      # The server implements this function in Erlang code inside string.erl,
+      # so its frame location also carries the OTP-internal file and line,
+      # which the client doesn't mirror.
+      assert {:string, :titlecase, [:abc], location} = wrap_term(top_frame)
+      assert location[:error_info] == nil
+    end
+  end
+
+  describe "to_graphemes/1" do
+    test "ASCII binary" do
+      assert :string.to_graphemes("abc") == [97, 98, 99]
+    end
+
+    test "groups combining marks into a single grapheme cluster" do
+      assert :string.to_graphemes("e̊x") == [[101, 778], 120]
+    end
+
+    test "empty binary" do
+      assert :string.to_graphemes("") == []
+    end
+
+    test "charlist input" do
+      assert :string.to_graphemes(~c"ab") == [97, 98]
+    end
+
+    test "improper chardata (list with a binary tail)" do
+      assert :string.to_graphemes([104, 101 | "llo"]) == [104, 101, 108, 108, 111]
+    end
+
+    test "raises ArgumentError for invalid character data" do
+      assert_error ArgumentError, "argument error: <<255>>", fn ->
+        :string.to_graphemes(<<255>>)
+      end
+    end
+  end
+end

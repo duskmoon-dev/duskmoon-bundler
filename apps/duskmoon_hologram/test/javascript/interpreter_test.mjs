@@ -1,0 +1,11750 @@
+"use strict";
+
+import {
+  assert,
+  assertBoxedError,
+  assertBoxedErrorAsync,
+  assertBoxedStrictEqual,
+  boxedErrorMessage,
+  buildBadArityErrorMsg,
+  buildCaseClauseErrorMsg,
+  buildFunctionClauseErrorMsg,
+  buildMatchErrorMsg,
+  buildUndefinedFunctionErrorMsg,
+  buildWithClauseErrorMsg,
+  contextFixture,
+  defineRuntimeGlobals,
+  sinon,
+} from "./support/helpers.mjs";
+
+import {defineModule1Fixture as defineInterpreterModule1Fixture} from "./support/fixtures/ex_js_consistency/interpreter/module_1.mjs";
+import {defineModule1Fixture as defineMatchOperatorModule1Fixture} from "./support/fixtures/ex_js_consistency/match_operator/module_1.mjs";
+
+import Bitstring from "../../assets/js/bitstring.mjs";
+import CallStack from "../../assets/js/erts/call_stack.mjs";
+import ERTS from "../../assets/js/erts.mjs";
+import Erlang from "../../assets/js/erlang/erlang.mjs";
+import HologramBoxedError from "../../assets/js/errors/boxed_error.mjs";
+import HologramInterpreterError from "../../assets/js/errors/interpreter_error.mjs";
+import Interpreter from "../../assets/js/interpreter.mjs";
+import NodeTable from "../../assets/js/erts/node_table.mjs";
+import Type from "../../assets/js/type.mjs";
+
+defineRuntimeGlobals();
+defineInterpreterModule1Fixture();
+defineMatchOperatorModule1Fixture();
+
+describe("Interpreter", () => {
+  describe("accessKeywordListElement()", () => {
+    const keywordList = Type.keywordList([
+      [Type.atom("a"), Type.integer(1)],
+      [Type.atom("b"), Type.integer(2)],
+      [Type.atom("c"), Type.integer(3)],
+    ]);
+
+    it("keyword list has the given key", () => {
+      const result = Interpreter.accessKeywordListElement(keywordList, Type.atom("b"));
+
+      assert.deepStrictEqual(result, Type.integer(2));
+    });
+
+    it("keyword list doesn't have the given key, no default value provided", () => {
+      const result = Interpreter.accessKeywordListElement(keywordList, Type.atom("d"));
+
+      assert.isNull(result);
+    });
+
+    it("keyword list doesn't have the given key, default value is provided", () => {
+      const result = Interpreter.accessKeywordListElement(
+        keywordList,
+        Type.atom("d"),
+        Type.atom("my_default_value"),
+      );
+
+      assert.deepStrictEqual(result, Type.atom("my_default_value"));
+    });
+  });
+
+  describe("asyncCase()", () => {
+    it("returns a Promise", () => {
+      const condition = Type.integer(1);
+
+      const clauses = [
+        {
+          match: Type.integer(1),
+          guards: [],
+          body: async (_context) => Type.atom("ok"),
+        },
+      ];
+
+      const context = contextFixture();
+
+      const result = Interpreter.asyncCase(condition, clauses, context);
+
+      assert.instanceOf(result, Promise);
+    });
+
+    it("evaluates condition function with await", async () => {
+      const condition = async (_context) => Type.integer(1);
+
+      const clauses = [
+        {
+          match: Type.integer(1),
+          guards: [],
+          body: async (_context) => Type.atom("matched"),
+        },
+      ];
+
+      const context = contextFixture();
+
+      const result = await Interpreter.asyncCase(condition, clauses, context);
+
+      assert.deepStrictEqual(result, Type.atom("matched"));
+    });
+
+    it("awaits clause body result", async () => {
+      const condition = Type.integer(1);
+
+      const clauses = [
+        {
+          match: Type.integer(1),
+          guards: [],
+          body: async (_context) => {
+            return new Promise((resolve) => setTimeout(() => resolve(Type.atom("delayed")), 1));
+          },
+        },
+      ];
+
+      const context = contextFixture();
+
+      const result = await Interpreter.asyncCase(condition, clauses, context);
+
+      assert.deepStrictEqual(result, Type.atom("delayed"));
+    });
+  });
+
+  describe("asyncComprehension()", () => {
+    let context, prevIntoFun, prevToListFun;
+
+    beforeEach(() => {
+      context = contextFixture({
+        vars: {a: Type.integer(1), b: Type.integer(2)},
+      });
+
+      prevIntoFun = globalThis.Elixir_Enum["into/2"];
+
+      globalThis.Elixir_Enum["into/2"] = (enumerable, _collectable) => {
+        return enumerable;
+      };
+
+      prevToListFun = globalThis.Elixir_Enum["to_list/1"];
+
+      globalThis.Elixir_Enum["to_list/1"] = (enumerable) => {
+        return enumerable;
+      };
+    });
+
+    afterEach(() => {
+      globalThis.Elixir_Enum["into/2"] = prevIntoFun;
+      globalThis.Elixir_Enum["to_list/1"] = prevToListFun;
+    });
+
+    it("returns a Promise", () => {
+      const generator = {
+        type: "generator",
+        match: Type.variablePattern("x"),
+        guards: [],
+        body: async (_context) => Type.list([Type.integer(1)]),
+      };
+
+      const result = Interpreter.asyncComprehension(
+        [generator],
+        Type.list(),
+        false,
+        async (context) => context.vars.x,
+        context,
+      );
+
+      assert.instanceOf(result, Promise);
+    });
+
+    it("awaits enumerable generator body", async () => {
+      const generator = {
+        type: "generator",
+        match: Type.variablePattern("x"),
+        guards: [],
+        body: async (_context) => Type.list([Type.integer(1), Type.integer(2)]),
+      };
+
+      const result = await Interpreter.asyncComprehension(
+        [generator],
+        Type.list(),
+        false,
+        async (context) => context.vars.x,
+        context,
+      );
+
+      const expected = Type.list([Type.integer(1), Type.integer(2)]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("awaits bitstring generator body", async () => {
+      // for <<x <- <<1, 2, 3>>>>, do: x
+
+      const generator = {
+        type: "bitstring_generator",
+        match: Type.bitstringPattern([
+          Type.bitstringSegment(Type.variablePattern("x"), {
+            type: "integer",
+          }),
+        ]),
+        body: async (_context) =>
+          Type.bitstring([
+            Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+            Type.bitstringSegment(Type.integer(2), {type: "integer"}),
+            Type.bitstringSegment(Type.integer(3), {type: "integer"}),
+          ]),
+      };
+
+      const result = await Interpreter.asyncComprehension(
+        [generator],
+        Type.list(),
+        false,
+        async (context) => context.vars.x,
+        context,
+      );
+
+      const expected = Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("awaits filters", async () => {
+      const generator = {
+        type: "generator",
+        match: Type.variablePattern("x"),
+        guards: [],
+        body: async (_context) => Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]),
+      };
+
+      const filter = {
+        type: "filter",
+        filter: async (context) => {
+          // keep only values > 1
+          return Erlang[">/2"](context.vars.x, Type.integer(1));
+        },
+      };
+
+      const result = await Interpreter.asyncComprehension(
+        [generator, filter],
+        Type.list(),
+        false,
+        async (context) => context.vars.x,
+        context,
+      );
+
+      const expected = Type.list([Type.integer(2), Type.integer(3)]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("awaits mapper", async () => {
+      const generator = {
+        type: "generator",
+        match: Type.variablePattern("x"),
+        guards: [],
+        body: async (_context) => Type.list([Type.integer(1), Type.integer(2)]),
+      };
+
+      const result = await Interpreter.asyncComprehension(
+        [generator],
+        Type.list(),
+        false,
+        async (context) => {
+          return new Promise((resolve) => setTimeout(() => resolve(context.vars.x), 1));
+        },
+        context,
+      );
+
+      const expected = Type.list([Type.integer(1), Type.integer(2)]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("generators can use variables bound by an earlier generator", async () => {
+      // for x <- [1, 2], y <- [x, x + 10], do: {x, y}
+
+      const generator1 = {
+        type: "generator",
+        match: Type.variablePattern("x"),
+        guards: [],
+        body: async (_context) => Type.list([Type.integer(1), Type.integer(2)]),
+      };
+
+      const generator2 = {
+        type: "generator",
+        match: Type.variablePattern("y"),
+        guards: [],
+        body: async (context) =>
+          Type.list([context.vars.x, Erlang["+/2"](context.vars.x, Type.integer(10))]),
+      };
+
+      const result = await Interpreter.asyncComprehension(
+        [generator1, generator2],
+        Type.list(),
+        false,
+        async (context) => Type.tuple([context.vars.x, context.vars.y]),
+        context,
+      );
+
+      const expected = Type.list([
+        Type.tuple([Type.integer(1), Type.integer(1)]),
+        Type.tuple([Type.integer(1), Type.integer(11)]),
+        Type.tuple([Type.integer(2), Type.integer(2)]),
+        Type.tuple([Type.integer(2), Type.integer(12)]),
+      ]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("filters placed between generators prune the branch before the next generator runs", async () => {
+      // for x <- [[1, 2], :nope, [3]], is_list(x), y <- x, do: y
+      //
+      // The filter must reject :nope before `y <- x` is evaluated -
+      // the generator body throws if it is called for the pruned branch.
+
+      const generator1 = {
+        type: "generator",
+        match: Type.variablePattern("x"),
+        guards: [],
+        body: async (_context) =>
+          Type.list([
+            Type.list([Type.integer(1), Type.integer(2)]),
+            Type.atom("nope"),
+            Type.list([Type.integer(3)]),
+          ]),
+      };
+
+      const filter = {
+        type: "filter",
+        filter: async (context) => Erlang["is_list/1"](context.vars.x),
+      };
+
+      const generator2 = {
+        type: "generator",
+        match: Type.variablePattern("y"),
+        guards: [],
+        body: async (context) => {
+          if (!Type.isList(context.vars.x)) {
+            throw new Error("the generator body was evaluated for a filtered-out branch");
+          }
+
+          return context.vars.x;
+        },
+      };
+
+      const result = await Interpreter.asyncComprehension(
+        [generator1, filter, generator2],
+        Type.list(),
+        false,
+        async (context) => context.vars.y,
+        context,
+      );
+
+      const expected = Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+  });
+
+  describe("asyncComprehensionReduce()", () => {
+    let context, prevToListFun;
+
+    beforeEach(() => {
+      context = contextFixture({
+        vars: {a: Type.integer(1), b: Type.integer(2)},
+      });
+
+      prevToListFun = globalThis.Elixir_Enum["to_list/1"];
+
+      globalThis.Elixir_Enum["to_list/1"] = (enumerable) => {
+        return enumerable;
+      };
+    });
+
+    afterEach(() => {
+      globalThis.Elixir_Enum["to_list/1"] = prevToListFun;
+    });
+
+    it("returns a Promise", () => {
+      const generator = {
+        type: "generator",
+        match: Type.variablePattern("x"),
+        guards: [],
+        body: async (_context) => Type.list([Type.integer(1)]),
+      };
+
+      const clause = {
+        match: Type.variablePattern("acc"),
+        guards: [],
+        body: async (context) => Erlang["+/2"](context.vars.acc, context.vars.x),
+      };
+
+      const result = Interpreter.asyncComprehensionReduce(
+        [generator],
+        Type.integer(0),
+        [clause],
+        context,
+      );
+
+      assert.instanceOf(result, Promise);
+    });
+
+    it("awaits enumerable generator body", async () => {
+      // for x <- [1, 2, 3], reduce: 0 do
+      //   acc -> acc + x
+      // end
+
+      const generator = {
+        type: "generator",
+        match: Type.variablePattern("x"),
+        guards: [],
+        body: async (_context) => Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]),
+      };
+
+      const clause = {
+        match: Type.variablePattern("acc"),
+        guards: [],
+        body: async (context) => Erlang["+/2"](context.vars.acc, context.vars.x),
+      };
+
+      const result = await Interpreter.asyncComprehensionReduce(
+        [generator],
+        Type.integer(0),
+        [clause],
+        context,
+      );
+
+      assert.deepStrictEqual(result, Type.integer(6));
+    });
+
+    it("awaits bitstring generator body", async () => {
+      // for <<x <- <<1, 2, 3>>>>, reduce: 0 do
+      //   acc -> acc + x
+      // end
+
+      const generator = {
+        type: "bitstring_generator",
+        match: Type.bitstringPattern([
+          Type.bitstringSegment(Type.variablePattern("x"), {
+            type: "integer",
+          }),
+        ]),
+        body: async (_context) =>
+          Type.bitstring([
+            Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+            Type.bitstringSegment(Type.integer(2), {type: "integer"}),
+            Type.bitstringSegment(Type.integer(3), {type: "integer"}),
+          ]),
+      };
+
+      const clause = {
+        match: Type.variablePattern("acc"),
+        guards: [],
+        body: async (context) => Erlang["+/2"](context.vars.acc, context.vars.x),
+      };
+
+      const result = await Interpreter.asyncComprehensionReduce(
+        [generator],
+        Type.integer(0),
+        [clause],
+        context,
+      );
+
+      assert.deepStrictEqual(result, Type.integer(6));
+    });
+
+    it("awaits filters", async () => {
+      // for x <- [1, 2, 3], x > 1, reduce: 0 do
+      //   acc -> acc + x
+      // end
+
+      const generator = {
+        type: "generator",
+        match: Type.variablePattern("x"),
+        guards: [],
+        body: async (_context) => Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]),
+      };
+
+      const filter = {
+        type: "filter",
+        filter: async (context) => {
+          // keep only values > 1
+          return Erlang[">/2"](context.vars.x, Type.integer(1));
+        },
+      };
+
+      const clause = {
+        match: Type.variablePattern("acc"),
+        guards: [],
+        body: async (context) => Erlang["+/2"](context.vars.acc, context.vars.x),
+      };
+
+      const result = await Interpreter.asyncComprehensionReduce(
+        [generator, filter],
+        Type.integer(0),
+        [clause],
+        context,
+      );
+
+      assert.deepStrictEqual(result, Type.integer(5));
+    });
+
+    it("awaits reducer clause body", async () => {
+      // for x <- [1, 2], reduce: 0 do
+      //   acc -> acc + x
+      // end
+
+      const generator = {
+        type: "generator",
+        match: Type.variablePattern("x"),
+        guards: [],
+        body: async (_context) => Type.list([Type.integer(1), Type.integer(2)]),
+      };
+
+      const clause = {
+        match: Type.variablePattern("acc"),
+        guards: [],
+        body: async (context) => {
+          return new Promise((resolve) =>
+            setTimeout(() => resolve(Erlang["+/2"](context.vars.acc, context.vars.x)), 1),
+          );
+        },
+      };
+
+      const result = await Interpreter.asyncComprehensionReduce(
+        [generator],
+        Type.integer(0),
+        [clause],
+        context,
+      );
+
+      assert.deepStrictEqual(result, Type.integer(3));
+    });
+  });
+
+  describe("asyncCond()", () => {
+    it("returns a Promise", () => {
+      const clauses = [
+        {
+          condition: async (_context) => Type.atom("true"),
+          body: async (_context) => Type.atom("ok"),
+        },
+      ];
+
+      const context = contextFixture();
+
+      const result = Interpreter.asyncCond(clauses, context);
+
+      assert.instanceOf(result, Promise);
+    });
+
+    it("awaits clause body result", async () => {
+      const clauses = [
+        {
+          condition: async (_context) => Type.atom("true"),
+          body: async (_context) => {
+            return new Promise((resolve) => setTimeout(() => resolve(Type.atom("delayed")), 1));
+          },
+        },
+      ];
+
+      const context = contextFixture();
+
+      const result = await Interpreter.asyncCond(clauses, context);
+
+      assert.deepStrictEqual(result, Type.atom("delayed"));
+    });
+  });
+
+  describe("asyncTry()", () => {
+    it("returns a Promise", () => {
+      const body = async (_context) => Type.atom("ok");
+      const context = contextFixture();
+      const result = Interpreter.asyncTry(body, [], [], [], null, context);
+
+      assert.instanceOf(result, Promise);
+    });
+
+    it("awaits body result", async () => {
+      const body = async (_context) => {
+        return new Promise((resolve) => setTimeout(() => resolve(Type.atom("delayed")), 1));
+      };
+
+      const context = contextFixture();
+
+      const result = await Interpreter.asyncTry(body, [], [], [], null, context);
+
+      assert.deepStrictEqual(result, Type.atom("delayed"));
+    });
+
+    it("awaits an async after block before resolving", async () => {
+      const body = async (_context) => Type.atom("ok");
+
+      let afterRan = false;
+
+      const afterBlock = async (_context) => {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        afterRan = true;
+      };
+
+      const context = contextFixture();
+
+      const result = await Interpreter.asyncTry(body, [], [], [], afterBlock, context);
+
+      assert.deepStrictEqual(result, Type.atom("ok"));
+      assert.isTrue(afterRan);
+    });
+
+    it("runs the after block and re-propagates the error when no clause matches", async () => {
+      const boxedError = new HologramBoxedError(Type.errorStruct("MyError", "my message"));
+
+      const body = async (_context) => {
+        throw boxedError;
+      };
+
+      let afterRan = false;
+
+      const afterBlock = async (_context) => {
+        afterRan = true;
+      };
+
+      const context = contextFixture();
+
+      let caught;
+
+      try {
+        await Interpreter.asyncTry(body, [], [], [], afterBlock, context);
+      } catch (error) {
+        caught = error;
+      }
+
+      assert.equal(caught, boxedError);
+      assert.isTrue(afterRan);
+    });
+
+    it("matches the do block result against the else clauses", async () => {
+      const body = async (_context) => Type.integer(2);
+
+      const elseClauses = [
+        {
+          match: Type.integer(2),
+          guards: [],
+          body: async (_context) => Type.atom("two"),
+        },
+      ];
+
+      const context = contextFixture();
+
+      const result = await Interpreter.asyncTry(body, [], [], elseClauses, null, context);
+
+      assert.deepStrictEqual(result, Type.atom("two"));
+    });
+
+    it("raises TryClauseError when no else clause matches", async () => {
+      const body = async (_context) => Type.integer(3);
+
+      const elseClauses = [
+        {
+          match: Type.integer(1),
+          guards: [],
+          body: async (_context) => Type.atom("one"),
+        },
+      ];
+
+      const context = contextFixture();
+
+      await assertBoxedErrorAsync(
+        () => Interpreter.asyncTry(body, [], [], elseClauses, null, context),
+        "TryClauseError",
+        "no try clause matching:\n\n    3\n",
+      );
+    });
+
+    it("rescues an :error-kind failure and awaits the rescue clause body", async () => {
+      const struct = Type.errorStruct("ArgumentError", "bad arg");
+
+      const body = async (_context) => {
+        throw new HologramBoxedError(struct);
+      };
+
+      const rescueClauses = [
+        {
+          variable: Type.variablePattern("e"),
+          modules: [],
+          body: async (context) => context.vars.e,
+        },
+      ];
+
+      const context = contextFixture();
+
+      const result = await Interpreter.asyncTry(body, rescueClauses, [], [], null, context);
+
+      assert.deepStrictEqual(result, struct);
+    });
+
+    it("catches a :throw failure and awaits the catch clause body", async () => {
+      const thrown = Type.atom("thrown_value");
+
+      const body = async (_context) => {
+        throw new HologramBoxedError(thrown, Type.atom("throw"));
+      };
+
+      const catchClauses = [
+        {
+          kind: Type.atom("throw"),
+          value: Type.variablePattern("v"),
+          guards: [],
+          body: async (context) => context.vars.v,
+        },
+      ];
+
+      const context = contextFixture();
+
+      const result = await Interpreter.asyncTry(body, [], catchClauses, [], null, context);
+
+      assert.deepStrictEqual(result, thrown);
+    });
+  });
+
+  describe("asyncWith()", () => {
+    it("returns a Promise", () => {
+      const body = async (_context) => Type.atom("ok");
+      const context = contextFixture();
+      const result = Interpreter.asyncWith(body, [], [], context);
+
+      assert.instanceOf(result, Promise);
+    });
+
+    it("evaluates match clause expression with await", async () => {
+      const body = (context) => context.vars.x;
+
+      const clauses = [
+        {
+          match: Type.variablePattern("x"),
+          guards: [],
+          expression: async (_context) => Type.atom("matched"),
+        },
+      ];
+
+      const context = contextFixture();
+
+      const result = await Interpreter.asyncWith(body, clauses, [], context);
+
+      assert.deepStrictEqual(result, Type.atom("matched"));
+    });
+
+    it("awaits body result", async () => {
+      const body = async (_context) => {
+        return new Promise((resolve) => setTimeout(() => resolve(Type.atom("delayed")), 1));
+      };
+
+      const context = contextFixture();
+
+      const result = await Interpreter.asyncWith(body, [], [], context);
+
+      assert.deepStrictEqual(result, Type.atom("delayed"));
+    });
+
+    it("awaits else clause body when a clause fails to match", async () => {
+      const body = (_context) => Type.atom("body");
+
+      const clauses = [
+        {
+          match: Type.atom("error"),
+          guards: [],
+          expression: async (_context) => Type.atom("ok"),
+        },
+      ];
+
+      const elseClauses = [
+        {
+          match: Type.variablePattern("x"),
+          guards: [],
+          body: async (_context) => {
+            return new Promise((resolve) => setTimeout(() => resolve(Type.atom("recovered")), 1));
+          },
+        },
+      ];
+
+      const context = contextFixture();
+
+      const result = await Interpreter.asyncWith(body, clauses, elseClauses, context);
+
+      assert.deepStrictEqual(result, Type.atom("recovered"));
+    });
+  });
+
+  describe("blameError()", () => {
+    it("normalizes a bare reason", () => {
+      const result = Interpreter.blameError(Type.atom("badarg"));
+
+      assert.deepStrictEqual(result, Type.errorStruct("ArgumentError", "argument error"));
+    });
+
+    it("applies the exception module's blame/2 callback", () => {
+      globalThis.Elixir_MyBlamedType = {
+        "blame/2": (_struct, stacktrace) =>
+          Type.tuple([Type.errorStruct("MyBlamedType", "my blamed message"), stacktrace]),
+      };
+
+      const struct = Type.errorStruct("MyBlamedType", "my message");
+      const result = Interpreter.blameError(struct);
+
+      delete globalThis.Elixir_MyBlamedType;
+
+      assert.deepStrictEqual(result, Type.errorStruct("MyBlamedType", "my blamed message"));
+    });
+
+    it("returns the struct unchanged when the exception module has no blame/2 callback", () => {
+      const struct = Type.errorStruct("MyType", "my message");
+      const result = Interpreter.blameError(struct);
+
+      assert.deepStrictEqual(result, struct);
+    });
+  });
+
+  describe("buildContext()", () => {
+    it("module undefined, vars undefined", () => {
+      const result = Interpreter.buildContext();
+      const expected = {module: null, stacktrace: null, vars: {}};
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("module defined, string", () => {
+      const result = Interpreter.buildContext({module: "MyModule"});
+
+      const expected = {
+        module: Type.atom("Elixir.MyModule"),
+        stacktrace: null,
+        vars: {},
+      };
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("module defined, boxed alias", () => {
+      const result = Interpreter.buildContext({module: Type.alias("MyModule")});
+
+      const expected = {
+        module: Type.atom("Elixir.MyModule"),
+        stacktrace: null,
+        vars: {},
+      };
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("module defined, null", () => {
+      const result = Interpreter.buildContext({module: null});
+      const expected = {module: null, stacktrace: null, vars: {}};
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("stacktrace defined", () => {
+      const stacktrace = Type.list([
+        Type.tuple([Type.alias("MyModule"), Type.atom("my_fun"), Type.integer(2), Type.list()]),
+      ]);
+
+      const result = Interpreter.buildContext({stacktrace});
+
+      const expected = {
+        module: null,
+        stacktrace,
+        vars: {},
+      };
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("vars defined", () => {
+      const result = Interpreter.buildContext({
+        vars: {a: Type.integer(1), b: Type.integer(2)},
+      });
+
+      const expected = {
+        module: null,
+        stacktrace: null,
+        vars: {a: Type.integer(1), b: Type.integer(2)},
+      };
+
+      assert.deepStrictEqual(result, expected);
+    });
+  });
+
+  it("buildTooBigOutputErrorMsg()", () => {
+    const result = Interpreter.buildTooBigOutputErrorMsg("{MyModule, :my_fun, 3}");
+
+    const expected =
+      "{MyModule, :my_fun, 3} can't be transpiled automatically to JavaScript, because its output is too big.\n" +
+      "See what to do here: https://www.hologram.page/TODO";
+
+    assert.equal(result, expected);
+  });
+
+  // Only frame tracking is unit-tested here - clause dispatch behavior is
+  // covered by feature and consistency tests, because its unit tests would
+  // need updating each time Hologram.Compiler.Encoder's implementation
+  // changes.
+  describe("callAnonymousFunction() frame tracking", () => {
+    const context = contextFixture({module: "Aaa.Bbb"});
+
+    const okClauses = (onCall) => [
+      {
+        params: (_context) => [Type.variablePattern("x")],
+        guards: [],
+        body: (_context) => {
+          onCall();
+          return Type.atom("ok");
+        },
+      },
+    ];
+
+    beforeEach(() => {
+      CallStack.reset();
+      globalThis.Hologram.config = {stacktraces: true};
+    });
+
+    afterEach(() => {
+      ERTS.moduleMetadata = {};
+      globalThis.Hologram.config = {stacktraces: false};
+    });
+
+    it("pushes the fun's frame for the duration of the call", () => {
+      let framesDuringCall;
+
+      const fun = Type.anonymousFunction(
+        1,
+        okClauses(() => (framesDuringCall = CallStack.snapshot())),
+        context,
+      );
+
+      Interpreter.callAnonymousFunction(fun, [Type.integer(1)]);
+
+      assert.deepStrictEqual(framesDuringCall, [
+        {
+          module: "Aaa.Bbb",
+          function: null,
+          arityOrArgs: 1,
+          file: null,
+          line: null,
+          errorInfo: null,
+        },
+      ]);
+
+      assert.deepStrictEqual(CallStack.snapshot(), []);
+    });
+
+    it("pops the frame when no clause matches", () => {
+      const fun = Type.anonymousFunction(
+        1,
+        [
+          {
+            params: (_context) => [Type.integer(1)],
+            guards: [],
+            body: (_context) => Type.atom("ok"),
+          },
+        ],
+        context,
+        "-my_fun/0-fun-0-",
+      );
+
+      assertBoxedError(
+        () => Interpreter.callAnonymousFunction(fun, [Type.integer(2)]),
+        "FunctionClauseError",
+        "no function clause matching in anonymous fn/1 in Aaa.Bbb.my_fun/0\n\nThe following arguments were given to anonymous fn/1 in Aaa.Bbb.my_fun/0:\n\n    # 1\n    2\n",
+      );
+
+      assert.deepStrictEqual(CallStack.snapshot(), []);
+    });
+
+    // A line is recorded when a clause matches, so a call matching none would
+    // otherwise report the function without saying where it is.
+    it("reports the first clause when no clause matches", () => {
+      const fun = Type.anonymousFunction(
+        1,
+        [
+          {
+            params: (_context) => [Type.integer(1)],
+            guards: [],
+            body: (_context) => Type.atom("ok"),
+            line: 11,
+          },
+          {
+            params: (_context) => [Type.integer(2)],
+            guards: [],
+            body: (_context) => Type.atom("ok"),
+            line: 22,
+          },
+        ],
+        context,
+        "-my_fun/0-fun-0-",
+      );
+
+      let error;
+
+      try {
+        Interpreter.callAnonymousFunction(fun, [Type.integer(3)]);
+      } catch (thrownError) {
+        error = thrownError;
+      }
+
+      assert.deepStrictEqual(error.stacktrace, [
+        {
+          module: "Aaa.Bbb",
+          function: "-my_fun/0-fun-0-",
+          arityOrArgs: Type.list([Type.integer(3)]),
+          file: null,
+          line: 11,
+          errorInfo: null,
+        },
+      ]);
+    });
+
+    it("names no function when the function carries no name", () => {
+      const fun = Type.anonymousFunction(
+        1,
+        [
+          {
+            params: (_context) => [Type.integer(1)],
+            guards: [],
+            body: (_context) => Type.atom("ok"),
+          },
+        ],
+        context,
+      );
+
+      // Every anonymous function in transpiled code is named by the compiler,
+      // so only one built by the client runtime itself lands here.
+      assertBoxedError(
+        () => Interpreter.callAnonymousFunction(fun, [Type.integer(2)]),
+        "FunctionClauseError",
+        "no function clause matches",
+      );
+    });
+
+    it("the frame carries the file the module registered", () => {
+      let framesDuringCall;
+
+      ERTS.registerModuleMetadata({
+        "Iii.Jjj": {app: "my_app", file: "lib/iii/jjj.ex"},
+      });
+
+      const fun = Type.anonymousFunction(
+        1,
+        okClauses(() => (framesDuringCall = CallStack.snapshot())),
+        contextFixture({module: "Iii.Jjj"}),
+      );
+
+      Interpreter.callAnonymousFunction(fun, [Type.integer(1)]);
+
+      assert.equal(framesDuringCall[0].file, "lib/iii/jjj.ex");
+
+      // cleanup
+      delete globalThis.Elixir_Iii_Jjj;
+    });
+
+    it("the frame carries the matched clause's line", () => {
+      let framesDuringCall;
+
+      const fun = Type.anonymousFunction(
+        1,
+        [
+          {
+            params: (_context) => [Type.atom("a")],
+            guards: [],
+            body: (_context) => Type.atom("expr_a"),
+            line: 3,
+          },
+          {
+            params: (_context) => [Type.atom("b")],
+            guards: [],
+            body: (_context) => {
+              framesDuringCall = CallStack.snapshot();
+              return Type.atom("expr_b");
+            },
+            line: 5,
+          },
+        ],
+        context,
+      );
+
+      Interpreter.callAnonymousFunction(fun, [Type.atom("b")]);
+
+      assert.equal(framesDuringCall[0].line, 5);
+    });
+
+    it("doesn't push a frame for a capture of a named function", () => {
+      let framesDuringCall;
+
+      const capture = Type.functionCapture(
+        "Ccc.Ddd",
+        "my_fun",
+        1,
+        okClauses(() => (framesDuringCall = CallStack.snapshot())),
+        context,
+      );
+
+      Interpreter.callAnonymousFunction(capture, [Type.integer(1)]);
+
+      assert.deepStrictEqual(framesDuringCall, []);
+    });
+
+    it("doesn't track frames when client stacktraces are disabled", () => {
+      globalThis.Hologram.config = {stacktraces: false};
+
+      let framesDuringCall;
+
+      const fun = Type.anonymousFunction(
+        1,
+        okClauses(() => (framesDuringCall = CallStack.snapshot())),
+        context,
+      );
+
+      Interpreter.callAnonymousFunction(fun, [Type.integer(1)]);
+
+      assert.deepStrictEqual(framesDuringCall, []);
+    });
+  });
+
+  it("cloneContext()", () => {
+    const context = {
+      module: Type.atom("MyModule1"),
+      stacktrace: null,
+      vars: {
+        a: Type.integer(1),
+        b: Type.integer(2),
+      },
+    };
+
+    const clone = Interpreter.cloneContext(context);
+
+    assert.deepStrictEqual(clone, {
+      module: Type.atom("MyModule1"),
+      stacktrace: null,
+      vars: {
+        a: Type.integer(1),
+        b: Type.integer(2),
+      },
+    });
+
+    clone.module = Type.atom("MyModule2");
+    clone.vars.b = Type.integer(20);
+
+    assert.deepStrictEqual(context, {
+      module: Type.atom("MyModule1"),
+      stacktrace: null,
+      vars: {
+        a: Type.integer(1),
+        b: Type.integer(2),
+      },
+    });
+
+    assert.deepStrictEqual(clone, {
+      module: Type.atom("MyModule2"),
+      stacktrace: null,
+      vars: {
+        a: Type.integer(1),
+        b: Type.integer(20),
+      },
+    });
+  });
+
+  describe("compareTerms()", () => {
+    describe("different types", () => {
+      it("first term smaller than second term", () => {
+        const result = Interpreter.compareTerms(Type.integer(123), Type.atom("abc"));
+
+        assert.equal(result, -1);
+      });
+
+      it("first term bigger than second term", () => {
+        const result = Interpreter.compareTerms(Type.atom("abc"), Type.integer(123));
+
+        assert.equal(result, 1);
+      });
+    });
+
+    describe("atom type", () => {
+      it("atom == atom", () => {
+        const result = Interpreter.compareTerms(Type.atom("abc"), Type.atom("abc"));
+
+        assert.equal(result, 0);
+      });
+
+      it("atom < atom", () => {
+        const result = Interpreter.compareTerms(Type.atom("aaa"), Type.atom("bbb"));
+
+        assert.equal(result, -1);
+      });
+
+      it("atom > atom", () => {
+        const result = Interpreter.compareTerms(Type.atom("bbb"), Type.atom("aaa"));
+
+        assert.equal(result, 1);
+      });
+
+      it("unicode chars", () => {
+        const result = Interpreter.compareTerms(Type.atom("álien"), Type.atom("office"));
+
+        assert.equal(result, 1);
+      });
+    });
+
+    it("bitstring type", () => {
+      const result = Interpreter.compareTerms(Type.bitstring("aaa"), Type.bitstring("bbb"));
+
+      assert.equal(result, -1);
+    });
+
+    describe("list type", () => {
+      it("list == list", () => {
+        const result = Interpreter.compareTerms(
+          Type.list([Type.integer(1), Type.integer(2)]),
+          Type.list([Type.integer(1), Type.integer(2)]),
+        );
+
+        assert.equal(result, 0);
+      });
+
+      it("list < list", () => {
+        const result = Interpreter.compareTerms(
+          Type.list([Type.integer(1), Type.integer(2)]),
+          Type.list([Type.integer(1), Type.integer(3)]),
+        );
+
+        assert.equal(result, -1);
+      });
+
+      it("list > list", () => {
+        const result = Interpreter.compareTerms(
+          Type.list([Type.integer(1), Type.integer(3)]),
+          Type.list([Type.integer(1), Type.integer(2)]),
+        );
+
+        assert.equal(result, 1);
+      });
+
+      it("empty list precedes nonempty list", () => {
+        const result = Interpreter.compareTerms(Type.list(), Type.list([Type.integer(1)]));
+
+        assert.equal(result, -1);
+      });
+
+      it("prefix precedes longer list", () => {
+        const result = Interpreter.compareTerms(
+          Type.list([Type.integer(1), Type.integer(2)]),
+          Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]),
+        );
+
+        assert.equal(result, -1);
+      });
+
+      it("element difference beats length", () => {
+        const result = Interpreter.compareTerms(
+          Type.list([Type.integer(1), Type.integer(3)]),
+          Type.list([Type.integer(1), Type.integer(2), Type.integer(9)]),
+        );
+
+        assert.equal(result, 1);
+      });
+
+      it("nested lists compare recursively", () => {
+        const result = Interpreter.compareTerms(
+          Type.list([Type.list([Type.integer(1), Type.integer(2)])]),
+          Type.list([Type.list([Type.integer(1), Type.integer(3)])]),
+        );
+
+        assert.equal(result, -1);
+      });
+
+      it("improper list == improper list", () => {
+        const result = Interpreter.compareTerms(
+          Type.improperList([Type.integer(1), Type.integer(2)]),
+          Type.improperList([Type.integer(1), Type.integer(2)]),
+        );
+
+        assert.equal(result, 0);
+      });
+
+      it("improper tails compare", () => {
+        const result = Interpreter.compareTerms(
+          Type.improperList([Type.integer(1), Type.integer(2)]),
+          Type.improperList([Type.integer(1), Type.integer(3)]),
+        );
+
+        assert.equal(result, -1);
+      });
+
+      it("proper list follows improper list with non-list tail", () => {
+        const result = Interpreter.compareTerms(
+          Type.list([Type.integer(1)]),
+          Type.improperList([Type.integer(1), Type.integer(2)]),
+        );
+
+        assert.equal(result, 1);
+      });
+
+      it("integer tail precedes list remainder", () => {
+        const result = Interpreter.compareTerms(
+          Type.improperList([Type.integer(1), Type.integer(2)]),
+          Type.list([Type.integer(1), Type.integer(2)]),
+        );
+
+        assert.equal(result, -1);
+      });
+
+      it("bitstring tail follows list remainder", () => {
+        const result = Interpreter.compareTerms(
+          Type.improperList([Type.integer(1), Type.bitstring("x")]),
+          Type.list([Type.integer(1), Type.integer(2)]),
+        );
+
+        assert.equal(result, 1);
+      });
+    });
+
+    describe("number types (float or integer)", () => {
+      it("float == float", () => {
+        const result = Interpreter.compareTerms(Type.float(1.23), Type.float(1.23));
+
+        assert.equal(result, 0);
+      });
+
+      it("integer == integer", () => {
+        const result = Interpreter.compareTerms(Type.integer(123), Type.integer(123));
+
+        assert.equal(result, 0);
+      });
+
+      it("float == integer", () => {
+        const result = Interpreter.compareTerms(Type.float(123.0), Type.integer(123));
+
+        assert.equal(result, 0);
+      });
+
+      it("integer == float", () => {
+        const result = Interpreter.compareTerms(Type.integer(123), Type.float(123.0));
+
+        assert.equal(result, 0);
+      });
+
+      it("float < float", () => {
+        const result = Interpreter.compareTerms(Type.float(1.23), Type.float(2.34));
+
+        assert.equal(result, -1);
+      });
+
+      it("float < integer", () => {
+        const result = Interpreter.compareTerms(Type.float(1.23), Type.integer(2));
+
+        assert.equal(result, -1);
+      });
+
+      it("float > float", () => {
+        const result = Interpreter.compareTerms(Type.float(2.34), Type.float(1.23));
+
+        assert.equal(result, 1);
+      });
+
+      it("float > integer", () => {
+        const result = Interpreter.compareTerms(Type.float(2.34), Type.integer(1));
+
+        assert.equal(result, 1);
+      });
+
+      it("integer < integer", () => {
+        const result = Interpreter.compareTerms(Type.integer(1), Type.integer(2));
+
+        assert.equal(result, -1);
+      });
+
+      it("integer < float", () => {
+        const result = Interpreter.compareTerms(Type.integer(1), Type.float(2.34));
+
+        assert.equal(result, -1);
+      });
+
+      it("integer > integer", () => {
+        const result = Interpreter.compareTerms(Type.integer(2), Type.integer(1));
+
+        assert.equal(result, 1);
+      });
+
+      it("integer > float", () => {
+        const result = Interpreter.compareTerms(Type.integer(2), Type.float(1.23));
+
+        assert.equal(result, 1);
+      });
+    });
+
+    describe("pid type", () => {
+      it("pid == pid", () => {
+        const result = Interpreter.compareTerms(
+          Type.pid("my_node@my_host", [1, 11, 111]),
+          Type.pid("my_node@my_host", [1, 11, 111]),
+        );
+
+        assert.equal(result, 0);
+      });
+
+      it("pid < pid, difference in first segment", () => {
+        const result = Interpreter.compareTerms(
+          Type.pid("my_node@my_host", [0, 11, 111]),
+          Type.pid("my_node@my_host", [1, 11, 111]),
+        );
+
+        assert.equal(result, -1);
+      });
+
+      it("pid < pid, difference in second segment", () => {
+        const result = Interpreter.compareTerms(
+          Type.pid("my_node@my_host", [1, 10, 111]),
+          Type.pid("my_node@my_host", [1, 11, 111]),
+        );
+
+        assert.equal(result, -1);
+      });
+
+      it("pid < pid, difference in third segment", () => {
+        const result = Interpreter.compareTerms(
+          Type.pid("my_node@my_host", [1, 11, 110]),
+          Type.pid("my_node@my_host", [1, 11, 111]),
+        );
+
+        assert.equal(result, -1);
+      });
+
+      it("pid > pid, difference in first segment", () => {
+        const result = Interpreter.compareTerms(
+          Type.pid("my_node@my_host", [1, 11, 111]),
+          Type.pid("my_node@my_host", [0, 11, 111]),
+        );
+
+        assert.equal(result, 1);
+      });
+
+      it("pid > pid, difference in second segment", () => {
+        const result = Interpreter.compareTerms(
+          Type.pid("my_node@my_host", [1, 11, 111]),
+          Type.pid("my_node@my_host", [1, 10, 111]),
+        );
+
+        assert.equal(result, 1);
+      });
+
+      it("pid > pid, difference in third segment", () => {
+        const result = Interpreter.compareTerms(
+          Type.pid("my_node@my_host", [1, 11, 111]),
+          Type.pid("my_node@my_host", [1, 11, 110]),
+        );
+
+        assert.equal(result, 1);
+      });
+
+      it("the third segment is compared first in turn", () => {
+        const result = Interpreter.compareTerms(
+          Type.pid("my_node@my_host", [1, 11, 110]),
+          Type.pid("my_node@my_host", [0, 10, 111]),
+        );
+
+        assert.equal(result, -1);
+      });
+
+      it("the second segment is compared second in turn", () => {
+        const result = Interpreter.compareTerms(
+          Type.pid("my_node@my_host", [1, 10, 111]),
+          Type.pid("my_node@my_host", [0, 11, 111]),
+        );
+
+        assert.equal(result, -1);
+      });
+
+      it("the first segment is compared third in turn", () => {
+        const result = Interpreter.compareTerms(
+          Type.pid("my_node@my_host", [0, 11, 111]),
+          Type.pid("my_node@my_host", [1, 11, 111]),
+        );
+
+        assert.equal(result, -1);
+      });
+    });
+
+    describe("tuple type", () => {
+      it("empty tuple == empty tuple", () => {
+        const result = Interpreter.compareTerms(Type.tuple([]), Type.tuple([]));
+
+        assert.equal(result, 0);
+      });
+
+      it("empty tuple < non-empty tuple", () => {
+        const result = Interpreter.compareTerms(
+          Type.tuple([]),
+          Type.tuple([Type.integer(1), Type.integer(2)]),
+        );
+
+        assert.equal(result, -1);
+      });
+
+      it("non-empty tuple > empty tuple", () => {
+        const result = Interpreter.compareTerms(
+          Type.tuple([Type.integer(1), Type.integer(2)]),
+          Type.tuple([]),
+        );
+
+        assert.equal(result, 1);
+      });
+
+      it("non-empty tuple == non-empty tuple", () => {
+        const result = Interpreter.compareTerms(
+          Type.tuple([Type.integer(1), Type.integer(2)]),
+          Type.tuple([Type.integer(1), Type.integer(2)]),
+        );
+
+        assert.equal(result, 0);
+      });
+
+      it("non-empty tuple < non-empty tuple, diffent item count", () => {
+        const result = Interpreter.compareTerms(
+          Type.tuple([Type.integer(1), Type.integer(1)]),
+          Type.tuple([Type.integer(1), Type.integer(1), Type.integer(1)]),
+        );
+
+        assert.equal(result, -1);
+      });
+
+      it("non-empty tuple < non-empty tuple, diffent items", () => {
+        const result = Interpreter.compareTerms(
+          Type.tuple([Type.integer(1), Type.integer(2)]),
+          Type.tuple([Type.integer(1), Type.integer(3)]),
+        );
+
+        assert.equal(result, -1);
+      });
+
+      it("non-empty tuple > non-empty tuple, diffent item count", () => {
+        const result = Interpreter.compareTerms(
+          Type.tuple([Type.integer(1), Type.integer(1), Type.integer(1)]),
+          Type.tuple([Type.integer(1), Type.integer(1)]),
+        );
+
+        assert.equal(result, 1);
+      });
+
+      it("non-empty tuple > non-empty tuple, diffent items", () => {
+        const result = Interpreter.compareTerms(
+          Type.tuple([Type.integer(1), Type.integer(3)]),
+          Type.tuple([Type.integer(1), Type.integer(2)]),
+        );
+
+        assert.equal(result, 1);
+      });
+    });
+  });
+
+  describe("comprehension()", () => {
+    let context, prevIntoFun, prevToListFun;
+
+    beforeEach(() => {
+      context = contextFixture({
+        vars: {a: Type.integer(1), b: Type.integer(2)},
+      });
+      prevIntoFun = globalThis.Elixir_Enum["into/2"];
+
+      globalThis.Elixir_Enum["into/2"] = (enumerable, _collectable) => {
+        return enumerable;
+      };
+
+      prevToListFun = globalThis.Elixir_Enum["to_list/1"];
+
+      globalThis.Elixir_Enum["to_list/1"] = (enumerable) => {
+        return enumerable;
+      };
+    });
+
+    afterEach(() => {
+      globalThis.Elixir_Enum["into/2"] = prevIntoFun;
+      globalThis.Elixir_Enum["to_list/1"] = prevToListFun;
+    });
+
+    describe("enumerable generator", () => {
+      it("generates combinations of enumerables items", () => {
+        // for x <- [1, 2], y <- [3, 4], do: {x, y}
+
+        const generator1 = {
+          type: "generator",
+          match: Type.variablePattern("x"),
+          guards: [],
+          body: (_context) => Type.list([Type.integer(1), Type.integer(2)]),
+        };
+
+        const generator2 = {
+          type: "generator",
+          match: Type.variablePattern("y"),
+          guards: [],
+          body: (_context) => Type.list([Type.integer(3), Type.integer(4)]),
+        };
+
+        const result = Interpreter.comprehension(
+          [generator1, generator2],
+          Type.map(),
+          false,
+          (context) => Type.tuple([context.vars.x, context.vars.y]),
+          context,
+        );
+
+        const expected = Type.list([
+          Type.tuple([Type.integer(1), Type.integer(3)]),
+          Type.tuple([Type.integer(1), Type.integer(4)]),
+          Type.tuple([Type.integer(2), Type.integer(3)]),
+          Type.tuple([Type.integer(2), Type.integer(4)]),
+        ]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("can use variables bound by an earlier generator", () => {
+        // for x <- [1, 2], y <- [x, x + 10], do: {x, y}
+
+        const generator1 = {
+          type: "generator",
+          match: Type.variablePattern("x"),
+          guards: [],
+          body: (_context) => Type.list([Type.integer(1), Type.integer(2)]),
+        };
+
+        const generator2 = {
+          type: "generator",
+          match: Type.variablePattern("y"),
+          guards: [],
+          body: (context) =>
+            Type.list([context.vars.x, Erlang["+/2"](context.vars.x, Type.integer(10))]),
+        };
+
+        const result = Interpreter.comprehension(
+          [generator1, generator2],
+          Type.list(),
+          false,
+          (context) => Type.tuple([context.vars.x, context.vars.y]),
+          context,
+        );
+
+        const expected = Type.list([
+          Type.tuple([Type.integer(1), Type.integer(1)]),
+          Type.tuple([Type.integer(1), Type.integer(11)]),
+          Type.tuple([Type.integer(2), Type.integer(2)]),
+          Type.tuple([Type.integer(2), Type.integer(12)]),
+        ]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("ignores enumerable items that don't match the pattern", () => {
+        // for {11, x} <- [1, {11, 2}, 3, {11, 4}],
+        //     {12, y} <- [5, {12, 6}, 7, {12, 8}],
+        //     do: {x, y}
+
+        const enumerable1 = (_context) =>
+          Type.list([
+            Type.integer(1),
+            Type.tuple([Type.integer(11), Type.integer(2)]),
+            Type.integer(3),
+            Type.tuple([Type.integer(11), Type.integer(4)]),
+          ]);
+
+        const generator1 = {
+          type: "generator",
+          match: Type.tuple([Type.integer(11), Type.variablePattern("x")]),
+          guards: [],
+          body: enumerable1,
+        };
+
+        const enumerable2 = (_context) =>
+          Type.list([
+            Type.integer(5),
+            Type.tuple([Type.integer(12), Type.integer(6)]),
+            Type.integer(7),
+            Type.tuple([Type.integer(12), Type.integer(8)]),
+          ]);
+
+        const generator2 = {
+          type: "generator",
+          match: Type.tuple([Type.integer(12), Type.variablePattern("y")]),
+          guards: [],
+          body: enumerable2,
+        };
+
+        const result = Interpreter.comprehension(
+          [generator1, generator2],
+          Type.list(),
+          false,
+          (context) => Type.tuple([context.vars.x, context.vars.y]),
+          context,
+        );
+
+        const expected = Type.list([
+          Type.tuple([Type.integer(2), Type.integer(6)]),
+          Type.tuple([Type.integer(2), Type.integer(8)]),
+          Type.tuple([Type.integer(4), Type.integer(6)]),
+          Type.tuple([Type.integer(4), Type.integer(8)]),
+        ]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("uses Enum.to_list/1 to convert generator enumerables to lists", () => {
+        // for x <- [1, 2], y <- [3, 4], do: {x, y}
+
+        const enumerable1 = (_context) => Type.list([Type.integer(1), Type.integer(2)]);
+
+        const generator1 = {
+          type: "generator",
+          match: Type.variablePattern("x"),
+          guards: [],
+          body: enumerable1,
+        };
+
+        const enumerable2 = (_context) => Type.list([Type.integer(3), Type.integer(4)]);
+
+        const generator2 = {
+          type: "generator",
+          match: Type.variablePattern("y"),
+          guards: [],
+          body: enumerable2,
+        };
+
+        const stub = sinon.stub(Elixir_Enum, "to_list/1").callsFake((enumerable) => enumerable);
+
+        Interpreter.comprehension(
+          [generator1, generator2],
+          Type.map(),
+          false,
+          (context) => Type.tuple([context.vars.x, context.vars.y]),
+          context,
+        );
+
+        sinon.assert.calledWith(stub, enumerable1(context));
+        sinon.assert.calledWith(stub, enumerable2(context));
+
+        Elixir_Enum["to_list/1"].restore();
+      });
+    });
+
+    describe("bitstring generator", () => {
+      it("iterates in pattern-sized steps", () => {
+        // for <<x <- <<1, 2, 3>>>>, do: x
+
+        const generator = {
+          type: "bitstring_generator",
+          match: Type.bitstringPattern([
+            Type.bitstringSegment(Type.variablePattern("x"), {
+              type: "integer",
+            }),
+          ]),
+          body: (_context) =>
+            Type.bitstring([
+              Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+              Type.bitstringSegment(Type.integer(2), {type: "integer"}),
+              Type.bitstringSegment(Type.integer(3), {type: "integer"}),
+            ]),
+        };
+
+        const result = Interpreter.comprehension(
+          [generator],
+          Type.list(),
+          false,
+          (context) => context.vars.x,
+          context,
+        );
+
+        const expected = Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("binds multiple segments per step", () => {
+        // for <<a::8, b::8 <- <<1, 2, 3, 4>>>>, do: {a, b}
+
+        const generator = {
+          type: "bitstring_generator",
+          match: Type.bitstringPattern([
+            Type.bitstringSegment(Type.variablePattern("a"), {
+              type: "integer",
+              size: Type.integer(8),
+            }),
+            Type.bitstringSegment(Type.variablePattern("b"), {
+              type: "integer",
+              size: Type.integer(8),
+            }),
+          ]),
+          body: (_context) =>
+            Type.bitstring([
+              Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+              Type.bitstringSegment(Type.integer(2), {type: "integer"}),
+              Type.bitstringSegment(Type.integer(3), {type: "integer"}),
+              Type.bitstringSegment(Type.integer(4), {type: "integer"}),
+            ]),
+        };
+
+        const result = Interpreter.comprehension(
+          [generator],
+          Type.list(),
+          false,
+          (context) => Type.tuple([context.vars.a, context.vars.b]),
+          context,
+        );
+
+        const expected = Type.list([
+          Type.tuple([Type.integer(1), Type.integer(2)]),
+          Type.tuple([Type.integer(3), Type.integer(4)]),
+        ]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("matches segments narrower than a byte", () => {
+        // for <<x::4 <- <<0xAB>>>>, do: x
+
+        const generator = {
+          type: "bitstring_generator",
+          match: Type.bitstringPattern([
+            Type.bitstringSegment(Type.variablePattern("x"), {
+              type: "integer",
+              size: Type.integer(4),
+            }),
+          ]),
+          body: (_context) =>
+            Type.bitstring([Type.bitstringSegment(Type.integer(0xab), {type: "integer"})]),
+        };
+
+        const result = Interpreter.comprehension(
+          [generator],
+          Type.list(),
+          false,
+          (context) => context.vars.x,
+          context,
+        );
+
+        const expected = Type.list([Type.integer(10), Type.integer(11)]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("generates combinations of bitstring generators", () => {
+        // for <<x <- <<1, 2>>>>, <<y <- <<3, 4>>>>, do: {x, y}
+
+        const generator1 = {
+          type: "bitstring_generator",
+          match: Type.bitstringPattern([
+            Type.bitstringSegment(Type.variablePattern("x"), {
+              type: "integer",
+            }),
+          ]),
+          body: (_context) =>
+            Type.bitstring([
+              Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+              Type.bitstringSegment(Type.integer(2), {type: "integer"}),
+            ]),
+        };
+
+        const generator2 = {
+          type: "bitstring_generator",
+          match: Type.bitstringPattern([
+            Type.bitstringSegment(Type.variablePattern("y"), {
+              type: "integer",
+            }),
+          ]),
+          body: (_context) =>
+            Type.bitstring([
+              Type.bitstringSegment(Type.integer(3), {type: "integer"}),
+              Type.bitstringSegment(Type.integer(4), {type: "integer"}),
+            ]),
+        };
+
+        const result = Interpreter.comprehension(
+          [generator1, generator2],
+          Type.list(),
+          false,
+          (context) => Type.tuple([context.vars.x, context.vars.y]),
+          context,
+        );
+
+        const expected = Type.list([
+          Type.tuple([Type.integer(1), Type.integer(3)]),
+          Type.tuple([Type.integer(1), Type.integer(4)]),
+          Type.tuple([Type.integer(2), Type.integer(3)]),
+          Type.tuple([Type.integer(2), Type.integer(4)]),
+        ]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("can use variables bound by an earlier generator", () => {
+        // for x <- [<<1, 2>>, <<3>>], <<y <- x>>, do: y
+
+        const generator1 = {
+          type: "generator",
+          match: Type.variablePattern("x"),
+          guards: [],
+          body: (_context) =>
+            Type.list([
+              Type.bitstring([
+                Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+                Type.bitstringSegment(Type.integer(2), {type: "integer"}),
+              ]),
+              Type.bitstring([Type.bitstringSegment(Type.integer(3), {type: "integer"})]),
+            ]),
+        };
+
+        const generator2 = {
+          type: "bitstring_generator",
+          match: Type.bitstringPattern([
+            Type.bitstringSegment(Type.variablePattern("y"), {
+              type: "integer",
+            }),
+          ]),
+          body: (context) => context.vars.x,
+        };
+
+        const result = Interpreter.comprehension(
+          [generator1, generator2],
+          Type.list(),
+          false,
+          (context) => context.vars.y,
+          context,
+        );
+
+        const expected = Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("stops iterating at the first non-matching prefix", () => {
+        // for <<1::8, x::8 <- <<1, 2, 3, 4>>>>, do: x
+
+        const generator = {
+          type: "bitstring_generator",
+          match: Type.bitstringPattern([
+            Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+            Type.bitstringSegment(Type.variablePattern("x"), {
+              type: "integer",
+            }),
+          ]),
+          body: (_context) =>
+            Type.bitstring([
+              Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+              Type.bitstringSegment(Type.integer(2), {type: "integer"}),
+              Type.bitstringSegment(Type.integer(3), {type: "integer"}),
+              Type.bitstringSegment(Type.integer(4), {type: "integer"}),
+            ]),
+        };
+
+        const result = Interpreter.comprehension(
+          [generator],
+          Type.list(),
+          false,
+          (context) => context.vars.x,
+          context,
+        );
+
+        const expected = Type.list([Type.integer(2)]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("discards leftover bits that don't fill the pattern", () => {
+        // for <<x::8 <- <<1, 2, 3::4>>>>, do: x
+
+        const generator = {
+          type: "bitstring_generator",
+          match: Type.bitstringPattern([
+            Type.bitstringSegment(Type.variablePattern("x"), {
+              type: "integer",
+              size: Type.integer(8),
+            }),
+          ]),
+          body: (_context) =>
+            Type.bitstring([
+              Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+              Type.bitstringSegment(Type.integer(2), {type: "integer"}),
+              Type.bitstringSegment(Type.integer(3), {
+                type: "integer",
+                size: Type.integer(4),
+              }),
+            ]),
+        };
+
+        const result = Interpreter.comprehension(
+          [generator],
+          Type.list(),
+          false,
+          (context) => context.vars.x,
+          context,
+        );
+
+        const expected = Type.list([Type.integer(1), Type.integer(2)]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("returns an empty result for an empty bitstring", () => {
+        // for <<x <- <<>>>>, do: x
+
+        const generator = {
+          type: "bitstring_generator",
+          match: Type.bitstringPattern([
+            Type.bitstringSegment(Type.variablePattern("x"), {
+              type: "integer",
+            }),
+          ]),
+          body: (_context) => Type.bitstring([]),
+        };
+
+        const result = Interpreter.comprehension(
+          [generator],
+          Type.list(),
+          false,
+          (context) => context.vars.x,
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.list([]));
+      });
+
+      it("composes with filters", () => {
+        // for <<x <- <<1, 2, 3>>>>, rem(x, 2) == 1, do: x
+
+        const generator = {
+          type: "bitstring_generator",
+          match: Type.bitstringPattern([
+            Type.bitstringSegment(Type.variablePattern("x"), {
+              type: "integer",
+            }),
+          ]),
+          body: (_context) =>
+            Type.bitstring([
+              Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+              Type.bitstringSegment(Type.integer(2), {type: "integer"}),
+              Type.bitstringSegment(Type.integer(3), {type: "integer"}),
+            ]),
+        };
+
+        const filter = {
+          type: "filter",
+          filter: (context) =>
+            Erlang["==/2"](Erlang["rem/2"](context.vars.x, Type.integer(2)), Type.integer(1)),
+        };
+
+        const result = Interpreter.comprehension(
+          [generator, filter],
+          Type.list(),
+          false,
+          (context) => context.vars.x,
+          context,
+        );
+
+        const expected = Type.list([Type.integer(1), Type.integer(3)]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("removes duplicate results when the unique flag is set", () => {
+        // for <<x <- <<1, 2, 1>>>>, uniq: true, do: x
+
+        const generator = {
+          type: "bitstring_generator",
+          match: Type.bitstringPattern([
+            Type.bitstringSegment(Type.variablePattern("x"), {
+              type: "integer",
+            }),
+          ]),
+          body: (_context) =>
+            Type.bitstring([
+              Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+              Type.bitstringSegment(Type.integer(2), {type: "integer"}),
+              Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+            ]),
+        };
+
+        const result = Interpreter.comprehension(
+          [generator],
+          Type.list(),
+          true,
+          (context) => context.vars.x,
+          context,
+        );
+
+        const expected = Type.list([Type.integer(1), Type.integer(2)]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("raises ErlangError if the source is not a bitstring", () => {
+        // for <<x <- [1, 2]>>, do: x
+
+        const generator = {
+          type: "bitstring_generator",
+          match: Type.bitstringPattern([
+            Type.bitstringSegment(Type.variablePattern("x"), {
+              type: "integer",
+            }),
+          ]),
+          body: (_context) => Type.list([Type.integer(1), Type.integer(2)]),
+        };
+
+        assertBoxedError(
+          () =>
+            Interpreter.comprehension(
+              [generator],
+              Type.list(),
+              false,
+              (context) => context.vars.x,
+              context,
+            ),
+          "ErlangError",
+          "Erlang error: {:bad_generator, [1, 2]}",
+        );
+      });
+
+      it("the raised error carries the source it couldn't generate from", () => {
+        const context = contextFixture();
+
+        const generator = {
+          type: "bitstring_generator",
+          match: Type.bitstringPattern([
+            Type.bitstringSegment(Type.variablePattern("x"), {type: "integer"}),
+          ]),
+          body: (_context) => Type.list([Type.integer(1), Type.integer(2)]),
+        };
+
+        let caught;
+
+        try {
+          Interpreter.comprehension(
+            [generator],
+            Type.list(),
+            false,
+            (context) => context.vars.x,
+            context,
+          );
+        } catch (e) {
+          caught = e;
+        }
+
+        assert.deepStrictEqual(
+          caught.value,
+          Type.tuple([Type.atom("bad_generator"), Type.list([Type.integer(1), Type.integer(2)])]),
+        );
+      });
+    });
+
+    describe("guards", () => {
+      it("single guard", () => {
+        // for x when x != 2 <- [1, 2, 3],
+        //     y when y != 4 <- [4, 5, 6],
+        //     do: {x, y}
+        //
+        // for x when :erlang."/="(x, 2) <- [1, 2, 3],
+        //     y when :erlang."/="(y, 4) <- [4, 5, 6],
+        //     do: {x, y}
+
+        const enumerable1 = (_context) =>
+          Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]);
+
+        const guard1a = (context) => Erlang["/=/2"](context.vars.x, Type.integer(2));
+
+        const generator1 = {
+          type: "generator",
+          match: Type.variablePattern("x"),
+          guards: [guard1a],
+          body: enumerable1,
+        };
+
+        const enumerable2 = (_context) =>
+          Type.list([Type.integer(4), Type.integer(5), Type.integer(6)]);
+
+        const guard2a = (context) => Erlang["/=/2"](context.vars.y, Type.integer(4));
+
+        const generator2 = {
+          type: "generator",
+          match: Type.variablePattern("y"),
+          guards: [guard2a],
+          body: enumerable2,
+        };
+
+        const result = Interpreter.comprehension(
+          [generator1, generator2],
+          Type.list(),
+          false,
+          (context) => Type.tuple([context.vars.x, context.vars.y]),
+          context,
+        );
+
+        const expected = Type.list([
+          Type.tuple([Type.integer(1), Type.integer(5)]),
+          Type.tuple([Type.integer(1), Type.integer(6)]),
+          Type.tuple([Type.integer(3), Type.integer(5)]),
+          Type.tuple([Type.integer(3), Type.integer(6)]),
+        ]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("multiple guards", () => {
+        // for x when x == 2 when x == 4 <- [1, 2, 3, 4],
+        //     y when y == 5 when y == 7 <- [5, 6, 7, 8],
+        //     do: {x, y}
+        //
+        // for x when :erlang."=="(x, 2) when :erlang."=="(x, 4) <- [1, 2, 3, 4],
+        //     y when :erlang."=="(y, 5) when :erlang."=="(y, 7) <- [5, 6, 7, 8],
+        //     do: {x, y}
+
+        const enumerable1 = (_context) =>
+          Type.list([Type.integer(1), Type.integer(2), Type.integer(3), Type.integer(4)]);
+
+        const guard1a = (context) => Erlang["==/2"](context.vars.x, Type.integer(2));
+        const guard1b = (context) => Erlang["==/2"](context.vars.x, Type.integer(4));
+
+        const generator1 = {
+          type: "generator",
+          match: Type.variablePattern("x"),
+          guards: [guard1a, guard1b],
+          body: enumerable1,
+        };
+
+        const enumerable2 = (_context) =>
+          Type.list([Type.integer(5), Type.integer(6), Type.integer(7), Type.integer(8)]);
+
+        const guard2a = (context) => Erlang["==/2"](context.vars.y, Type.integer(5));
+        const guard2b = (context) => Erlang["==/2"](context.vars.y, Type.integer(7));
+
+        const generator2 = {
+          type: "generator",
+          match: Type.variablePattern("y"),
+          guards: [guard2a, guard2b],
+          body: enumerable2,
+        };
+
+        const result = Interpreter.comprehension(
+          [generator1, generator2],
+          Type.list(),
+          false,
+          (context) => Type.tuple([context.vars.x, context.vars.y]),
+          context,
+        );
+
+        const expected = Type.list([
+          Type.tuple([Type.integer(2), Type.integer(5)]),
+          Type.tuple([Type.integer(2), Type.integer(7)]),
+          Type.tuple([Type.integer(4), Type.integer(5)]),
+          Type.tuple([Type.integer(4), Type.integer(7)]),
+        ]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("can access variables from comprehension outer scope", () => {
+        // for x when x != b <- [1, 2, 3], do: x
+
+        const enumerable = (_context) =>
+          Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]);
+
+        const guard = (context) => Erlang["/=/2"](context.vars.x, context.vars.b);
+
+        const generator = {
+          type: "generator",
+          match: Type.variablePattern("x"),
+          guards: [guard],
+          body: enumerable,
+        };
+
+        const result = Interpreter.comprehension(
+          [generator],
+          Type.list(),
+          false,
+          (context) => context.vars.x,
+          context,
+        );
+
+        const expected = Type.list([Type.integer(1), Type.integer(3)]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("can access variables pattern matched in preceding guards", () => {
+        // for x <- [1, 2], y when x != 1 <- [3, 4], do: {x, y}
+
+        const enumerable1 = (_context) => Type.list([Type.integer(1), Type.integer(2)]);
+
+        const generator1 = {
+          type: "generator",
+          match: Type.variablePattern("x"),
+          guards: [],
+          body: enumerable1,
+        };
+
+        const enumerable2 = (_context) => Type.list([Type.integer(3), Type.integer(4)]);
+
+        const guard2 = (context) => Erlang["/=/2"](context.vars.x, Type.integer(1));
+
+        const generator2 = {
+          type: "generator",
+          match: Type.variablePattern("y"),
+          guards: [guard2],
+          body: enumerable2,
+        };
+
+        const result = Interpreter.comprehension(
+          [generator1, generator2],
+          Type.list(),
+          false,
+          (context) => Type.tuple([context.vars.x, context.vars.y]),
+          context,
+        );
+
+        const expected = Type.list([
+          Type.tuple([Type.integer(2), Type.integer(3)]),
+          Type.tuple([Type.integer(2), Type.integer(4)]),
+        ]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("errors raised inside generators are not caught", () => {
+        const enumerable = (_context) =>
+          Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]);
+
+        const guard = (_context) => Interpreter.raiseArgumentError("my message");
+
+        const generator = {
+          type: "generator",
+          match: Type.variablePattern("x"),
+          guards: [guard],
+          body: enumerable,
+        };
+
+        assertBoxedError(
+          () =>
+            Interpreter.comprehension(
+              [generator],
+              Type.list(),
+              false,
+              (context) => context.vars.x,
+              context,
+            ),
+          "ArgumentError",
+          "my message",
+        );
+      });
+    });
+
+    describe("filters", () => {
+      it("remove combinations that don't fullfill specified conditions", () => {
+        // for x <- [1, 2, 3],
+        //     y <- [4, 5, 6],
+        //     x + y < 8,
+        //     y - x > 2,
+        //     do: {x, y}
+
+        // for x <- [1, 2, 3],
+        //     y <- [4, 5, 6],
+        //     :erlang.<(:erlang.+(x, y), 8),
+        //     :erlang.>(:erlang.-(y, x), 2),
+        //     do: {x, y}
+
+        const enumerable1 = (_context) =>
+          Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]);
+
+        const generator1 = {
+          type: "generator",
+          match: Type.variablePattern("x"),
+          guards: [],
+          body: enumerable1,
+        };
+
+        const enumerable2 = (_context) =>
+          Type.list([Type.integer(4), Type.integer(5), Type.integer(6)]);
+
+        const generator2 = {
+          type: "generator",
+          match: Type.variablePattern("y"),
+          guards: [],
+          body: enumerable2,
+        };
+
+        const filter1 = {
+          type: "filter",
+          filter: (context) =>
+            Erlang["</2"](Erlang["+/2"](context.vars.x, context.vars.y), Type.integer(8)),
+        };
+
+        const filter2 = {
+          type: "filter",
+          filter: (context) =>
+            Erlang[">/2"](Erlang["-/2"](context.vars.y, context.vars.x), Type.integer(2)),
+        };
+
+        const result = Interpreter.comprehension(
+          [generator1, generator2, filter1, filter2],
+          Type.list(),
+          false,
+          (context) => Type.tuple([context.vars.x, context.vars.y]),
+          context,
+        );
+
+        const expected = Type.list([
+          Type.tuple([Type.integer(1), Type.integer(4)]),
+          Type.tuple([Type.integer(1), Type.integer(5)]),
+          Type.tuple([Type.integer(1), Type.integer(6)]),
+          Type.tuple([Type.integer(2), Type.integer(5)]),
+        ]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("can access variables from comprehension outer scope", () => {
+        // for x <- [1, 2, 3], x != b, do: x
+
+        const enumerable = (_context) =>
+          Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]);
+
+        const generator = {
+          type: "generator",
+          match: Type.variablePattern("x"),
+          guards: [],
+          body: enumerable,
+        };
+
+        const filter = {
+          type: "filter",
+          filter: (context) => Erlang["/=/2"](context.vars.x, context.vars.b),
+        };
+
+        const result = Interpreter.comprehension(
+          [generator, filter],
+          Type.list(),
+          false,
+          (context) => context.vars.x,
+          context,
+        );
+
+        const expected = Type.list([Type.integer(1), Type.integer(3)]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("placed between generators prunes the branch before the next generator runs", () => {
+        // for x <- [[1, 2], :nope, [3]], is_list(x), y <- x, do: y
+        //
+        // The filter must reject :nope before `y <- x` is evaluated -
+        // the generator body throws if it is called for the pruned branch.
+
+        const generator1 = {
+          type: "generator",
+          match: Type.variablePattern("x"),
+          guards: [],
+          body: (_context) =>
+            Type.list([
+              Type.list([Type.integer(1), Type.integer(2)]),
+              Type.atom("nope"),
+              Type.list([Type.integer(3)]),
+            ]),
+        };
+
+        const filter = {
+          type: "filter",
+          filter: (context) => Erlang["is_list/1"](context.vars.x),
+        };
+
+        const generator2 = {
+          type: "generator",
+          match: Type.variablePattern("y"),
+          guards: [],
+          body: (context) => {
+            if (!Type.isList(context.vars.x)) {
+              throw new Error("the generator body was evaluated for a filtered-out branch");
+            }
+
+            return context.vars.x;
+          },
+        };
+
+        const result = Interpreter.comprehension(
+          [generator1, filter, generator2],
+          Type.list(),
+          false,
+          (context) => context.vars.y,
+          context,
+        );
+
+        const expected = Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+    });
+
+    describe("unique", () => {
+      it("non-unique items are removed if 'uniq' option is set to true", () => {
+        // for x <- [1, 2, 1], y <- [3, 4, 3], do: {x, y}
+
+        const enumerable1 = (_context) =>
+          Type.list([Type.integer(1), Type.integer(2), Type.integer(1)]);
+
+        const generator1 = {
+          type: "generator",
+          match: Type.variablePattern("x"),
+          guards: [],
+          body: enumerable1,
+        };
+
+        const enumerable2 = (_context) =>
+          Type.list([Type.integer(3), Type.integer(4), Type.integer(3)]);
+
+        const generator2 = {
+          type: "generator",
+          match: Type.variablePattern("y"),
+          guards: [],
+          body: enumerable2,
+        };
+
+        const result = Interpreter.comprehension(
+          [generator1, generator2],
+          Type.list(),
+          true,
+          (context) => Type.tuple([context.vars.x, context.vars.y]),
+          context,
+        );
+
+        const expected = Type.list([
+          Type.tuple([Type.integer(1), Type.integer(3)]),
+          Type.tuple([Type.integer(1), Type.integer(4)]),
+          Type.tuple([Type.integer(2), Type.integer(3)]),
+          Type.tuple([Type.integer(2), Type.integer(4)]),
+        ]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+    });
+
+    describe("mapper", () => {
+      it("can access variables from comprehension outer scope", () => {
+        // for x <- [1, 2], do: {x, b}
+
+        const enumerable = (_context) => Type.list([Type.integer(1), Type.integer(2)]);
+
+        const generator = {
+          type: "generator",
+          match: Type.variablePattern("x"),
+          guards: [],
+          body: enumerable,
+        };
+
+        const result = Interpreter.comprehension(
+          [generator],
+          Type.list(),
+          false,
+          (context) => Type.tuple([context.vars.x, context.vars.b]),
+          context,
+        );
+
+        const expected = Type.list([
+          Type.tuple([Type.integer(1), Type.integer(2)]),
+          Type.tuple([Type.integer(2), Type.integer(2)]),
+        ]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("uses Enum.into/2 to insert the comprehension result into a collectable", () => {
+        // for x <- [1, 2], y <- [3, 4], do: {x, y}
+
+        const enumerable1 = (_context) => Type.list([Type.integer(1), Type.integer(2)]);
+
+        const generator1 = {
+          type: "generator",
+          match: Type.variablePattern("x"),
+          guards: [],
+          body: enumerable1,
+        };
+
+        const enumerable2 = (_context) => Type.list([Type.integer(3), Type.integer(4)]);
+
+        const generator2 = {
+          type: "generator",
+          match: Type.variablePattern("y"),
+          guards: [],
+          body: enumerable2,
+        };
+
+        const stub = sinon
+          .stub(Elixir_Enum, "into/2")
+          .callsFake((enumerable, _collectable) => enumerable);
+
+        Interpreter.comprehension(
+          [generator1, generator2],
+          Type.map(),
+          false,
+          (context) => Type.tuple([context.vars.x, context.vars.y]),
+          context,
+        );
+
+        const expectedArg = Type.list([
+          Type.tuple([Type.integer(1), Type.integer(3)]),
+          Type.tuple([Type.integer(1), Type.integer(4)]),
+          Type.tuple([Type.integer(2), Type.integer(3)]),
+          Type.tuple([Type.integer(2), Type.integer(4)]),
+        ]);
+
+        assert.isTrue(stub.calledOnceWith(expectedArg));
+
+        Elixir_Enum["into/2"].restore();
+      });
+    });
+  });
+
+  describe("comprehensionReduce()", () => {
+    let context, prevToListFun;
+
+    beforeEach(() => {
+      context = contextFixture({
+        vars: {a: Type.integer(1), b: Type.integer(2)},
+      });
+
+      prevToListFun = globalThis.Elixir_Enum["to_list/1"];
+
+      globalThis.Elixir_Enum["to_list/1"] = (enumerable) => {
+        return enumerable;
+      };
+    });
+
+    afterEach(() => {
+      globalThis.Elixir_Enum["to_list/1"] = prevToListFun;
+    });
+
+    it("accumulates over a single enumerable generator", () => {
+      // for x <- [1, 2, 3], reduce: 0 do
+      //   acc -> acc + x
+      // end
+
+      const generator = {
+        type: "generator",
+        match: Type.variablePattern("x"),
+        guards: [],
+        body: (_context) => Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]),
+      };
+
+      const clause = {
+        match: Type.variablePattern("acc"),
+        guards: [],
+        body: (context) => Erlang["+/2"](context.vars.acc, context.vars.x),
+      };
+
+      const result = Interpreter.comprehensionReduce(
+        [generator],
+        Type.integer(0),
+        [clause],
+        context,
+      );
+
+      assert.deepStrictEqual(result, Type.integer(6));
+    });
+
+    it("accumulates over a bitstring generator", () => {
+      // for <<x <- <<1, 2, 3>>>>, reduce: 0 do
+      //   acc -> acc + x
+      // end
+
+      const generator = {
+        type: "bitstring_generator",
+        match: Type.bitstringPattern([
+          Type.bitstringSegment(Type.variablePattern("x"), {
+            type: "integer",
+          }),
+        ]),
+        body: (_context) =>
+          Type.bitstring([
+            Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+            Type.bitstringSegment(Type.integer(2), {type: "integer"}),
+            Type.bitstringSegment(Type.integer(3), {type: "integer"}),
+          ]),
+      };
+
+      const clause = {
+        match: Type.variablePattern("acc"),
+        guards: [],
+        body: (context) => Erlang["+/2"](context.vars.acc, context.vars.x),
+      };
+
+      const result = Interpreter.comprehensionReduce(
+        [generator],
+        Type.integer(0),
+        [clause],
+        context,
+      );
+
+      assert.deepStrictEqual(result, Type.integer(6));
+    });
+
+    it("accumulates over multiple enumerable generators", () => {
+      // for x <- [1, 2], y <- [10, 20], reduce: 0 do
+      //   acc -> acc + x * y
+      // end
+
+      const generator1 = {
+        type: "generator",
+        match: Type.variablePattern("x"),
+        guards: [],
+        body: (_context) => Type.list([Type.integer(1), Type.integer(2)]),
+      };
+
+      const generator2 = {
+        type: "generator",
+        match: Type.variablePattern("y"),
+        guards: [],
+        body: (_context) => Type.list([Type.integer(10), Type.integer(20)]),
+      };
+
+      const clause = {
+        match: Type.variablePattern("acc"),
+        guards: [],
+        body: (context) =>
+          Erlang["+/2"](context.vars.acc, Erlang["*/2"](context.vars.x, context.vars.y)),
+      };
+
+      const result = Interpreter.comprehensionReduce(
+        [generator1, generator2],
+        Type.integer(0),
+        [clause],
+        context,
+      );
+
+      assert.deepStrictEqual(result, Type.integer(90));
+    });
+
+    it("returns the initial value when the enumerable generator is empty", () => {
+      // for x <- [], reduce: 100 do
+      //   acc -> acc + x
+      // end
+
+      const generator = {
+        type: "generator",
+        match: Type.variablePattern("x"),
+        guards: [],
+        body: (_context) => Type.list(),
+      };
+
+      const clause = {
+        match: Type.variablePattern("acc"),
+        guards: [],
+        body: (context) => Erlang["+/2"](context.vars.acc, context.vars.x),
+      };
+
+      const result = Interpreter.comprehensionReduce(
+        [generator],
+        Type.integer(100),
+        [clause],
+        context,
+      );
+
+      assert.deepStrictEqual(result, Type.integer(100));
+    });
+
+    it("returns the initial value when filters reject all items", () => {
+      // for x <- [1, 2], x > 10, reduce: 200 do
+      //   acc -> acc + x
+      // end
+
+      const generator = {
+        type: "generator",
+        match: Type.variablePattern("x"),
+        guards: [],
+        body: (_context) => Type.list([Type.integer(1), Type.integer(2)]),
+      };
+
+      const filter = {
+        type: "filter",
+        filter: (context) => Erlang[">/2"](context.vars.x, Type.integer(10)),
+      };
+
+      const clause = {
+        match: Type.variablePattern("acc"),
+        guards: [],
+        body: (context) => Erlang["+/2"](context.vars.acc, context.vars.x),
+      };
+
+      const result = Interpreter.comprehensionReduce(
+        [generator, filter],
+        Type.integer(200),
+        [clause],
+        context,
+      );
+
+      assert.deepStrictEqual(result, Type.integer(200));
+    });
+
+    it("filters limit which items update the accumulator", () => {
+      // for x <- [1, 2, 3, 4], rem(x, 2) == 0, reduce: 300 do
+      //   acc -> acc + x
+      // end
+
+      const generator = {
+        type: "generator",
+        match: Type.variablePattern("x"),
+        guards: [],
+        body: (_context) =>
+          Type.list([Type.integer(1), Type.integer(2), Type.integer(3), Type.integer(4)]),
+      };
+
+      const filter = {
+        type: "filter",
+        filter: (context) =>
+          Erlang["==/2"](Erlang["rem/2"](context.vars.x, Type.integer(2)), Type.integer(0)),
+      };
+
+      const clause = {
+        match: Type.variablePattern("acc"),
+        guards: [],
+        body: (context) => Erlang["+/2"](context.vars.acc, context.vars.x),
+      };
+
+      const result = Interpreter.comprehensionReduce(
+        [generator, filter],
+        Type.integer(300),
+        [clause],
+        context,
+      );
+
+      assert.deepStrictEqual(result, Type.integer(306));
+    });
+
+    it("dispatches to the clause matching the accumulator", () => {
+      // for x <- [1, 2, 3], reduce: 0 do
+      //   0 -> x
+      //   acc -> acc * 10 + x
+      // end
+
+      const generator = {
+        type: "generator",
+        match: Type.variablePattern("x"),
+        guards: [],
+        body: (_context) => Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]),
+      };
+
+      const clause1 = {
+        match: Type.integer(0),
+        guards: [],
+        body: (context) => context.vars.x,
+      };
+
+      const clause2 = {
+        match: Type.variablePattern("acc"),
+        guards: [],
+        body: (context) =>
+          Erlang["+/2"](Erlang["*/2"](context.vars.acc, Type.integer(10)), context.vars.x),
+      };
+
+      const result = Interpreter.comprehensionReduce(
+        [generator],
+        Type.integer(0),
+        [clause1, clause2],
+        context,
+      );
+
+      assert.deepStrictEqual(result, Type.integer(123));
+    });
+
+    it("dispatches to the clause whose guards pass", () => {
+      // for x <- [1, 2, 3], reduce: 0 do
+      //   acc when acc <= 1 -> acc + x
+      //   acc -> acc + x * 10
+      // end
+
+      const generator = {
+        type: "generator",
+        match: Type.variablePattern("x"),
+        guards: [],
+        body: (_context) => Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]),
+      };
+
+      const clause1 = {
+        match: Type.variablePattern("acc"),
+        guards: [(context) => Erlang["=</2"](context.vars.acc, Type.integer(1))],
+        body: (context) => Erlang["+/2"](context.vars.acc, context.vars.x),
+      };
+
+      const clause2 = {
+        match: Type.variablePattern("acc"),
+        guards: [],
+        body: (context) =>
+          Erlang["+/2"](context.vars.acc, Erlang["*/2"](context.vars.x, Type.integer(10))),
+      };
+
+      const result = Interpreter.comprehensionReduce(
+        [generator],
+        Type.integer(0),
+        [clause1, clause2],
+        context,
+      );
+
+      assert.deepStrictEqual(result, Type.integer(33));
+    });
+
+    it("reducer clauses can access variables from comprehension outer scope", () => {
+      // a = 1
+      // for x <- [10, 20], reduce: 0 do
+      //   acc -> acc + x + a
+      // end
+
+      const generator = {
+        type: "generator",
+        match: Type.variablePattern("x"),
+        guards: [],
+        body: (_context) => Type.list([Type.integer(10), Type.integer(20)]),
+      };
+
+      const clause = {
+        match: Type.variablePattern("acc"),
+        guards: [],
+        body: (context) =>
+          Erlang["+/2"](Erlang["+/2"](context.vars.acc, context.vars.x), context.vars.a),
+      };
+
+      const result = Interpreter.comprehensionReduce(
+        [generator],
+        Type.integer(0),
+        [clause],
+        context,
+      );
+
+      assert.deepStrictEqual(result, Type.integer(32));
+    });
+
+    it("raises CaseClauseError when no clause matches the accumulator", () => {
+      // for x <- [1], reduce: 0 do
+      //   :nomatch -> x
+      // end
+
+      const generator = {
+        type: "generator",
+        match: Type.variablePattern("x"),
+        guards: [],
+        body: (_context) => Type.list([Type.integer(1)]),
+      };
+
+      const clause = {
+        match: Type.atom("nomatch"),
+        guards: [],
+        body: (context) => context.vars.x,
+      };
+
+      assertBoxedError(
+        () => Interpreter.comprehensionReduce([generator], Type.integer(0), [clause], context),
+        "CaseClauseError",
+        buildCaseClauseErrorMsg(Type.integer(0)),
+      );
+    });
+  });
+
+  describe("consOperator()", () => {
+    it("constructs a proper list when the tail param is a proper non-empty list", () => {
+      const head = Type.integer(1);
+      const tail = Type.list([Type.integer(2), Type.integer(3)]);
+      const result = Interpreter.consOperator(head, tail);
+
+      const expected = Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("constructs a proper list when the tail param is an empty list", () => {
+      const head = Type.integer(1);
+      const tail = Type.list();
+      const result = Interpreter.consOperator(head, tail);
+      const expected = Type.list([Type.integer(1)]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("constructs improper list when the tail is not a list", () => {
+      const head = Type.integer(1);
+      const tail = Type.atom("abc");
+      const result = Interpreter.consOperator(head, tail);
+      const expected = Type.improperList([Type.integer(1), Type.atom("abc")]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+  });
+
+  describe("defineElixirFunction()", () => {
+    afterEach(() => {
+      ERTS.moduleMetadata = {};
+    });
+
+    beforeEach(() => {
+      // def my_fun_a(1), do: :expr_1
+      // def my_fun_a(2), do: :expr_2
+      Interpreter.defineElixirFunction("Aaa.Bbb", "my_fun_a", 1, "public", [
+        {
+          params: (_context) => [Type.integer(1)],
+          guards: [],
+          body: (_context) => {
+            return Type.atom("expr_1");
+          },
+        },
+        {
+          params: (_context) => [Type.integer(2)],
+          guards: [],
+          body: (_context) => {
+            return Type.atom("expr_2");
+          },
+        },
+      ]);
+    });
+
+    afterEach(() => {
+      delete globalThis.Elixir_Aaa_Bbb;
+    });
+
+    it("initiates the module global var if it is not initiated yet", () => {
+      Interpreter.defineElixirFunction("Ddd", "my_fun_d", 4, "public", []);
+
+      assert.isDefined(globalThis.Elixir_Ddd);
+      assert.isDefined(globalThis.Elixir_Ddd["my_fun_d/4"]);
+
+      assert.deepStrictEqual(globalThis.Elixir_Ddd.__exModule__, Type.alias("Ddd"));
+
+      assert.equal(globalThis.Elixir_Ddd.__jsName__, "Elixir_Ddd");
+
+      // cleanup
+      delete globalThis.Elixir_Ddd;
+    });
+
+    it("appends to the module global var if it is already initiated", () => {
+      globalThis.Elixir_Eee = {
+        __exModule__: Type.alias("Eee"),
+        __exports__: new Set(),
+        __jsName__: "Elixir_Eee",
+        "dummy/1": "dummy_body",
+      };
+
+      Interpreter.defineElixirFunction("Eee", "my_fun_e", 5, "public", []);
+
+      assert.isDefined(globalThis.Elixir_Eee);
+      assert.isDefined(globalThis.Elixir_Eee["my_fun_e/5"]);
+      assert.equal(globalThis.Elixir_Eee["dummy/1"], "dummy_body");
+
+      // cleanup
+      delete globalThis.Elixir_Eee;
+    });
+
+    it("defines a function with multiple params", () => {
+      // def my_fun_e(1, 2, 3), do: :ok
+      Interpreter.defineElixirFunction("Aaa.Bbb", "my_fun_e", 3, "public", [
+        {
+          params: (_context) => [Type.integer(1), Type.integer(2), Type.integer(3)],
+          guards: [],
+          body: (_context) => {
+            return Type.atom("ok");
+          },
+        },
+      ]);
+
+      const result = globalThis.Elixir_Aaa_Bbb["my_fun_e/3"](
+        Type.integer(1),
+        Type.integer(2),
+        Type.integer(3),
+      );
+
+      assert.deepStrictEqual(result, Type.atom("ok"));
+    });
+
+    it("defines a function which runs the first matching clause", () => {
+      const result = globalThis.Elixir_Aaa_Bbb["my_fun_a/1"](Type.integer(1));
+      assert.deepStrictEqual(result, Type.atom("expr_1"));
+    });
+
+    it("defines a function which ignores not matching clauses", () => {
+      const result = globalThis.Elixir_Aaa_Bbb["my_fun_a/1"](Type.integer(2));
+      assert.deepStrictEqual(result, Type.atom("expr_2"));
+    });
+
+    it("defines a function which runs guards for each tried clause", () => {
+      // def my_fun_b(x) when x == 1, do: :expr_1
+      // def my_fun_b(y) when y == 2, do: :expr_2
+      // def my_fun_b(z) when z == 3, do: :expr_3
+      Interpreter.defineElixirFunction("Aaa.Bbb", "my_fun_b", 1, "public", [
+        {
+          params: (_context) => [Type.variablePattern("x")],
+          guards: [(context) => Erlang["==/2"](context.vars.x, Type.integer(1))],
+          body: (_context) => {
+            return Type.atom("expr_1");
+          },
+        },
+        {
+          params: (_context) => [Type.variablePattern("y")],
+          guards: [(context) => Erlang["==/2"](context.vars.y, Type.integer(2))],
+          body: (_context) => {
+            return Type.atom("expr_2");
+          },
+        },
+        {
+          params: (_context) => [Type.variablePattern("z")],
+          guards: [(context) => Erlang["==/2"](context.vars.z, Type.integer(3))],
+          body: (_context) => {
+            return Type.atom("expr_3");
+          },
+        },
+      ]);
+
+      const result = globalThis.Elixir_Aaa_Bbb["my_fun_b/1"](Type.integer(3));
+
+      assert.deepStrictEqual(result, Type.atom("expr_3"));
+    });
+
+    it("defines a function with multiple guards", () => {
+      // def my_fun_b(x) when x == 1 when x == 2, do: x
+      //
+      // def my_fun_b(x) when :erlang.==(x, 1) when :erlang.==(x, 2), do: x
+      Interpreter.defineElixirFunction("Aaa.Bbb", "my_fun_b", 1, "public", [
+        {
+          params: (_context) => [Type.variablePattern("x")],
+          guards: [
+            (context) => Erlang["==/2"](context.vars.x, Type.integer(1)),
+            (context) => Erlang["==/2"](context.vars.x, Type.integer(2)),
+          ],
+          body: (context) => {
+            return context.vars.x;
+          },
+        },
+      ]);
+
+      const result1 = globalThis.Elixir_Aaa_Bbb["my_fun_b/1"](Type.integer(1));
+      assert.deepStrictEqual(result1, Type.integer(1));
+
+      const result2 = globalThis.Elixir_Aaa_Bbb["my_fun_b/1"](Type.integer(2));
+      assert.deepStrictEqual(result2, Type.integer(2));
+
+      assertBoxedError(
+        () => globalThis.Elixir_Aaa_Bbb["my_fun_b/1"](Type.integer(3)),
+        "FunctionClauseError",
+        buildFunctionClauseErrorMsg("Aaa.Bbb.my_fun_b/1", [Type.integer(3)]),
+      );
+    });
+
+    it("defines a function which clones vars for each clause", () => {
+      // def my_fun_c(x) when x == 1, do: :expr_1
+      // def my_fun_c(x) when x == 2, do: :expr_2
+      Interpreter.defineElixirFunction("Aaa.Bbb", "my_fun_c", 1, "public", [
+        {
+          params: (_context) => [Type.variablePattern("x")],
+          guards: [(context) => Erlang["==/2"](context.vars.x, Type.integer(1))],
+          body: (_context) => {
+            return Type.atom("expr_1");
+          },
+        },
+        {
+          params: (_context) => [Type.variablePattern("x")],
+          guards: [(context) => Erlang["==/2"](context.vars.x, Type.integer(2))],
+          body: (_context) => {
+            return Type.atom("expr_2");
+          },
+        },
+      ]);
+
+      const result = globalThis.Elixir_Aaa_Bbb["my_fun_c/1"](Type.integer(2));
+
+      assert.deepStrictEqual(result, Type.atom("expr_2"));
+    });
+
+    it("raises FunctionClauseError if there are no matching clauses", () => {
+      assertBoxedError(
+        () => globalThis.Elixir_Aaa_Bbb["my_fun_a/1"](Type.integer(3)),
+        "FunctionClauseError",
+        buildFunctionClauseErrorMsg("Aaa.Bbb.my_fun_a/1", [Type.integer(3)]),
+      );
+    });
+
+    it("raises FunctionClauseError blaming the clause heads that carry rendered sources", () => {
+      // def my_fun_f(1), do: :expr_1
+      // def my_fun_f(x) when is_atom(x), do: :expr_2
+      Interpreter.defineElixirFunction("Aaa.Bbb", "my_fun_f", 1, "public", [
+        {
+          params: (_context) => [Type.integer(1)],
+          guards: [],
+          body: (_context) => Type.atom("expr_1"),
+          blame: {params: ["1"], guards: []},
+        },
+        {
+          params: (_context) => [Type.variablePattern("x")],
+          guards: [(context) => Erlang["is_atom/1"](context.vars.x)],
+          body: (_context) => Type.atom("expr_2"),
+          blame: {
+            params: ["x"],
+            guards: [
+              {
+                source: "is_atom(x)",
+                test: (context) => Erlang["is_atom/1"](context.vars.x),
+              },
+            ],
+          },
+        },
+      ]);
+
+      assertBoxedError(
+        () => globalThis.Elixir_Aaa_Bbb["my_fun_f/1"](Type.integer(3)),
+        "FunctionClauseError",
+        "no function clause matching in Aaa.Bbb.my_fun_f/1\n\nThe following arguments were given to Aaa.Bbb.my_fun_f/1:\n\n    # 1\n    3\n\nAttempted function clauses (showing 2 out of 2):\n\n    def my_fun_f(-1-)\n    def my_fun_f(x) when -is_atom(x)-\n",
+      );
+    });
+
+    it("the error frame carries the args in place of the arity, keeping the file", () => {
+      ERTS.registerModuleMetadata({"Aaa.Bbb": {file: "lib/aaa/bbb.ex"}});
+
+      // def my_fun_g(1), do: :ok
+      Interpreter.defineElixirFunction("Aaa.Bbb", "my_fun_g", 1, "public", [
+        {
+          params: (_context) => [Type.integer(1)],
+          guards: [],
+          body: (_context) => Type.atom("ok"),
+        },
+      ]);
+
+      CallStack.reset();
+      globalThis.Hologram.config.stacktraces = true;
+
+      let caught;
+
+      try {
+        globalThis.Elixir_Aaa_Bbb["my_fun_g/1"](Type.integer(3));
+      } catch (e) {
+        caught = e;
+      } finally {
+        globalThis.Hologram.config.stacktraces = false;
+        CallStack.reset();
+      }
+
+      assert.deepStrictEqual(caught.stacktrace, [
+        {
+          module: "Aaa.Bbb",
+          function: "my_fun_g",
+          arityOrArgs: Type.list([Type.integer(3)]),
+          file: "lib/aaa/bbb.ex",
+          line: null,
+          errorInfo: null,
+        },
+      ]);
+    });
+
+    it("defines a function which has match operator in params", () => {
+      // def my_fun_d(x = 1 = y), do: x + y
+      Interpreter.defineElixirFunction("Aaa.Bbb", "my_fun_d", 1, "public", [
+        {
+          params: (context) => [
+            Interpreter.matchOperator(
+              Interpreter.matchOperator(Type.variablePattern("y"), Type.integer(1), context),
+              Type.variablePattern("x"),
+              context,
+            ),
+          ],
+          guards: [],
+          body: (context) => {
+            return Erlang["+/2"](context.vars.x, context.vars.y);
+          },
+        },
+      ]);
+
+      const result = globalThis.Elixir_Aaa_Bbb["my_fun_d/1"](Type.integer(1));
+
+      assert.deepStrictEqual(result, Type.integer(2));
+    });
+
+    it("flags public functions as module exports", () => {
+      Interpreter.defineElixirFunction("Ddd", "my_fun_d", 4, "public", []);
+
+      assert.deepStrictEqual(globalThis.Elixir_Ddd.__exports__, new Set(["my_fun_d/4"]));
+
+      // cleanup
+      delete globalThis.Elixir_Ddd;
+    });
+
+    it("doesn't flag private functions as module exports", () => {
+      Interpreter.defineElixirFunction("Ddd", "my_fun_d", 4, "private", []);
+
+      assert.deepStrictEqual(globalThis.Elixir_Ddd.__exports__, new Set());
+
+      // cleanup
+      delete globalThis.Elixir_Ddd;
+    });
+
+    it("registers a sync function", () => {
+      Interpreter.defineElixirFunction("Aaa.Bbb", "my_sync", 0, "public", [
+        {
+          params: (_context) => [],
+          guards: [],
+          body: (_context) => Type.atom("sync_result"),
+        },
+      ]);
+
+      const result = globalThis.Elixir_Aaa_Bbb["my_sync/0"]();
+
+      assert.deepStrictEqual(result, Type.atom("sync_result"));
+    });
+
+    it("returns a Promise when body closure is async", async () => {
+      Interpreter.defineElixirFunction("Aaa.Bbb", "my_async", 0, "public", [
+        {
+          params: (_context) => [],
+          guards: [],
+          body: async (_context) => Type.atom("async_result"),
+        },
+      ]);
+
+      const result = globalThis.Elixir_Aaa_Bbb["my_async/0"]();
+      assert.instanceOf(result, Promise);
+
+      const resolved = await result;
+      assert.deepStrictEqual(resolved, Type.atom("async_result"));
+    });
+
+    it("errors raised inside function body are not caught", () => {
+      Interpreter.defineElixirFunction("Aaa.Bbb", "my_fun_f", 0, "public", [
+        {
+          params: () => [],
+          guards: [],
+          body: (_context) => Interpreter.raiseArgumentError("my message"),
+        },
+      ]);
+
+      assertBoxedError(
+        () => globalThis.Elixir_Aaa_Bbb["my_fun_f/0"](),
+        "ArgumentError",
+        "my message",
+      );
+    });
+
+    describe("frame tracking", () => {
+      const myFunGFrame = {
+        module: "Aaa.Bbb",
+        function: "my_fun_g",
+        arityOrArgs: 0,
+        file: null,
+        line: null,
+        errorInfo: null,
+      };
+
+      beforeEach(() => {
+        CallStack.reset();
+        globalThis.Hologram.config = {stacktraces: true};
+      });
+
+      afterEach(() => {
+        globalThis.Hologram.config = {stacktraces: false};
+      });
+
+      it("pushes the function's frame for the duration of the call", () => {
+        let framesDuringCall;
+
+        Interpreter.defineElixirFunction("Aaa.Bbb", "my_fun_g", 0, "public", [
+          {
+            params: (_context) => [],
+            guards: [],
+            body: (_context) => {
+              framesDuringCall = CallStack.snapshot();
+              return Type.atom("ok");
+            },
+          },
+        ]);
+
+        globalThis.Elixir_Aaa_Bbb["my_fun_g/0"]();
+
+        assert.deepStrictEqual(framesDuringCall, [myFunGFrame]);
+      });
+
+      it("pops the frame when the function returns", () => {
+        globalThis.Elixir_Aaa_Bbb["my_fun_a/1"](Type.integer(1));
+
+        assert.deepStrictEqual(CallStack.snapshot(), []);
+      });
+
+      it("pops the frame when the function raises", () => {
+        Interpreter.defineElixirFunction("Aaa.Bbb", "my_fun_g", 0, "public", [
+          {
+            params: (_context) => [],
+            guards: [],
+            body: (_context) => Interpreter.raiseArgumentError("my message"),
+          },
+        ]);
+
+        assertBoxedError(
+          () => globalThis.Elixir_Aaa_Bbb["my_fun_g/0"](),
+          "ArgumentError",
+          "my message",
+        );
+
+        assert.deepStrictEqual(CallStack.snapshot(), []);
+      });
+
+      it("pops the frame when no clause matches", () => {
+        assertBoxedError(
+          () => globalThis.Elixir_Aaa_Bbb["my_fun_a/1"](Type.integer(3)),
+          "FunctionClauseError",
+          buildFunctionClauseErrorMsg("Aaa.Bbb.my_fun_a/1", [Type.integer(3)]),
+        );
+
+        assert.deepStrictEqual(CallStack.snapshot(), []);
+      });
+
+      // A line is recorded when a clause matches, so a call matching none would
+      // otherwise report the function without saying where it is.
+      it("reports the first clause when no clause matches", () => {
+        Interpreter.defineElixirFunction("Aaa.Bbb", "my_fun_g", 1, "public", [
+          {
+            params: (_context) => [Type.integer(1)],
+            guards: [],
+            body: (_context) => Type.atom("ok"),
+            line: 11,
+          },
+          {
+            params: (_context) => [Type.integer(2)],
+            guards: [],
+            body: (_context) => Type.atom("ok"),
+            line: 22,
+          },
+        ]);
+
+        let error;
+
+        try {
+          globalThis.Elixir_Aaa_Bbb["my_fun_g/1"](Type.integer(3));
+        } catch (thrownError) {
+          error = thrownError;
+        }
+
+        assert.deepStrictEqual(error.stacktrace, [
+          {
+            module: "Aaa.Bbb",
+            function: "my_fun_g",
+            arityOrArgs: Type.list([Type.integer(3)]),
+            file: null,
+            line: 11,
+            errorInfo: null,
+          },
+        ]);
+      });
+
+      it("an error raised in the body captures the frame on its stacktrace", () => {
+        Interpreter.defineElixirFunction("Aaa.Bbb", "my_fun_g", 0, "public", [
+          {
+            params: (_context) => [],
+            guards: [],
+            body: (_context) => Interpreter.raiseArgumentError("my message"),
+          },
+        ]);
+
+        let error;
+
+        try {
+          globalThis.Elixir_Aaa_Bbb["my_fun_g/0"]();
+        } catch (thrownError) {
+          error = thrownError;
+        }
+
+        assert.instanceOf(error, HologramBoxedError);
+        assert.deepStrictEqual(error.stacktrace, [myFunGFrame]);
+      });
+
+      it("keeps the frame until an async body settles", async () => {
+        let framesAfterAwait;
+
+        Interpreter.defineElixirFunction("Aaa.Bbb", "my_fun_g", 0, "public", [
+          {
+            params: (_context) => [],
+            guards: [],
+            body: async (_context) => {
+              await Promise.resolve();
+              framesAfterAwait = CallStack.snapshot();
+              return Type.atom("ok");
+            },
+          },
+        ]);
+
+        const resultPromise = globalThis.Elixir_Aaa_Bbb["my_fun_g/0"]();
+
+        assert.deepStrictEqual(CallStack.snapshot(), [myFunGFrame]);
+
+        await resultPromise;
+
+        assert.deepStrictEqual(framesAfterAwait, [myFunGFrame]);
+        assert.deepStrictEqual(CallStack.snapshot(), []);
+      });
+
+      it("the frame carries the file the module registered", () => {
+        let framesDuringCall;
+
+        ERTS.registerModuleMetadata({
+          "Aaa.Bbb": {app: "my_app", file: "lib/aaa/bbb.ex"},
+        });
+
+        Interpreter.defineElixirFunction("Aaa.Bbb", "my_fun_g", 0, "public", [
+          {
+            params: (_context) => [],
+            guards: [],
+            body: (_context) => {
+              framesDuringCall = CallStack.snapshot();
+              return Type.atom("ok");
+            },
+          },
+        ]);
+
+        globalThis.Elixir_Aaa_Bbb["my_fun_g/0"]();
+
+        assert.equal(framesDuringCall[0].file, "lib/aaa/bbb.ex");
+      });
+
+      it("the frame carries the matched clause's line", () => {
+        let framesDuringCall;
+
+        Interpreter.defineElixirFunction("Aaa.Bbb", "my_fun_g", 1, "public", [
+          {
+            params: (_context) => [Type.atom("a")],
+            guards: [],
+            body: (_context) => Type.atom("expr_a"),
+            line: 3,
+          },
+          {
+            params: (_context) => [Type.atom("b")],
+            guards: [],
+            body: (_context) => {
+              framesDuringCall = CallStack.snapshot();
+              return Type.atom("expr_b");
+            },
+            line: 5,
+          },
+        ]);
+
+        globalThis.Elixir_Aaa_Bbb["my_fun_g/1"](Type.atom("b"));
+
+        assert.equal(framesDuringCall[0].line, 5);
+      });
+
+      it("doesn't track frames when client stacktraces are disabled", () => {
+        globalThis.Hologram.config = {stacktraces: false};
+
+        let framesDuringCall;
+
+        Interpreter.defineElixirFunction("Aaa.Bbb", "my_fun_g", 0, "public", [
+          {
+            params: (_context) => [],
+            guards: [],
+            body: (_context) => {
+              framesDuringCall = CallStack.snapshot();
+              return Type.atom("ok");
+            },
+          },
+        ]);
+
+        globalThis.Elixir_Aaa_Bbb["my_fun_g/0"]();
+
+        assert.deepStrictEqual(framesDuringCall, []);
+      });
+    });
+
+    it("raises UndefinedFunctionError when undefined Elixir/Erlang function is being called", () => {
+      assertBoxedError(
+        () => globalThis.Elixir_Aaa_Bbb["my_fun_x/5"],
+        "UndefinedFunctionError",
+        buildUndefinedFunctionErrorMsg(Type.alias("Aaa.Bbb"), "my_fun_x", 5),
+      );
+    });
+  });
+
+  describe("defineErlangFunction()", () => {
+    beforeEach(() => {
+      Interpreter.defineErlangFunction("aaa_bbb", "my_fun_a", 2, () => Type.atom("expr_a"));
+    });
+
+    afterEach(() => {
+      delete globalThis.Erlang_Aaa_Bbb;
+    });
+
+    it("initiates the module global var if it is not initiated yet", () => {
+      Interpreter.defineErlangFunction("ddd", "my_fun_d", 3, []);
+
+      assert.isDefined(globalThis.Erlang_Ddd);
+      assert.isDefined(globalThis.Erlang_Ddd["my_fun_d/3"]);
+
+      // cleanup
+      delete globalThis.Erlang_Ddd;
+    });
+
+    it("appends to the module global var if it is already initiated", () => {
+      globalThis.Erlang_Eee = {
+        __exModule__: Type.atom("eee"),
+        __exports__: new Set(),
+        __jsName__: "Erlang_Eee",
+        "dummy/1": "dummy_body",
+      };
+
+      Interpreter.defineErlangFunction("eee", "my_fun_e", 1, []);
+
+      assert.isDefined(globalThis.Erlang_Eee);
+      assert.isDefined(globalThis.Erlang_Eee["my_fun_e/1"]);
+      assert.equal(globalThis.Erlang_Eee["dummy/1"], "dummy_body");
+
+      // cleanup
+      delete globalThis.Erlang_Eee;
+    });
+
+    it("defines function", () => {
+      const result = globalThis.Erlang_Aaa_Bbb["my_fun_a/2"](Type.integer(1));
+      assert.deepStrictEqual(result, Type.atom("expr_a"));
+    });
+
+    describe("frame tracking", () => {
+      beforeEach(() => {
+        CallStack.reset();
+        globalThis.Hologram.config = {stacktraces: true};
+      });
+
+      afterEach(() => {
+        globalThis.Hologram.config = {stacktraces: false};
+      });
+
+      it("pushes the function's frame for the duration of the call", () => {
+        let framesDuringCall;
+
+        Interpreter.defineErlangFunction("aaa_bbb", "my_fun_b", 2, () => {
+          framesDuringCall = CallStack.snapshot();
+          return Type.atom("ok");
+        });
+
+        globalThis.Erlang_Aaa_Bbb["my_fun_b/2"](Type.integer(1), Type.integer(2));
+
+        assert.deepStrictEqual(framesDuringCall, [
+          {
+            module: "aaa_bbb",
+            function: "my_fun_b",
+            arityOrArgs: 2,
+            file: null,
+            line: null,
+            errorInfo: null,
+          },
+        ]);
+
+        assert.deepStrictEqual(CallStack.snapshot(), []);
+      });
+    });
+  });
+
+  describe("defineFunctionClauseHeads()", () => {
+    const clauseHeads = [
+      {
+        params: (_context) => [Type.variablePattern("module_0")],
+        guards: [(_context) => Type.boolean(true)],
+        blame: {params: ["module"], guards: [{source: "is_atom(module)"}]},
+      },
+    ];
+
+    it("registers the clause heads under the function's identity", () => {
+      Interpreter.defineFunctionClauseHeads("MyModuleExName", "my_fun", 1, "public", clauseHeads);
+
+      assert.deepStrictEqual(Interpreter.functionClauseHeads("MyModuleExName", "my_fun", 1), {
+        visibility: "public",
+        clauses: clauseHeads,
+      });
+    });
+
+    it("registers each arity separately", () => {
+      Interpreter.defineFunctionClauseHeads(
+        "MyModuleExName",
+        "my_other_fun",
+        2,
+        "private",
+        clauseHeads,
+      );
+
+      assert.isNull(Interpreter.functionClauseHeads("MyModuleExName", "my_other_fun", 1));
+
+      assert.deepStrictEqual(Interpreter.functionClauseHeads("MyModuleExName", "my_other_fun", 2), {
+        visibility: "private",
+        clauses: clauseHeads,
+      });
+    });
+  });
+
+  describe("defineManuallyPortedFunction()", () => {
+    beforeEach(() => delete globalThis.Elixir_MyModuleExName);
+
+    it("initializes function's module proxy if it hasn't been initialized", () => {
+      Interpreter.defineManuallyPortedFunction(
+        "MyModuleExName",
+        "my_defined_fun/3",
+        "public",
+        () => "my_defined_fun/3 result",
+      );
+
+      assertBoxedError(
+        () => globalThis.Elixir_MyModuleExName["my_undefined_fun/3"],
+        "UndefinedFunctionError",
+        buildUndefinedFunctionErrorMsg(Type.alias("MyModuleExName"), "my_undefined_fun", 3),
+      );
+    });
+
+    it("makes the function available through its module proxy", () => {
+      Interpreter.defineManuallyPortedFunction(
+        "MyModuleExName",
+        "my_defined_fun/3",
+        "public",
+        () => "my_defined_fun/3 result",
+      );
+
+      assert.equal(
+        globalThis.Elixir_MyModuleExName["my_defined_fun/3"](),
+        "my_defined_fun/3 result",
+      );
+    });
+
+    it("adds the function to the list of module exports if it is public", () => {
+      Interpreter.defineManuallyPortedFunction(
+        "MyModuleExName",
+        "my_defined_fun/3",
+        "public",
+        () => "my_defined_fun/3 result",
+      );
+
+      assert.deepStrictEqual(
+        globalThis.Elixir_MyModuleExName.__exports__,
+        new Set(["my_defined_fun/3"]),
+      );
+    });
+
+    it("doesn't add the function to the list of module exports if it is private", () => {
+      Interpreter.defineManuallyPortedFunction(
+        "MyModuleExName",
+        "my_defined_fun/3",
+        "private",
+        () => "my_defined_fun/3 result",
+      );
+
+      assert.deepStrictEqual(globalThis.Elixir_MyModuleExName.__exports__, new Set([]));
+    });
+
+    describe("frame tracking", () => {
+      beforeEach(() => {
+        CallStack.reset();
+        globalThis.Hologram.config = {stacktraces: true};
+      });
+
+      afterEach(() => {
+        globalThis.Hologram.config = {stacktraces: false};
+      });
+
+      it("pushes the function's frame for the duration of the call", () => {
+        let framesDuringCall;
+
+        Interpreter.defineManuallyPortedFunction(
+          "MyModuleExName",
+          "my_defined_fun/3",
+          "public",
+          () => {
+            framesDuringCall = CallStack.snapshot();
+            return "my_defined_fun/3 result";
+          },
+        );
+
+        globalThis.Elixir_MyModuleExName["my_defined_fun/3"]();
+
+        assert.deepStrictEqual(framesDuringCall, [
+          {
+            module: "MyModuleExName",
+            function: "my_defined_fun",
+            arityOrArgs: 3,
+            file: null,
+            line: null,
+            errorInfo: null,
+          },
+        ]);
+
+        assert.deepStrictEqual(CallStack.snapshot(), []);
+      });
+    });
+  });
+
+  describe("defineNotImplementedErlangFunction()", () => {
+    beforeEach(() => {
+      Interpreter.defineNotImplementedErlangFunction("aaa_bbb", "my_fun_a", 2);
+    });
+
+    afterEach(() => {
+      delete globalThis.Erlang_Aaa_Bbb;
+    });
+
+    it("initiates the module global var if it is not initiated yet", () => {
+      Interpreter.defineNotImplementedErlangFunction("ddd", "my_fun_d", 3, []);
+
+      assert.isDefined(globalThis.Erlang_Ddd);
+      assert.isDefined(globalThis.Erlang_Ddd["my_fun_d/3"]);
+
+      // cleanup
+      delete globalThis.Erlang_Ddd;
+    });
+
+    it("appends to the module global var if it is already initiated", () => {
+      globalThis.Erlang_Eee = {dummy: "dummy"};
+      Interpreter.defineNotImplementedErlangFunction("eee", "my_fun_e", 1, []);
+
+      assert.isDefined(globalThis.Erlang_Eee);
+      assert.isDefined(globalThis.Erlang_Eee["my_fun_e/1"]);
+      assert.equal(globalThis.Erlang_Eee.dummy, "dummy");
+
+      // cleanup
+      delete globalThis.Erlang_Eee;
+    });
+
+    it("defines a function which raises an exception with instructions", () => {
+      const expectedMessage =
+        `Function :aaa_bbb.my_fun_a/2 is not yet ported.\n` +
+        `  * Check implementation status: https://hologram.page/reference/client-runtime\n` +
+        `  * If the function is not marked 'in progress' and is critical for your project, you may request it here: https://github.com/bartblast/hologram/issues`;
+
+      assert.throw(
+        () => globalThis.Erlang_Aaa_Bbb["my_fun_a/2"](Type.integer(1), Type.integer(2)),
+        Error,
+        expectedMessage,
+      );
+    });
+  });
+
+  describe("dotOperator()", () => {
+    it("handles remote function call", () => {
+      // setup
+      globalThis.Elixir_MyModule = {
+        "my_fun/0": () => {
+          return Type.integer(123);
+        },
+      };
+
+      const left = Type.alias("MyModule");
+      const right = Type.atom("my_fun");
+      const result = Interpreter.dotOperator(left, right);
+
+      assert.deepStrictEqual(result, Type.integer(123));
+
+      // cleanup
+      delete globalThis.Elixir_MyModule;
+    });
+
+    it("handles map key access", () => {
+      const key = Type.atom("b");
+      const value = Type.integer(2);
+
+      const left = Type.map([
+        [Type.atom("a"), Type.integer(1)],
+        [key, value],
+      ]);
+
+      const result = Interpreter.dotOperator(left, key);
+
+      assert.deepStrictEqual(result, value);
+    });
+  });
+
+  describe("evaluateJavaScriptCode()", () => {
+    it("single statement with semicolon", () => {
+      const code = "return 123;";
+      const result = Interpreter.evaluateJavaScriptCode(code);
+
+      assert.equal(result, 123);
+    });
+
+    it("single statement without semicolon", () => {
+      const code = "return 123";
+      const result = Interpreter.evaluateJavaScriptCode(code);
+
+      assert.equal(result, 123);
+    });
+
+    it("multiple statements with semicolons", () => {
+      const code = `
+        const a = 1;
+        const b = 2;
+        return a + b;
+      `;
+
+      const result = Interpreter.evaluateJavaScriptCode(code);
+
+      assert.equal(result, 3);
+    });
+
+    it("multiple statements without semicolons", () => {
+      const code = `
+        const a = 1
+        const b = 2
+        return a + b
+      `;
+
+      const result = Interpreter.evaluateJavaScriptCode(code);
+
+      assert.equal(result, 3);
+    });
+
+    it("using context, Type and Interpreter", () => {
+      // %{a: 1, b: 2}.a
+      const code =
+        'return Interpreter.dotOperator(Type.map([[Type.atom("a"), Type.integer(1n)], [Type.atom("b"), context.vars.x]]), Type.atom("a"))';
+
+      const result = Interpreter.evaluateJavaScriptCode(code);
+
+      assert.deepStrictEqual(result, Type.integer(1));
+    });
+  });
+
+  it("evaluateJavaScriptExpression()", () => {
+    // %{a: 1, b: 2}.a
+    const code =
+      'Interpreter.dotOperator(Type.map([[Type.atom("a"), Type.integer(1n)], [Type.atom("b"), context.vars.x]]), Type.atom("a"))';
+
+    const result = Interpreter.evaluateJavaScriptExpression(code);
+
+    assert.deepStrictEqual(result, Type.integer(1));
+  });
+
+  describe("formatBoxedError()", () => {
+    beforeEach(() => {
+      CallStack.reset();
+    });
+
+    it("renders the banner and the stacktrace", () => {
+      CallStack.push({
+        module: "MyModule",
+        function: "my_fun",
+        arityOrArgs: 1,
+        file: "lib/my_module.ex",
+        line: 11,
+        errorInfo: null,
+      });
+
+      const error = new HologramBoxedError(Type.errorStruct("MyError", "my message"));
+
+      assert.equal(
+        Interpreter.formatBoxedError(error),
+        "** (MyError) my message\n    lib/my_module.ex:11: MyModule.my_fun/1\n",
+      );
+    });
+
+    it("renders the banner and an already boxed stacktrace", () => {
+      const error = new HologramBoxedError(Type.errorStruct("MyError", "my message"));
+
+      error.stacktrace = Type.list([
+        Type.tuple([
+          Type.alias("MyModule"),
+          Type.atom("my_fun"),
+          Type.integer(1),
+          Type.list([
+            Type.tuple([Type.atom("file"), Type.charlist("lib/my_module.ex")]),
+            Type.tuple([Type.atom("line"), Type.integer(11)]),
+          ]),
+        ]),
+      ]);
+
+      assert.equal(
+        Interpreter.formatBoxedError(error),
+        "** (MyError) my message\n    lib/my_module.ex:11: MyModule.my_fun/1\n",
+      );
+    });
+
+    it("renders the banner alone when the error has no frames", () => {
+      const error = new HologramBoxedError(Type.errorStruct("MyError", "my message"));
+
+      assert.equal(Interpreter.formatBoxedError(error), "** (MyError) my message");
+    });
+
+    it("renders the banner alone when the already boxed stacktrace is empty", () => {
+      const error = new HologramBoxedError(Type.errorStruct("MyError", "my message"));
+
+      error.stacktrace = Type.list();
+
+      assert.equal(Interpreter.formatBoxedError(error), "** (MyError) my message");
+    });
+  });
+
+  it("getErrorType()", () => {
+    const errorStruct = Type.errorStruct("MyError", "my message");
+    const jsError = new HologramBoxedError(errorStruct);
+    const result = Interpreter.getErrorType(jsError);
+
+    assert.equal(result, "MyError");
+  });
+
+  describe("getStructuralComparisonTypeOrder()", () => {
+    it("float", () => {
+      const result = Interpreter.getStructuralComparisonTypeOrder(Type.float(123.0));
+
+      assert.equal(result, 1);
+    });
+
+    it("integer", () => {
+      const result = Interpreter.getStructuralComparisonTypeOrder(Type.integer(123));
+
+      assert.equal(result, 1);
+    });
+
+    it("non-number", () => {
+      const result = Interpreter.getStructuralComparisonTypeOrder(Type.atom("abc"));
+
+      assert.equal(result, 2);
+    });
+  });
+
+  // Keep Elixir consistency tests in sync: test/elixir/hologram/ex_js_consistency/interpreter_test.exs ("inspect" section).
+  describe("inspect()", () => {
+    describe("anonymous function", () => {
+      const clauses = ["clause_dummy_1", "clause_dummy_2"];
+      const context = contextFixture();
+
+      it("non-capture", () => {
+        const anonFun = Type.anonymousFunction(2, clauses, context, "-my_fun/1-fun-0-");
+
+        assert.equal(
+          Interpreter.inspect(anonFun),
+          `#Function<${anonFun.uniq}.${anonFun.uniq}/2 in MyModule.my_fun/1>`,
+        );
+      });
+
+      it("non-capture, defined in a definition whose name isn't a valid identifier", () => {
+        const anonFun = Type.anonymousFunction(2, clauses, context, "-my fun/1-fun-0-");
+
+        assert.equal(
+          Interpreter.inspect(anonFun),
+          `#Function<${anonFun.uniq}.${anonFun.uniq}/2 in MyModule."my fun"/1>`,
+        );
+      });
+
+      // Case not possible on the server - every fun there is defined inside a function definition.
+      it("non-capture, defined outside of a function definition", () => {
+        const anonFun = Type.anonymousFunction(2, clauses, context);
+
+        assert.equal(
+          Interpreter.inspect(anonFun),
+          `#Function<${anonFun.uniq}.${anonFun.uniq}/2 in MyModule>`,
+        );
+      });
+
+      // Case not possible on the client - function captures are always encoded as remote function captures.
+      // it("local function capture")
+
+      it("remote function capture", () => {
+        const anonFun = Type.functionCapture("MyModule", "my_fun", 2, clauses, context);
+
+        assert.equal(Interpreter.inspect(anonFun), "&MyModule.my_fun/2");
+      });
+    });
+
+    describe("atom", () => {
+      it("true", () => {
+        const result = Interpreter.inspect(Type.boolean(true));
+        assert.equal(result, "true");
+      });
+
+      it("false", () => {
+        const result = Interpreter.inspect(Type.boolean(false));
+        assert.equal(result, "false");
+      });
+
+      it("nil", () => {
+        const result = Interpreter.inspect(Type.nil());
+        assert.equal(result, "nil");
+      });
+
+      it("module alias", () => {
+        const result = Interpreter.inspect(Type.alias("Aaa.Bbb"));
+        assert.equal(result, "Aaa.Bbb");
+      });
+
+      it("module alias naming Elixir itself", () => {
+        const result = Interpreter.inspect(Type.alias("Elixir.Aaa"));
+        assert.equal(result, "Elixir.Elixir.Aaa");
+      });
+
+      it("non-boolean and non-nil", () => {
+        const result = Interpreter.inspect(Type.atom("abc"));
+        assert.equal(result, ":abc");
+      });
+
+      it("name that isn't a valid identifier", () => {
+        const result = Interpreter.inspect(Type.atom("aaa bbb"));
+        assert.equal(result, ':"aaa bbb"');
+      });
+
+      // The client classifies operators through the transpiled Macro.inspect_atom/3, which the
+      // stand-in here doesn't carry the operator tables for - the Elixir consistency test pins them.
+      // it("operator")
+    });
+
+    describe("bitstring", () => {
+      describe("text", () => {
+        it("empty", () => {
+          const result = Interpreter.inspect(Type.bitstring(""));
+          assert.equal(result, '""');
+        });
+
+        it("ASCII", () => {
+          const result = Interpreter.inspect(Type.bitstring("abc"));
+          assert.equal(result, '"abc"');
+        });
+
+        it("Unicode", () => {
+          const result = Interpreter.inspect(Type.bitstring("全息图"));
+          assert.equal(result, '"全息图"');
+        });
+
+        it("characters shown as escape sequences", () => {
+          const result = Interpreter.inspect(
+            Type.bitstring("\x07\x08\x09\x0A\x0B\x0C\x0D\x1B\x7F"),
+          );
+
+          assert.equal(result, '"\\a\\b\\t\\n\\v\\f\\r\\e\\d"');
+        });
+
+        it("quote and backslash", () => {
+          const result = Interpreter.inspect(Type.bitstring('"\\'));
+          assert.equal(result, '"\\"\\\\"');
+        });
+
+        it("invisible characters shown as unicode escapes", () => {
+          const result = Interpreter.inspect(Type.bitstring("\u00A0\u200B\uFEFF"));
+
+          assert.equal(result, '"\\u00A0\\u200B\\uFEFF"');
+        });
+
+        it("an interpolation opener is escaped", () => {
+          const result = Interpreter.inspect(Type.bitstring("#{"));
+          assert.equal(result, '"\\#{"');
+        });
+
+        it("a hash that doesn't open an interpolation is not escaped", () => {
+          const result = Interpreter.inspect(Type.bitstring("a#b"));
+          assert.equal(result, '"a#b"');
+        });
+
+        it("non-printable", () => {
+          const result = Interpreter.inspect(Type.bitstring("a\x01b"));
+          assert.equal(result, "<<97, 1, 98>>");
+        });
+      });
+
+      describe("bytes", () => {
+        it("that can be encoded as text", () => {
+          // "abc"
+          const result = Interpreter.inspect(Bitstring.fromBytes([97, 98, 99]));
+          assert.equal(result, '"abc"');
+        });
+
+        it("byte-aligned, single", () => {
+          const result = Interpreter.inspect(Bitstring.fromBytes([255]));
+          assert.equal(result, "<<255>>");
+        });
+
+        it("byte-aligned, multiple", () => {
+          const result = Interpreter.inspect(Bitstring.fromBytes([255, 254]));
+          assert.equal(result, "<<255, 254>>");
+        });
+
+        it("not byte-aligned, single", () => {
+          const result = Interpreter.inspect(Type.bitstring([1, 1]));
+          assert.equal(result, "<<3::size(2)>>");
+        });
+
+        it("not byte-aligned, multiple", () => {
+          const result = Interpreter.inspect(
+            // oxfmt-ignore
+            Type.bitstring([
+              1, 1, 0, 0, 1, 1, 0, 0,
+              1, 0, 1, 0, 1, 0, 1, 0,
+              1, 1,
+            ]),
+          );
+
+          assert.equal(result, "<<204, 170, 3::size(2)>>");
+        });
+      });
+    });
+
+    describe("float", () => {
+      it("integer-representable", () => {
+        const result = Interpreter.inspect(Type.float(123.0));
+        assert.equal(result, "123.0");
+      });
+
+      it("not integer-representable", () => {
+        const result = Interpreter.inspect(Type.float(123.45));
+        assert.equal(result, "123.45");
+      });
+    });
+
+    it("integer", () => {
+      const result = Interpreter.inspect(Type.integer(123));
+      assert.equal(result, "123");
+    });
+
+    describe("list", () => {
+      it("empty", () => {
+        const result = Interpreter.inspect(Type.list());
+        assert.equal(result, "[]");
+      });
+
+      it("proper", () => {
+        const result = Interpreter.inspect(
+          Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]),
+        );
+
+        assert.equal(result, "[1, 2, 3]");
+      });
+
+      it("improper", () => {
+        const result = Interpreter.inspect(
+          Type.improperList([Type.integer(1), Type.integer(2), Type.integer(3)]),
+        );
+
+        assert.equal(result, "[1, 2 | 3]");
+      });
+
+      describe("charlist", () => {
+        it("printable characters", () => {
+          const term = Type.list([Type.integer(97), Type.integer(98), Type.integer(99)]);
+
+          assert.equal(Interpreter.inspect(term), '~c"abc"');
+        });
+
+        it("characters shown as escape sequences", () => {
+          const term = Type.list([7, 8, 9, 10, 11, 12, 13, 27].map(Type.integer));
+
+          assert.equal(Interpreter.inspect(term), '~c"\\a\\b\\t\\n\\v\\f\\r\\e"');
+        });
+
+        it("quote and backslash", () => {
+          const term = Type.list([34, 92].map(Type.integer));
+
+          assert.equal(Interpreter.inspect(term), '~c"\\"\\\\"');
+        });
+
+        it("an interpolation opener is escaped", () => {
+          const term = Type.list([35, 123].map(Type.integer));
+
+          assert.equal(Interpreter.inspect(term), '~c"\\#{"');
+        });
+
+        it("a hash that doesn't open an interpolation is not escaped", () => {
+          const term = Type.list([97, 35, 98].map(Type.integer));
+
+          assert.equal(Interpreter.inspect(term), '~c"a#b"');
+        });
+
+        it("a non-printable character keeps the list form", () => {
+          const term = Type.list([104, 105, 0].map(Type.integer));
+
+          assert.equal(Interpreter.inspect(term), "[104, 105, 0]");
+        });
+
+        it("a codepoint above ASCII keeps the list form", () => {
+          const term = Type.list([104, 105, 233].map(Type.integer));
+
+          assert.equal(Interpreter.inspect(term), "[104, 105, 233]");
+        });
+
+        it("an improper list keeps the list form", () => {
+          const term = Type.improperList([104, 105].map(Type.integer));
+
+          assert.equal(Interpreter.inspect(term), "[104 | 105]");
+        });
+      });
+
+      describe("keyword list", () => {
+        it("single item", () => {
+          const term = Type.keywordList([[Type.atom("a"), Type.integer(1)]]);
+
+          const result = Interpreter.inspect(term);
+
+          assert.equal(result, "[a: 1]");
+        });
+
+        it("multiple items", () => {
+          const term = Type.keywordList([
+            [Type.atom("a"), Type.integer(1)],
+            [Type.atom("b"), Type.integer(2)],
+          ]);
+
+          const result = Interpreter.inspect(term);
+
+          assert.equal(result, "[a: 1, b: 2]");
+        });
+      });
+    });
+
+    describe("map", () => {
+      const map = Type.map([
+        [Type.atom("b"), Type.integer(2)],
+        [Type.atom("a"), Type.integer(1)],
+      ]);
+
+      it("empty", () => {
+        const result = Interpreter.inspect(Type.map());
+        assert.equal(result, "%{}");
+      });
+
+      it("with atom keys", () => {
+        const map = Type.map([
+          [Type.atom("a"), Type.integer(1)],
+          [Type.atom("b"), Type.bitstring("xyz")],
+        ]);
+
+        const result = Interpreter.inspect(map);
+
+        assert.equal(result, '%{a: 1, b: "xyz"}');
+      });
+
+      it("with an alias key", () => {
+        const map = Type.map([[Type.alias("Aaa.Bbb"), Type.integer(1)]]);
+
+        const result = Interpreter.inspect(map);
+
+        assert.equal(result, "%{Aaa.Bbb => 1}");
+      });
+
+      it("with a key that isn't a valid identifier", () => {
+        const map = Type.map([[Type.atom("aaa bbb"), Type.integer(1)]]);
+
+        const result = Interpreter.inspect(map);
+
+        assert.equal(result, '%{"aaa bbb": 1}');
+      });
+
+      it("with non-atom keys", () => {
+        const map = Type.map([
+          [Type.integer(9), Type.bitstring("xyz")],
+          [Type.bitstring("abc"), Type.float(2.3)],
+        ]);
+
+        const result = Interpreter.inspect(map);
+
+        assert.equal(result, '%{9 => "xyz", "abc" => 2.3}');
+      });
+
+      it("sort_maps opt is not defined", () => {
+        const result = Interpreter.inspect(map);
+
+        assert.equal(result, "%{b: 2, a: 1}");
+      });
+
+      it("sort_maps opt is set to true", () => {
+        const opts = Type.keywordList([
+          [
+            Type.atom("custom_options"),
+            Type.keywordList([[Type.atom("sort_maps"), Type.boolean(true)]]),
+          ],
+        ]);
+
+        const result = Interpreter.inspect(map, opts);
+
+        assert.equal(result, "%{a: 1, b: 2}");
+      });
+
+      it("sort_maps opt is set to false", () => {
+        const opts = Type.keywordList([
+          [
+            Type.atom("custom_options"),
+            Type.keywordList([[Type.atom("sort_maps"), Type.boolean(false)]]),
+          ],
+        ]);
+
+        const result = Interpreter.inspect(map, opts);
+
+        assert.equal(result, "%{b: 2, a: 1}");
+      });
+
+      describe("structs", () => {
+        describe("range", () => {
+          it("step == 1", () => {
+            const result = Interpreter.inspect(Type.range(123, 234, 1));
+            assert.equal(result, "123..234");
+          });
+
+          it("step > 1", () => {
+            const result = Interpreter.inspect(Type.range(123, 234, 345));
+            assert.equal(result, "123..234//345");
+          });
+        });
+      });
+    });
+
+    it("PID", () => {
+      const term = Type.pid("my_node@my_host", [0, 11, 222], "client");
+      const result = Interpreter.inspect(term);
+
+      assert.equal(result, "#PID<0.11.222>");
+    });
+
+    it("port", () => {
+      const term = Type.port("my_node", [0, 11], "server");
+      const result = Interpreter.inspect(term);
+
+      assert.equal(result, "#Port<0.11>");
+    });
+
+    describe("reference", () => {
+      it("client node", () => {
+        const term = Type.reference(NodeTable.CLIENT_NODE, 4, [3, 2, 1]);
+        const result = Interpreter.inspect(term);
+
+        assert.equal(result, "#Reference<0.1.2.3>");
+      });
+
+      it("server node", () => {
+        const term = Type.reference("my_node@my_host", 7, [6, 5, 4]);
+        const result = Interpreter.inspect(term);
+
+        assert.equal(result, "#Reference<1.4.5.6>");
+      });
+    });
+
+    describe("tuple", () => {
+      it("empty", () => {
+        const result = Interpreter.inspect(Type.tuple([]));
+        assert.equal(result, "{}");
+      });
+
+      it("non-empty", () => {
+        const result = Interpreter.inspect(
+          Type.tuple([Type.integer(1), Type.integer(2), Type.integer(3)]),
+        );
+
+        assert.equal(result, "{1, 2, 3}");
+      });
+    });
+  });
+
+  describe("inspectModuleJsName()", () => {
+    it("inspects Elixir module name", () => {
+      const result = Interpreter.inspectModuleJsName("Elixir_Aaa_Bbb_Ccc");
+      assert.deepStrictEqual(result, "Aaa.Bbb.Ccc");
+    });
+
+    it("inspects 'Erlang' module name", () => {
+      const result = Interpreter.inspectModuleJsName("Erlang");
+      assert.deepStrictEqual(result, ":erlang");
+    });
+
+    it("inspects Erlang standard lib module name", () => {
+      const result = Interpreter.inspectModuleJsName("Erlang_Uri_String");
+      assert.deepStrictEqual(result, ":uri_string");
+    });
+  });
+
+  describe("isEqual()", () => {
+    // non-number == non-number
+    it("returns true for a boxed non-number equal to another boxed non-number", () => {
+      const left = Type.boolean(true);
+      const right = Type.boolean(true);
+      const result = Interpreter.isEqual(left, right);
+
+      assert.isTrue(result);
+    });
+
+    // non-number != non-number
+    it("returns false for a boxed non-number not equal to another boxed non-number", () => {
+      const left = Type.boolean(true);
+      const right = Type.bitstring("abc");
+      const result = Interpreter.isEqual(left, right);
+
+      assert.isFalse(result);
+    });
+
+    // integer == integer
+    it("returns true for a boxed integer equal to another boxed integer", () => {
+      const left = Type.integer(1);
+      const right = Type.integer(1);
+      const result = Interpreter.isEqual(left, right);
+
+      assert.isTrue(result);
+    });
+
+    // integer != integer
+    it("returns false for a boxed integer not equal to another boxed integer", () => {
+      const left = Type.integer(1);
+      const right = Type.integer(2);
+      const result = Interpreter.isEqual(left, right);
+
+      assert.isFalse(result);
+    });
+
+    // integer == float
+    it("returns true for a boxed integer equal to a boxed float", () => {
+      const left = Type.integer(1);
+      const right = Type.float(1.0);
+      const result = Interpreter.isEqual(left, right);
+
+      assert.isTrue(result);
+    });
+
+    // integer != float
+    it("returns false for a boxed integer not equal to a boxed float", () => {
+      const left = Type.integer(1);
+      const right = Type.float(2.0);
+      const result = Interpreter.isEqual(left, right);
+
+      assert.isFalse(result);
+    });
+
+    // integer != non-number
+    it("returns false when a boxed integer is compared to a boxed value of non-number type", () => {
+      const left = Type.integer(1);
+      const right = Type.bitstring("1");
+      const result = Interpreter.isEqual(left, right);
+
+      assert.isFalse(result);
+    });
+
+    // float == float
+    it("returns true for a boxed float equal to another boxed float", () => {
+      const left = Type.float(1.0);
+      const right = Type.float(1.0);
+      const result = Interpreter.isEqual(left, right);
+
+      assert.isTrue(result);
+    });
+
+    // float != float
+    it("returns false for a boxed float not equal to another boxed float", () => {
+      const left = Type.float(1.0);
+      const right = Type.float(2.0);
+      const result = Interpreter.isEqual(left, right);
+
+      assert.isFalse(result);
+    });
+
+    // float == integer
+    it("returns true for a boxed float equal to a boxed integer", () => {
+      const left = Type.float(1.0);
+      const right = Type.integer(1);
+      const result = Interpreter.isEqual(left, right);
+
+      assert.isTrue(result);
+    });
+
+    // float != integer
+    it("returns false for a boxed float not equal to a boxed integer", () => {
+      const left = Type.float(1.0);
+      const right = Type.integer(2);
+      const result = Interpreter.isEqual(left, right);
+
+      assert.isFalse(result);
+    });
+
+    // float != non-number
+    it("returns false when a boxed float is compared to a boxed value of non-number type", () => {
+      const left = Type.float(1.0);
+      const right = Type.bitstring("1.0");
+      const result = Interpreter.isEqual(left, right);
+
+      assert.isFalse(result);
+    });
+
+    // [1] == [1.0]
+    it("returns true for a boxed list holding an integer equal to a list holding a float", () => {
+      const left = Type.list([Type.integer(1)]);
+      const right = Type.list([Type.float(1.0)]);
+
+      assert.isTrue(Interpreter.isEqual(left, right));
+    });
+
+    // [1] == [2.0]
+    it("returns false for a boxed list holding an integer not equal to a list holding a float", () => {
+      const left = Type.list([Type.integer(1)]);
+      const right = Type.list([Type.float(2.0)]);
+
+      assert.isFalse(Interpreter.isEqual(left, right));
+    });
+
+    // [[1]] == [[1.0]]
+    it("returns true for nested boxed lists holding an integer and a float of the same value", () => {
+      const left = Type.list([Type.list([Type.integer(1)])]);
+      const right = Type.list([Type.list([Type.float(1.0)])]);
+
+      assert.isTrue(Interpreter.isEqual(left, right));
+    });
+
+    // [1 | 2] == [1 | 2.0]
+    it("returns true for boxed improper lists whose tails are an integer and a float of the same value", () => {
+      const left = Type.improperList([Type.integer(1), Type.integer(2)]);
+      const right = Type.improperList([Type.integer(1), Type.float(2.0)]);
+
+      assert.isTrue(Interpreter.isEqual(left, right));
+    });
+
+    // [1 | 2] == [1, 2]
+    it("returns false for a boxed improper list compared to a proper list with the same items", () => {
+      const left = Type.improperList([Type.integer(1), Type.integer(2)]);
+      const right = Type.list([Type.integer(1), Type.integer(2)]);
+
+      assert.isFalse(Interpreter.isEqual(left, right));
+    });
+
+    // {1} == {1.0}
+    it("returns true for a boxed tuple holding an integer equal to a tuple holding a float", () => {
+      const left = Type.tuple([Type.integer(1)]);
+      const right = Type.tuple([Type.float(1.0)]);
+
+      assert.isTrue(Interpreter.isEqual(left, right));
+    });
+
+    // %{a: 1} == %{a: 1.0}
+    it("returns true for a boxed map whose value is an integer equal to a map whose value is a float", () => {
+      const left = Type.map([[Type.atom("a"), Type.integer(1)]]);
+      const right = Type.map([[Type.atom("a"), Type.float(1.0)]]);
+
+      assert.isTrue(Interpreter.isEqual(left, right));
+    });
+
+    // %{a: 1} == %{a: 1, b: 2}
+    it("returns false for a boxed map compared to a map holding it plus another key", () => {
+      const left = Type.map([[Type.atom("a"), Type.integer(1)]]);
+
+      const right = Type.map([
+        [Type.atom("a"), Type.integer(1)],
+        [Type.atom("b"), Type.integer(2)],
+      ]);
+
+      assert.isFalse(Interpreter.isEqual(left, right));
+    });
+
+    // %{1 => :x} == %{1.0 => :x}
+    it("returns false for boxed maps whose keys are an integer and a float of the same value", () => {
+      const left = Type.map([[Type.integer(1), Type.atom("x")]]);
+      const right = Type.map([[Type.float(1.0), Type.atom("x")]]);
+
+      assert.isFalse(Interpreter.isEqual(left, right));
+    });
+
+    // [1] == {1}
+    it("returns false for a boxed list compared to a boxed tuple with the same items", () => {
+      const left = Type.list([Type.integer(1)]);
+      const right = Type.tuple([Type.integer(1)]);
+
+      assert.isFalse(Interpreter.isEqual(left, right));
+    });
+  });
+
+  describe("isMatched()", () => {
+    let context;
+
+    beforeEach(() => {
+      context = contextFixture();
+    });
+
+    it("is matched", () => {
+      assert.isTrue(Interpreter.isMatched(Type.integer(1), Type.integer(1), context));
+    });
+
+    it("is not matched", () => {
+      assert.isFalse(Interpreter.isMatched(Type.integer(1), Type.integer(2), context));
+    });
+
+    it("adds matched vars to __matched__ field", () => {
+      const result = Interpreter.isMatched(Type.variablePattern("x"), Type.integer(9), context);
+
+      assert.isTrue(result);
+      assert.deepStrictEqual(context.vars, {__matched__: {x: Type.integer(9)}});
+    });
+  });
+
+  describe("isStrictlyEqual()", () => {
+    const isStrictlyEqual = Interpreter.isStrictlyEqual;
+
+    describe("atoms", () => {
+      it("equal", () => {
+        const atom1 = Type.atom("abc");
+        const atom2 = Type.atom("abc");
+
+        assert.isTrue(isStrictlyEqual(atom1, atom2));
+      });
+
+      it("not equal", () => {
+        const atom1 = Type.atom("abc");
+        const atom2 = Type.atom("xyz");
+
+        assert.isFalse(isStrictlyEqual(atom1, atom2));
+      });
+    });
+
+    describe("bitstrings", () => {
+      describe("equal", () => {
+        it("both have text field", () => {
+          const left = Type.bitstring("abc");
+          const right = Type.bitstring("abc");
+
+          assert.isTrue(Interpreter.isStrictlyEqual(left, right));
+        });
+
+        it("both have bytes field", () => {
+          const left = Bitstring.fromBytes([97, 98, 99]);
+          const right = Bitstring.fromBytes([97, 98, 99]);
+
+          assert.isTrue(Interpreter.isStrictlyEqual(left, right));
+        });
+
+        it("left has text field, right has bytes field", () => {
+          const left = Type.bitstring("abc");
+          const right = Bitstring.fromBytes([97, 98, 99]);
+
+          assert.isTrue(Interpreter.isStrictlyEqual(left, right));
+        });
+
+        it("left has bytes field, right has text field", () => {
+          const left = Bitstring.fromBytes([97, 98, 99]);
+          const right = Type.bitstring("abc");
+
+          assert.isTrue(Interpreter.isStrictlyEqual(left, right));
+        });
+      });
+
+      describe("not equal - different length", () => {
+        it("both have text field", () => {
+          const left = Type.bitstring("abc");
+          const right = Type.bitstring("ab");
+
+          assert.isFalse(Interpreter.isStrictlyEqual(left, right));
+        });
+
+        it("both have bytes field", () => {
+          const left = Bitstring.fromBytes([97, 98, 99]);
+          const right = Bitstring.fromBytes([97, 98]);
+
+          assert.isFalse(Interpreter.isStrictlyEqual(left, right));
+        });
+
+        it("left has text field, right has bytes field", () => {
+          const left = Type.bitstring("abc");
+          const right = Bitstring.fromBytes([97, 98]);
+
+          assert.isFalse(Interpreter.isStrictlyEqual(left, right));
+        });
+
+        it("left has bytes field, right has text field", () => {
+          const left = Bitstring.fromBytes([97, 98]);
+          const right = Type.bitstring("abc");
+
+          assert.isFalse(Interpreter.isStrictlyEqual(left, right));
+        });
+      });
+
+      describe("not equal - different content", () => {
+        it("both have text field", () => {
+          const left = Type.bitstring("abc");
+          const right = Type.bitstring("xyz");
+
+          assert.isFalse(Interpreter.isStrictlyEqual(left, right));
+        });
+
+        it("both have bytes field", () => {
+          const left = Bitstring.fromBytes([97, 98, 99]);
+          const right = Bitstring.fromBytes([97, 98, 100]);
+
+          assert.isFalse(Interpreter.isStrictlyEqual(left, right));
+        });
+
+        it("left has text field, right has bytes field", () => {
+          const left = Type.bitstring("abc");
+          const right = Bitstring.fromBytes([97, 98, 100]);
+
+          assert.isFalse(Interpreter.isStrictlyEqual(left, right));
+        });
+
+        it("left has bytes field, right has text field", () => {
+          const left = Bitstring.fromBytes([97, 98, 100]);
+          const right = Type.bitstring("abc");
+
+          assert.isFalse(Interpreter.isStrictlyEqual(left, right));
+        });
+
+        it("leftover bits count is different", () => {
+          const left = Bitstring.fromBytes([97, 98, 99]);
+          left.leftoverBitCount = 2;
+
+          const right = Bitstring.fromBytes([97, 98, 99]);
+          right.leftoverBitCount = 3;
+
+          assert.isFalse(Interpreter.isStrictlyEqual(left, right));
+        });
+      });
+    });
+
+    describe("floats", () => {
+      it("equal", () => {
+        const float1 = Type.float(1.23);
+        const float2 = Type.float(1.23);
+
+        assert.isTrue(isStrictlyEqual(float1, float2));
+      });
+
+      it("not equal", () => {
+        const float1 = Type.float(1.23);
+        const float2 = Type.float(2.34);
+
+        assert.isFalse(isStrictlyEqual(float1, float2));
+      });
+    });
+
+    describe("functions", () => {
+      const dummyClauses = ["clause_dummy_1", "clause_dummy_2"];
+      const context = contextFixture({});
+
+      describe("captures", () => {
+        it("equal", () => {
+          const function1 = Type.functionCapture(
+            "MyModule",
+            "my_function",
+            3,
+            dummyClauses,
+            context,
+          );
+
+          const function2 = Type.functionCapture(
+            "MyModule",
+            "my_function",
+            3,
+            dummyClauses,
+            context,
+          );
+
+          assert.isTrue(isStrictlyEqual(function1, function2));
+        });
+
+        describe("not equal", () => {
+          it("different module", () => {
+            const function1 = Type.functionCapture(
+              "MyModule1",
+              "my_function",
+              3,
+              dummyClauses,
+              context,
+            );
+
+            const function2 = Type.functionCapture(
+              "MyModule2",
+              "my_function",
+              3,
+              dummyClauses,
+              context,
+            );
+
+            assert.isFalse(isStrictlyEqual(function1, function2));
+          });
+
+          it("different function", () => {
+            const function1 = Type.functionCapture(
+              "MyModule",
+              "my_function_1",
+              3,
+              dummyClauses,
+              context,
+            );
+
+            const function2 = Type.functionCapture(
+              "MyModule",
+              "my_function_2",
+              3,
+              dummyClauses,
+              context,
+            );
+
+            assert.isFalse(isStrictlyEqual(function1, function2));
+          });
+
+          it("different arity", () => {
+            const function1 = Type.functionCapture(
+              "MyModule",
+              "my_function",
+              3,
+              dummyClauses,
+              context,
+            );
+
+            const function2 = Type.functionCapture(
+              "MyModule",
+              "my_function",
+              4,
+              dummyClauses,
+              context,
+            );
+
+            assert.isFalse(isStrictlyEqual(function1, function2));
+          });
+        });
+      });
+
+      it("not captures", () => {
+        const function1 = Type.anonymousFunction(3, dummyClauses, context);
+        const function2 = structuredClone(function1);
+
+        assert.isFalse(isStrictlyEqual(function1, function2));
+      });
+    });
+
+    describe("integers", () => {
+      it("equal", () => {
+        const integer1 = Type.integer(123);
+        const integer2 = Type.integer(123);
+
+        assert.isTrue(isStrictlyEqual(integer1, integer2));
+      });
+
+      it("not equal", () => {
+        const integer1 = Type.integer(123);
+        const integer2 = Type.integer(234);
+
+        assert.isFalse(isStrictlyEqual(integer1, integer2));
+      });
+    });
+
+    describe("lists", () => {
+      it("equal", () => {
+        const list1 = Type.list([Type.integer(1), Type.float(2.34)]);
+        const list2 = Type.list([Type.integer(1), Type.float(2.34)]);
+
+        assert.isTrue(isStrictlyEqual(list1, list2));
+      });
+
+      it("not equal", () => {
+        const list1 = Type.list([Type.integer(1), Type.float(2.34)]);
+        const list2 = Type.list([Type.integer(1), Type.float(3.45)]);
+
+        assert.isFalse(isStrictlyEqual(list1, list2));
+      });
+    });
+
+    describe("maps", () => {
+      it("equal", () => {
+        const map1 = Type.map([
+          [Type.atom("a"), Type.integer(1)],
+          [Type.bitstring("b"), Type.float(2.34)],
+        ]);
+
+        const map2 = Type.map([
+          [Type.atom("a"), Type.integer(1)],
+          [Type.bitstring("b"), Type.float(2.34)],
+        ]);
+
+        assert.isTrue(isStrictlyEqual(map1, map2));
+      });
+
+      it("not equal", () => {
+        const map1 = Type.map([
+          [Type.atom("a"), Type.integer(1)],
+          [Type.bitstring("b"), Type.float(2.34)],
+        ]);
+
+        const map2 = Type.map([
+          [Type.atom("a"), Type.integer(1)],
+          [Type.bitstring("b"), Type.float(3.45)],
+        ]);
+
+        assert.isFalse(isStrictlyEqual(map1, map2));
+      });
+
+      it("left map is a subset of the right map", () => {
+        const map1 = Type.map([[Type.atom("a"), Type.integer(1)]]);
+
+        const map2 = Type.map([
+          [Type.atom("a"), Type.integer(1)],
+          [Type.atom("b"), Type.integer(2)],
+        ]);
+
+        assert.isFalse(isStrictlyEqual(map1, map2));
+      });
+
+      it("right map is a subset of the left map", () => {
+        const map1 = Type.map([
+          [Type.atom("a"), Type.integer(1)],
+          [Type.atom("b"), Type.integer(2)],
+        ]);
+
+        const map2 = Type.map([[Type.atom("a"), Type.integer(1)]]);
+
+        assert.isFalse(isStrictlyEqual(map1, map2));
+      });
+
+      it("same size, different keys", () => {
+        const map1 = Type.map([[Type.atom("a"), Type.integer(1)]]);
+        const map2 = Type.map([[Type.atom("b"), Type.integer(1)]]);
+
+        assert.isFalse(isStrictlyEqual(map1, map2));
+      });
+
+      it("left map is empty, right map is not", () => {
+        const map1 = Type.map();
+        const map2 = Type.map([[Type.atom("a"), Type.integer(1)]]);
+
+        assert.isFalse(isStrictlyEqual(map1, map2));
+      });
+
+      it("right map is empty, left map is not", () => {
+        const map1 = Type.map([[Type.atom("a"), Type.integer(1)]]);
+        const map2 = Type.map();
+
+        assert.isFalse(isStrictlyEqual(map1, map2));
+      });
+
+      it("both maps are empty", () => {
+        assert.isTrue(isStrictlyEqual(Type.map(), Type.map()));
+      });
+    });
+
+    describe("PIDs", () => {
+      it("equal", () => {
+        const pid1 = Type.pid("my_node", [0, 11, 222], "server");
+        const pid2 = Type.pid("my_node", [0, 11, 222], "server");
+
+        assert.isTrue(isStrictlyEqual(pid1, pid2));
+      });
+
+      describe("not equal", () => {
+        it("different node", () => {
+          const pid1 = Type.pid("my_node_1", [0, 11, 222], "server");
+          const pid2 = Type.pid("my_node_2", [0, 11, 222], "server");
+
+          assert.isFalse(isStrictlyEqual(pid1, pid2));
+        });
+
+        it("different segments", () => {
+          const pid1 = Type.pid("my_node", [0, 11, 222], "server");
+          const pid2 = Type.pid("my_node", [0, 11, 333], "server");
+
+          assert.isFalse(isStrictlyEqual(pid1, pid2));
+        });
+
+        it("different origin", () => {
+          const pid1 = Type.pid("my_node", [0, 11, 222], "server");
+          const pid2 = Type.pid("my_node", [0, 11, 222], "client");
+
+          assert.isFalse(isStrictlyEqual(pid1, pid2));
+        });
+      });
+    });
+
+    describe("ports", () => {
+      it("equal", () => {
+        const port1 = Type.port("my_node", [0, 11], "server");
+        const port2 = Type.port("my_node", [0, 11], "server");
+
+        assert.isTrue(isStrictlyEqual(port1, port2));
+      });
+
+      describe("not equal", () => {
+        it("different node", () => {
+          const port1 = Type.port("my_node_1", [0, 11], "server");
+          const port2 = Type.port("my_node_2", [0, 11], "server");
+
+          assert.isFalse(isStrictlyEqual(port1, port2));
+        });
+
+        it("different segments", () => {
+          const port1 = Type.port("my_node", [0, 11], "server");
+          const port2 = Type.port("my_node", [0, 22], "server");
+
+          assert.isFalse(isStrictlyEqual(port1, port2));
+        });
+
+        it("different origin", () => {
+          const port1 = Type.port("my_node", [0, 11], "server");
+          const port2 = Type.port("my_node", [0, 11], "client");
+
+          assert.isFalse(isStrictlyEqual(port1, port2));
+        });
+      });
+    });
+
+    describe("references", () => {
+      it("equal", () => {
+        const ref1 = Type.reference("my_node", 0, [3, 2, 1]);
+        const ref2 = Type.reference("my_node", 0, [3, 2, 1]);
+
+        assert.isTrue(isStrictlyEqual(ref1, ref2));
+      });
+
+      describe("not equal", () => {
+        it("different node", () => {
+          const ref1 = Type.reference("my_node_1", 0, [3, 2, 1]);
+          const ref2 = Type.reference("my_node_2", 0, [3, 2, 1]);
+
+          assert.isFalse(isStrictlyEqual(ref1, ref2));
+        });
+
+        it("different creation number", () => {
+          const ref1 = Type.reference("my_node", 0, [3, 2, 1]);
+          const ref2 = Type.reference("my_node", 4, [3, 2, 1]);
+
+          assert.isFalse(isStrictlyEqual(ref1, ref2));
+        });
+
+        it("different ID word 1", () => {
+          const ref1 = Type.reference("my_node", 0, [3, 2, 1]);
+          const ref2 = Type.reference("my_node", 0, [4, 2, 1]);
+
+          assert.isFalse(isStrictlyEqual(ref1, ref2));
+        });
+
+        it("different ID word 2", () => {
+          const ref1 = Type.reference("my_node", 0, [3, 2, 1]);
+          const ref2 = Type.reference("my_node", 0, [3, 4, 1]);
+
+          assert.isFalse(isStrictlyEqual(ref1, ref2));
+        });
+
+        it("different ID word 3", () => {
+          const ref1 = Type.reference("my_node", 0, [3, 2, 1]);
+          const ref2 = Type.reference("my_node", 0, [3, 2, 4]);
+
+          assert.isFalse(isStrictlyEqual(ref1, ref2));
+        });
+      });
+    });
+
+    describe("tuples", () => {
+      it("equal", () => {
+        const tuple1 = Type.tuple([Type.integer(1), Type.float(2.34)]);
+        const tuple2 = Type.tuple([Type.integer(1), Type.float(2.34)]);
+
+        assert.isTrue(isStrictlyEqual(tuple1, tuple2));
+      });
+
+      it("not equal", () => {
+        const tuple1 = Type.tuple([Type.integer(1), Type.float(2.34)]);
+        const tuple2 = Type.tuple([Type.integer(1), Type.float(3.45)]);
+
+        assert.isFalse(isStrictlyEqual(tuple1, tuple2));
+      });
+    });
+
+    it("equal but not strictly equal", () => {
+      assert.isFalse(isStrictlyEqual(Type.integer(1), Type.float(1.0)));
+    });
+  });
+
+  describe("literalSet()", () => {
+    it("returns a set that finds the literals the function returns", () => {
+      const set = Interpreter.literalSet(() => [Type.atom("a"), Type.integer(1)]);
+
+      assert.isTrue(set.has(Type.atom("a")));
+      assert.isTrue(set.has(Type.integer(1)));
+      assert.isFalse(set.has(Type.atom("b")));
+    });
+
+    it("runs the function on the first lookup, not before", () => {
+      let buildCount = 0;
+
+      const set = Interpreter.literalSet(() => {
+        ++buildCount;
+        return [Type.atom("a")];
+      });
+
+      assert.equal(buildCount, 0);
+
+      set.has(Type.atom("a"));
+
+      assert.equal(buildCount, 1);
+    });
+  });
+
+  // IMPORTANT!
+  // Each JavaScript test has a related Elixir consistency test in test/elixir/hologram/ex_js_consistency/match_operator_test.exs
+  // Always update both together.
+  //
+  // left and right args are not stored in temporary variables but used directly in matchOperator() call,
+  // to make the test as close as possible to real behaviour in which the matchOperator() call is encoded as a whole.
+  describe("matchOperator()", () => {
+    const varsWithEmptyMatchedValues = {a: Type.integer(9), __matched__: {}};
+
+    let context;
+
+    beforeEach(() => {
+      context = contextFixture({vars: {a: Type.integer(9)}});
+    });
+
+    describe("atom type", () => {
+      // :abc = :abc
+      it("left atom == right atom", () => {
+        const result = Interpreter.matchOperator(Type.atom("abc"), Type.atom("abc"), context);
+
+        assert.deepStrictEqual(result, Type.atom("abc"));
+        assert.deepStrictEqual(context.vars, varsWithEmptyMatchedValues);
+      });
+
+      // :abc = :xyz
+      it("left atom != right atom", () => {
+        const myAtom = Type.atom("xyz");
+
+        assertBoxedError(
+          () => Interpreter.matchOperator(myAtom, Type.atom("abc"), context),
+          "MatchError",
+          buildMatchErrorMsg(myAtom),
+        );
+      });
+
+      // :abc = 2
+      it("left atom != right non-atom", () => {
+        const myInteger = Type.integer(2);
+
+        assertBoxedError(
+          () => Interpreter.matchOperator(myInteger, Type.atom("abc"), context),
+          "MatchError",
+          buildMatchErrorMsg(myInteger),
+        );
+      });
+    });
+
+    describe("bitstring type", () => {
+      const emptyBitstringPattern = Type.bitstringPattern([]);
+      const emptyBitstringValue = Type.bitstring([]);
+
+      const multiSegmentBitstringValue = Type.bitstring([
+        Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+        Type.bitstringSegment(Type.integer(2), {type: "integer"}),
+      ]);
+
+      // <<>> = <<>>
+      it("left empty bitstring == right empty bitstring", () => {
+        const result = Interpreter.matchOperator(
+          emptyBitstringValue,
+          emptyBitstringPattern,
+          context,
+        );
+
+        assertBoxedStrictEqual(result, emptyBitstringValue);
+      });
+
+      // <<>> = <<1::1, 0::1>>
+      it("left empty bitstring != right non-empty bitstring", () => {
+        const myBitstring = Type.bitstring([1, 0]);
+
+        assertBoxedError(
+          () => Interpreter.matchOperator(myBitstring, emptyBitstringPattern, context),
+          "MatchError",
+          buildMatchErrorMsg(myBitstring),
+        );
+      });
+
+      // <<>> = :abc
+      it("left empty bitstring != right non-bitstring", () => {
+        const myAtom = Type.atom("abc");
+
+        assertBoxedError(
+          () => Interpreter.matchOperator(myAtom, emptyBitstringPattern, context),
+          "MatchError",
+          buildMatchErrorMsg(myAtom),
+        );
+      });
+
+      it("left literal single-segment bitstring == right literal single-segment bitstring", () => {
+        const result = Interpreter.matchOperator(
+          Type.bitstring([Type.bitstringSegment(Type.integer(1), {type: "integer"})]),
+          Type.bitstringPattern([Type.bitstringSegment(Type.integer(1), {type: "integer"})]),
+          context,
+        );
+
+        const expected = Type.bitstring([
+          Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+        ]);
+
+        assertBoxedStrictEqual(result, expected);
+      });
+
+      it("left literal single-segment bitstring != right literal single-segment bitstring", () => {
+        const myBitstring = Type.bitstring([
+          Type.bitstringSegment(Type.integer(2), {type: "integer"}),
+        ]);
+
+        assertBoxedError(
+          () =>
+            Interpreter.matchOperator(
+              myBitstring,
+              Type.bitstringPattern([Type.bitstringSegment(Type.integer(1), {type: "integer"})]),
+              context,
+            ),
+          "MatchError",
+          buildMatchErrorMsg(myBitstring),
+        );
+      });
+
+      it("left literal single-segment bitstring != right non-bitstring", () => {
+        const myAtom = Type.atom("abc");
+
+        assertBoxedError(
+          () =>
+            Interpreter.matchOperator(
+              myAtom,
+              Type.bitstringPattern([Type.bitstringSegment(Type.integer(1), {type: "integer"})]),
+              context,
+            ),
+          "MatchError",
+          buildMatchErrorMsg(myAtom),
+        );
+      });
+
+      it("multiple literal bitstring segments", () => {
+        const result = Interpreter.matchOperator(
+          Type.bitstring([
+            Type.bitstringSegment(Type.integer(1), {
+              type: "integer",
+              size: Type.integer(1),
+            }),
+            Type.bitstringSegment(Type.integer(0), {
+              type: "integer",
+              size: Type.integer(1),
+            }),
+          ]),
+          Type.bitstringPattern([
+            Type.bitstringSegment(Type.integer(1), {
+              type: "integer",
+              size: Type.integer(1),
+            }),
+            Type.bitstringSegment(Type.integer(0), {
+              type: "integer",
+              size: Type.integer(1),
+            }),
+          ]),
+          context,
+        );
+
+        const expected = Type.bitstring([
+          Type.bitstringSegment(Type.integer(1), {
+            type: "integer",
+            size: Type.integer(1),
+          }),
+          Type.bitstringSegment(Type.integer(0), {
+            type: "integer",
+            size: Type.integer(1),
+          }),
+        ]);
+
+        assertBoxedStrictEqual(result, expected);
+      });
+
+      it("multiple literal float segments", () => {
+        const result = Interpreter.matchOperator(
+          Type.bitstring([
+            Type.bitstringSegment(Type.float(1.0), {type: "float"}),
+            Type.bitstringSegment(Type.float(2.0), {type: "float"}),
+          ]),
+          Type.bitstringPattern([
+            Type.bitstringSegment(Type.float(1.0), {type: "float"}),
+            Type.bitstringSegment(Type.float(2.0), {type: "float"}),
+          ]),
+          context,
+        );
+
+        const expected = Type.bitstring([
+          Type.bitstringSegment(Type.float(1.0), {type: "float"}),
+          Type.bitstringSegment(Type.float(2.0), {type: "float"}),
+        ]);
+
+        assertBoxedStrictEqual(result, expected);
+      });
+
+      it("multiple literal integer segments", () => {
+        const result = Interpreter.matchOperator(
+          Type.bitstring([
+            Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+            Type.bitstringSegment(Type.integer(2), {type: "integer"}),
+          ]),
+          Type.bitstringPattern([
+            Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+            Type.bitstringSegment(Type.integer(2), {type: "integer"}),
+          ]),
+          context,
+        );
+
+        const expected = Type.bitstring([
+          Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+          Type.bitstringSegment(Type.integer(2), {type: "integer"}),
+        ]);
+
+        assertBoxedStrictEqual(result, expected);
+      });
+
+      it("multiple literal string segments", () => {
+        const result = Interpreter.matchOperator(
+          Type.bitstring([
+            Type.bitstringSegment(Type.string("aaa"), {type: "binary"}),
+            Type.bitstringSegment(Type.string("bbb"), {type: "binary"}),
+          ]),
+          Type.bitstringPattern([
+            Type.bitstringSegment(Type.string("aaa"), {type: "binary"}),
+            Type.bitstringSegment(Type.string("bbb"), {type: "binary"}),
+          ]),
+          context,
+        );
+
+        const expected = Type.bitstring([
+          Type.bitstringSegment(Type.string("aaa"), {type: "binary"}),
+          Type.bitstringSegment(Type.string("bbb"), {type: "binary"}),
+        ]);
+
+        assertBoxedStrictEqual(result, expected);
+      });
+
+      // <<x::integer>> = <<1>>
+      it("left single-segment bitstring with variable pattern == right bitstring", () => {
+        const myBitstring = Type.bitstring([
+          Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+        ]);
+
+        const result = Interpreter.matchOperator(
+          myBitstring,
+          Type.bitstringPattern([
+            Type.bitstringSegment(Type.variablePattern("x"), {type: "integer"}),
+          ]),
+          context,
+        );
+
+        assertBoxedStrictEqual(result, myBitstring);
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            x: Type.integer(1),
+          },
+        });
+      });
+
+      // <<x::integer, y::integer>> = <<1, 2>>
+      it("left multiple-segment bitstring with variable patterns == right bitstring", () => {
+        const result = Interpreter.matchOperator(
+          multiSegmentBitstringValue,
+          Type.bitstringPattern([
+            Type.bitstringSegment(Type.variablePattern("x"), {type: "integer"}),
+            Type.bitstringSegment(Type.variablePattern("y"), {type: "integer"}),
+          ]),
+          context,
+        );
+
+        assertBoxedStrictEqual(result, multiSegmentBitstringValue);
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            x: Type.integer(1),
+            y: Type.integer(2),
+          },
+        });
+      });
+
+      // <<3, y::integer>> = <<1, 2>>
+      it("first segment in left multi-segment bitstring doesn't match", () => {
+        assertBoxedError(
+          () =>
+            Interpreter.matchOperator(
+              multiSegmentBitstringValue,
+              Type.bitstringPattern([
+                Type.bitstringSegment(Type.integer(3), {type: "integer"}),
+                Type.bitstringSegment(Type.variablePattern("y"), {
+                  type: "integer",
+                }),
+              ]),
+              context,
+            ),
+          "MatchError",
+          buildMatchErrorMsg(multiSegmentBitstringValue),
+        );
+      });
+
+      // <<1, 2::size(7)>> = <<1, 2>>
+      it("last segment in left multi-segment bitstring doesn't match, because there are too few bits", () => {
+        assertBoxedError(
+          () =>
+            Interpreter.matchOperator(
+              multiSegmentBitstringValue,
+              Type.bitstringPattern([
+                Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+                Type.bitstringSegment(Type.integer(2), {
+                  type: "integer",
+                  size: Type.integer(7),
+                }),
+              ]),
+              context,
+            ),
+          "MatchError",
+          buildMatchErrorMsg(multiSegmentBitstringValue),
+        );
+      });
+
+      // <<1, 2::size(9)>> = <<1, 2>>
+      it("last segment in left multi-segment bitstring doesn't match, because there are too many bits", () => {
+        assertBoxedError(
+          () =>
+            Interpreter.matchOperator(
+              multiSegmentBitstringValue,
+              Type.bitstringPattern([
+                Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+                Type.bitstringSegment(Type.integer(2), {
+                  type: "integer",
+                  size: Type.integer(9),
+                }),
+              ]),
+              context,
+            ),
+          "MatchError",
+          buildMatchErrorMsg(multiSegmentBitstringValue),
+        );
+      });
+
+      describe("last segment matching", () => {
+        // <<prefix::size(8), rest::binary>> = "hello"
+        it("last binary segment without size consumes all remaining bits", () => {
+          const myBitstring = Type.bitstring("hello");
+
+          const result = Interpreter.matchOperator(
+            myBitstring,
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.variablePattern("prefix"), {
+                type: "integer",
+                size: Type.integer(8),
+              }),
+              Type.bitstringSegment(Type.variablePattern("rest"), {
+                type: "binary",
+              }),
+            ]),
+            context,
+          );
+
+          assertBoxedStrictEqual(result, myBitstring);
+
+          assertBoxedStrictEqual(context.vars.__matched__.rest, Type.bitstring("ello"));
+
+          assert.deepStrictEqual(context.vars, {
+            a: Type.integer(9),
+            __matched__: {
+              prefix: Type.integer(104),
+              rest: context.vars.__matched__.rest,
+            },
+          });
+        });
+
+        // <<prefix::size(8), rest::bitstring>> = "hello"
+        it("last bitstring segment without size consumes all remaining bits", () => {
+          const myBitstring = Type.bitstring("hello");
+
+          const result = Interpreter.matchOperator(
+            myBitstring,
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.variablePattern("prefix"), {
+                type: "integer",
+                size: Type.integer(8),
+              }),
+              Type.bitstringSegment(Type.variablePattern("rest"), {
+                type: "bitstring",
+              }),
+            ]),
+            context,
+          );
+
+          assertBoxedStrictEqual(result, myBitstring);
+
+          assertBoxedStrictEqual(context.vars.__matched__.rest, Type.bitstring("ello"));
+
+          assert.deepStrictEqual(context.vars, {
+            a: Type.integer(9),
+            __matched__: {
+              prefix: Type.integer(104),
+              rest: context.vars.__matched__.rest,
+            },
+          });
+        });
+
+        // <<prefix::size(12), rest::bitstring>> = <<1, 2, 3>>
+        it("last bitstring segment without size consumes remaining bits even when not byte-aligned", () => {
+          const myBitstring = Type.bitstring([
+            Type.bitstringSegment(Type.integer(1), {type: "integer"}),
+            Type.bitstringSegment(Type.integer(2), {type: "integer"}),
+            Type.bitstringSegment(Type.integer(3), {type: "integer"}),
+          ]);
+
+          const result = Interpreter.matchOperator(
+            myBitstring,
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.variablePattern("prefix"), {
+                type: "integer",
+                size: Type.integer(12),
+              }),
+              Type.bitstringSegment(Type.variablePattern("rest"), {
+                type: "bitstring",
+              }),
+            ]),
+            context,
+          );
+
+          assertBoxedStrictEqual(result, myBitstring);
+
+          assertBoxedStrictEqual(
+            context.vars.__matched__.rest,
+            Type.bitstring([
+              Type.bitstringSegment(Type.integer(32), {type: "integer"}),
+              Type.bitstringSegment(Type.integer(3), {
+                type: "integer",
+                size: Type.integer(4),
+              }),
+            ]),
+          );
+
+          assert.deepStrictEqual(context.vars, {
+            a: Type.integer(9),
+            __matched__: {
+              prefix: Type.integer(16),
+              rest: context.vars.__matched__.rest,
+            },
+          });
+        });
+
+        // <<prefix::size(8), rest::binary>> = "h"
+        it("last binary segment without size handles empty remaining bits", () => {
+          const myBitstring = Type.bitstring("h");
+
+          const result = Interpreter.matchOperator(
+            myBitstring,
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.variablePattern("prefix"), {
+                type: "integer",
+                size: Type.integer(8),
+              }),
+              Type.bitstringSegment(Type.variablePattern("rest"), {
+                type: "binary",
+              }),
+            ]),
+            context,
+          );
+
+          assertBoxedStrictEqual(result, myBitstring);
+
+          assertBoxedStrictEqual(context.vars.__matched__.rest, Type.bitstring(""));
+
+          assert.deepStrictEqual(context.vars, {
+            a: Type.integer(9),
+            __matched__: {
+              prefix: Type.integer(104),
+              rest: context.vars.__matched__.rest,
+            },
+          });
+        });
+
+        // <<prefix::size(8), rest::bitstring>> = "h"
+        it("last bitstring segment without size handles empty remaining bits", () => {
+          const myBitstring = Type.bitstring("h");
+
+          const result = Interpreter.matchOperator(
+            myBitstring,
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.variablePattern("prefix"), {
+                type: "integer",
+                size: Type.integer(8),
+              }),
+              Type.bitstringSegment(Type.variablePattern("rest"), {
+                type: "bitstring",
+              }),
+            ]),
+            context,
+          );
+
+          assertBoxedStrictEqual(result, myBitstring);
+
+          assertBoxedStrictEqual(context.vars.__matched__.rest, Type.bitstring(""));
+
+          assert.deepStrictEqual(context.vars, {
+            a: Type.integer(9),
+            __matched__: {
+              prefix: Type.integer(104),
+              rest: context.vars.__matched__.rest,
+            },
+          });
+        });
+
+        // <<rest::binary>> = "hello"
+        it("single last binary segment without size consumes entire bitstring", () => {
+          const myBitstring = Type.bitstring("hello");
+
+          const result = Interpreter.matchOperator(
+            myBitstring,
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.variablePattern("rest"), {
+                type: "binary",
+              }),
+            ]),
+            context,
+          );
+
+          assertBoxedStrictEqual(result, myBitstring);
+
+          assertBoxedStrictEqual(context.vars.__matched__.rest, Type.bitstring("hello"));
+
+          assert.deepStrictEqual(context.vars, {
+            a: Type.integer(9),
+            __matched__: {
+              rest: context.vars.__matched__.rest,
+            },
+          });
+        });
+
+        // <<rest::bitstring>> = "hello"
+        it("single last bitstring segment without size consumes entire bitstring", () => {
+          const myBitstring = Type.bitstring("hello");
+
+          const result = Interpreter.matchOperator(
+            myBitstring,
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.variablePattern("rest"), {
+                type: "bitstring",
+              }),
+            ]),
+            context,
+          );
+
+          assertBoxedStrictEqual(result, myBitstring);
+
+          assertBoxedStrictEqual(context.vars.__matched__.rest, Type.bitstring("hello"));
+
+          assert.deepStrictEqual(context.vars, {
+            a: Type.integer(9),
+            __matched__: {
+              rest: context.vars.__matched__.rest,
+            },
+          });
+        });
+
+        // <<rest::bitstring>> = <<1::1, 0::1, 1::1>>
+        it("single last bitstring segment without size consumes entire non-byte-aligned bitstring", () => {
+          const myBitstring = Type.bitstring([1, 0, 1]);
+
+          const result = Interpreter.matchOperator(
+            myBitstring,
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.variablePattern("rest"), {
+                type: "bitstring",
+              }),
+            ]),
+            context,
+          );
+
+          assertBoxedStrictEqual(result, myBitstring);
+
+          assertBoxedStrictEqual(context.vars.__matched__.rest, myBitstring);
+
+          assert.deepStrictEqual(context.vars, {
+            a: Type.integer(9),
+            __matched__: {
+              rest: context.vars.__matched__.rest,
+            },
+          });
+        });
+
+        // <<rest::binary>> = ""
+        it("single last binary segment without size consumes empty bitstring", () => {
+          const myBitstring = Type.bitstring("");
+
+          const result = Interpreter.matchOperator(
+            myBitstring,
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.variablePattern("rest"), {
+                type: "binary",
+              }),
+            ]),
+            context,
+          );
+
+          assertBoxedStrictEqual(result, myBitstring);
+
+          assertBoxedStrictEqual(context.vars.__matched__.rest, Type.bitstring(""));
+
+          assert.deepStrictEqual(context.vars, {
+            a: Type.integer(9),
+            __matched__: {
+              rest: context.vars.__matched__.rest,
+            },
+          });
+        });
+
+        // <<rest::bitstring>> = ""
+        it("single last bitstring segment without size consumes empty bitstring", () => {
+          const myBitstring = Type.bitstring("");
+
+          const result = Interpreter.matchOperator(
+            myBitstring,
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.variablePattern("rest"), {
+                type: "bitstring",
+              }),
+            ]),
+            context,
+          );
+
+          assertBoxedStrictEqual(result, myBitstring);
+
+          assertBoxedStrictEqual(context.vars.__matched__.rest, Type.bitstring(""));
+
+          assert.deepStrictEqual(context.vars, {
+            a: Type.integer(9),
+            __matched__: {
+              rest: context.vars.__matched__.rest,
+            },
+          });
+        });
+
+        // This won't compile
+        // <<first::binary, second::size(8)>> = "hello"
+        // it("non-last binary segment without size fails normally")
+
+        // This won't compile
+        // <<first::bitstring, second::size(8)>> = "hello"
+        // it("non-last bitstring segment without size fails normally")
+
+        // <<prefix::size(8), rest::binary-size(4)>> = "hello"
+        it("last binary segment with explicit size uses normal size calculation", () => {
+          const myBitstring = Type.bitstring("hello");
+
+          const result = Interpreter.matchOperator(
+            myBitstring,
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.variablePattern("prefix"), {
+                type: "integer",
+                size: Type.integer(8),
+              }),
+              Type.bitstringSegment(Type.variablePattern("rest"), {
+                type: "binary",
+                size: Type.integer(4),
+              }),
+            ]),
+            context,
+          );
+
+          assertBoxedStrictEqual(result, myBitstring);
+
+          assertBoxedStrictEqual(context.vars.__matched__.rest, Type.bitstring("ello"));
+
+          assert.deepStrictEqual(context.vars, {
+            a: Type.integer(9),
+            __matched__: {
+              prefix: Type.integer(104),
+              rest: context.vars.__matched__.rest,
+            },
+          });
+        });
+
+        // <<prefix::size(8), rest::bitstring-size(4 * 8)>> = "hello"
+        it("last bitstring segment with explicit size uses normal size calculation", () => {
+          const myBitstring = Type.bitstring("hello");
+
+          const result = Interpreter.matchOperator(
+            myBitstring,
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.variablePattern("prefix"), {
+                type: "integer",
+                size: Type.integer(8),
+              }),
+              Type.bitstringSegment(Type.variablePattern("rest"), {
+                type: "bitstring",
+                size: Type.integer(4 * 8),
+              }),
+            ]),
+            context,
+          );
+
+          assertBoxedStrictEqual(result, myBitstring);
+
+          assertBoxedStrictEqual(context.vars.__matched__.rest, Type.bitstring("ello"));
+
+          assert.deepStrictEqual(context.vars, {
+            a: Type.integer(9),
+            __matched__: {
+              prefix: Type.integer(104),
+              rest: context.vars.__matched__.rest,
+            },
+          });
+        });
+
+        // <<prefix::size(8), rest::binary-size(40)>> = "hello"
+        it("last binary segment with size larger than remaining bits fails", () => {
+          const myBitstring = Type.bitstring("hello");
+
+          assertBoxedError(
+            () =>
+              Interpreter.matchOperator(
+                myBitstring,
+                Type.bitstringPattern([
+                  Type.bitstringSegment(Type.variablePattern("prefix"), {
+                    type: "integer",
+                    size: Type.integer(8),
+                  }),
+                  Type.bitstringSegment(Type.variablePattern("rest"), {
+                    type: "binary",
+                    size: Type.integer(40),
+                  }),
+                ]),
+                context,
+              ),
+            "MatchError",
+            buildMatchErrorMsg(myBitstring),
+          );
+        });
+
+        // <<prefix::size(8), rest::bitstring-size(40)>> = "hello"
+        it("last bitstring segment with size larger than remaining bits fails", () => {
+          const myBitstring = Type.bitstring("hello");
+
+          assertBoxedError(
+            () =>
+              Interpreter.matchOperator(
+                myBitstring,
+                Type.bitstringPattern([
+                  Type.bitstringSegment(Type.variablePattern("prefix"), {
+                    type: "integer",
+                    size: Type.integer(8),
+                  }),
+                  Type.bitstringSegment(Type.variablePattern("rest"), {
+                    type: "bitstring",
+                    size: Type.integer(40),
+                  }),
+                ]),
+                context,
+              ),
+            "MatchError",
+            buildMatchErrorMsg(myBitstring),
+          );
+        });
+
+        // <<prefix::size(8), rest::integer>> = "hello"
+        it("last integer segment without size uses normal size calculation and fails due to leftover bits", () => {
+          const myBitstring = Type.bitstring("hello");
+
+          assertBoxedError(
+            () =>
+              Interpreter.matchOperator(
+                myBitstring,
+                Type.bitstringPattern([
+                  Type.bitstringSegment(Type.variablePattern("prefix"), {
+                    type: "integer",
+                    size: Type.integer(8),
+                  }),
+                  Type.bitstringSegment(Type.variablePattern("rest"), {
+                    type: "integer",
+                  }),
+                ]),
+                context,
+              ),
+            "MatchError",
+            buildMatchErrorMsg(myBitstring),
+          );
+        });
+      });
+
+      // IMPORTANT!
+      // Each test here has a related Elixir consistency test in
+      // test/elixir/hologram/ex_js_consistency/match_operator_test.exs ("utf8 type modifier" section).
+      describe("utf8 type modifier", () => {
+        const matchUtf8 = (value) =>
+          Interpreter.matchOperator(
+            value,
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.variablePattern("x"), {type: "utf8"}),
+              Type.bitstringSegment(Type.variablePattern("rest"), {
+                type: "binary",
+              }),
+            ]),
+            contextFixture(),
+          );
+
+        // <<x::utf8, rest::binary>> = "abc"
+        it("one-byte code point", () => {
+          const context = contextFixture();
+
+          Interpreter.matchOperator(
+            Type.bitstring("abc"),
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.variablePattern("x"), {type: "utf8"}),
+              Type.bitstringSegment(Type.variablePattern("rest"), {
+                type: "binary",
+              }),
+            ]),
+            context,
+          );
+
+          Interpreter.updateVarsToMatchedValues(context);
+
+          assert.deepStrictEqual(context.vars.x, Type.integer(97));
+          assertBoxedStrictEqual(context.vars.rest, Type.bitstring("bc"));
+        });
+
+        // <<x::utf8, rest::binary>> = "élo"
+        it("two-byte code point", () => {
+          const context = contextFixture();
+
+          Interpreter.matchOperator(
+            Type.bitstring("élo"),
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.variablePattern("x"), {type: "utf8"}),
+              Type.bitstringSegment(Type.variablePattern("rest"), {
+                type: "binary",
+              }),
+            ]),
+            context,
+          );
+
+          Interpreter.updateVarsToMatchedValues(context);
+
+          assert.deepStrictEqual(context.vars.x, Type.integer(233));
+          assertBoxedStrictEqual(context.vars.rest, Type.bitstring("lo"));
+        });
+
+        // <<x::utf8, rest::binary>> = "日本"
+        it("three-byte code point", () => {
+          const context = contextFixture();
+
+          Interpreter.matchOperator(
+            Type.bitstring("日本"),
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.variablePattern("x"), {type: "utf8"}),
+              Type.bitstringSegment(Type.variablePattern("rest"), {
+                type: "binary",
+              }),
+            ]),
+            context,
+          );
+
+          Interpreter.updateVarsToMatchedValues(context);
+
+          assert.deepStrictEqual(context.vars.x, Type.integer(26085));
+          assertBoxedStrictEqual(context.vars.rest, Type.bitstring("本"));
+        });
+
+        // <<x::utf8, rest::binary>> = "😀a"
+        it("four-byte code point", () => {
+          const context = contextFixture();
+
+          Interpreter.matchOperator(
+            Type.bitstring("😀a"),
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.variablePattern("x"), {type: "utf8"}),
+              Type.bitstringSegment(Type.variablePattern("rest"), {
+                type: "binary",
+              }),
+            ]),
+            context,
+          );
+
+          Interpreter.updateVarsToMatchedValues(context);
+
+          assert.deepStrictEqual(context.vars.x, Type.integer(128512));
+          assertBoxedStrictEqual(context.vars.rest, Type.bitstring("a"));
+        });
+
+        // <<x::utf8, y::utf8, rest::binary>> = "héllo"
+        it("multiple utf8 segments", () => {
+          const context = contextFixture();
+
+          Interpreter.matchOperator(
+            Type.bitstring("héllo"),
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.variablePattern("x"), {type: "utf8"}),
+              Type.bitstringSegment(Type.variablePattern("y"), {type: "utf8"}),
+              Type.bitstringSegment(Type.variablePattern("rest"), {
+                type: "binary",
+              }),
+            ]),
+            context,
+          );
+
+          Interpreter.updateVarsToMatchedValues(context);
+
+          assert.deepStrictEqual(context.vars.x, Type.integer(104));
+          assert.deepStrictEqual(context.vars.y, Type.integer(233));
+          assertBoxedStrictEqual(context.vars.rest, Type.bitstring("llo"));
+        });
+
+        // <<?a::utf8, rest::binary>> = "abc"
+        it("literal code point that matches", () => {
+          const context = contextFixture();
+
+          Interpreter.matchOperator(
+            Type.bitstring("abc"),
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.integer(97), {type: "utf8"}),
+              Type.bitstringSegment(Type.variablePattern("rest"), {
+                type: "binary",
+              }),
+            ]),
+            context,
+          );
+
+          Interpreter.updateVarsToMatchedValues(context);
+
+          assertBoxedStrictEqual(context.vars.rest, Type.bitstring("bc"));
+        });
+
+        // <<x::utf8, _rest::bitstring>> = <<1::1, "a">>
+        it("a sequence needs no byte alignment", () => {
+          const context = contextFixture();
+
+          const myBitstring = Type.bitstring([
+            Type.bitstringSegment(Type.integer(1), {
+              type: "integer",
+              size: Type.integer(1),
+            }),
+            Type.bitstringSegment(Type.bitstring("a"), {type: "binary"}),
+          ]);
+
+          Interpreter.matchOperator(
+            myBitstring,
+            Type.bitstringPattern([
+              Type.bitstringSegment(Type.integer(1), {
+                type: "integer",
+                size: Type.integer(1),
+              }),
+              Type.bitstringSegment(Type.variablePattern("x"), {type: "utf8"}),
+              Type.bitstringSegment(Type.matchPlaceholder(), {
+                type: "bitstring",
+              }),
+            ]),
+            context,
+          );
+
+          Interpreter.updateVarsToMatchedValues(context);
+
+          assert.deepStrictEqual(context.vars.x, Type.integer(97));
+        });
+
+        // <<?z::utf8, rest::binary>> = "abc"
+        it("literal code point that doesn't match", () => {
+          const myBitstring = Type.bitstring("abc");
+
+          assertBoxedError(
+            () =>
+              Interpreter.matchOperator(
+                myBitstring,
+                Type.bitstringPattern([
+                  Type.bitstringSegment(Type.integer(122), {type: "utf8"}),
+                  Type.bitstringSegment(Type.variablePattern("rest"), {
+                    type: "binary",
+                  }),
+                ]),
+                contextFixture(),
+              ),
+            "MatchError",
+            buildMatchErrorMsg(myBitstring),
+          );
+        });
+
+        // <<x::utf8, rest::binary>> = <<0xFF, 0xFE>>
+        it("invalid utf8 bytes", () => {
+          const myBitstring = Type.bitstring([
+            Type.bitstringSegment(Type.integer(0xff), {type: "integer"}),
+            Type.bitstringSegment(Type.integer(0xfe), {type: "integer"}),
+          ]);
+
+          assertBoxedError(
+            () => matchUtf8(myBitstring),
+            "MatchError",
+            buildMatchErrorMsg(myBitstring),
+          );
+        });
+
+        // <<x::utf8, rest::binary>> = ""
+        it("empty bitstring", () => {
+          const myBitstring = Type.bitstring("");
+
+          assertBoxedError(
+            () => matchUtf8(myBitstring),
+            "MatchError",
+            buildMatchErrorMsg(myBitstring),
+          );
+        });
+
+        // <<x::utf8, rest::binary>> = <<0xC3>>
+        it("truncated sequence", () => {
+          const myBitstring = Type.bitstring([
+            Type.bitstringSegment(Type.integer(0xc3), {type: "integer"}),
+          ]);
+
+          assertBoxedError(
+            () => matchUtf8(myBitstring),
+            "MatchError",
+            buildMatchErrorMsg(myBitstring),
+          );
+        });
+
+        // <<x::utf8, rest::binary>> = <<0xED, 0xA0, 0x80>>
+        it("surrogate is invalid", () => {
+          const myBitstring = Type.bitstring([
+            Type.bitstringSegment(Type.integer(0xed), {type: "integer"}),
+            Type.bitstringSegment(Type.integer(0xa0), {type: "integer"}),
+            Type.bitstringSegment(Type.integer(0x80), {type: "integer"}),
+          ]);
+
+          assertBoxedError(
+            () => matchUtf8(myBitstring),
+            "MatchError",
+            buildMatchErrorMsg(myBitstring),
+          );
+        });
+
+        // <<x::utf8, rest::binary>> = <<0xC0, 0xAF>>
+        it("overlong encoding is invalid", () => {
+          const myBitstring = Type.bitstring([
+            Type.bitstringSegment(Type.integer(0xc0), {type: "integer"}),
+            Type.bitstringSegment(Type.integer(0xaf), {type: "integer"}),
+          ]);
+
+          assertBoxedError(
+            () => matchUtf8(myBitstring),
+            "MatchError",
+            buildMatchErrorMsg(myBitstring),
+          );
+        });
+
+        // <<x::utf8>> = "ab"
+        it("leftover bits after the sequence", () => {
+          const myBitstring = Type.bitstring("ab");
+
+          assertBoxedError(
+            () =>
+              Interpreter.matchOperator(
+                myBitstring,
+                Type.bitstringPattern([
+                  Type.bitstringSegment(Type.variablePattern("x"), {
+                    type: "utf8",
+                  }),
+                ]),
+                contextFixture(),
+              ),
+            "MatchError",
+            buildMatchErrorMsg(myBitstring),
+          );
+        });
+
+        // Not implemented on the client - the raise names them.
+        // it("utf16 type modifier")
+        // it("utf32 type modifier")
+      });
+    });
+
+    describe("bitstring segment decoding, signed modifier", () => {
+      // <<value::signed>> = <<1::1, 0::1, 1::1, 0::1, 1::1, 0::1, 1::1, 0::1>>
+      // The test would be the same as "integer type modifier", because the encoder always specifies the segment's type.
+      // it("no type modifier")
+
+      // <<value::binary-signed>> won't compile
+      // it("binary type modifier")
+
+      // <<value::bitstring-signed>> won't compile
+      // it("bitstring type modifier")
+
+      // <<value::float-size(64)-signed>> = <<123.45::size(64)>>
+      it("float type modifier, 64-bit size modifier", () => {
+        const left = Type.bitstringPattern([
+          Type.bitstringSegment(Type.variablePattern("value"), {
+            type: "float",
+            size: Type.integer(64),
+            signedness: "signed",
+          }),
+        ]);
+
+        const right = Type.bitstring([
+          Type.bitstringSegment(Type.float(123.45), {
+            type: "float",
+            size: Type.integer(64),
+          }),
+        ]);
+
+        const result = Interpreter.matchOperator(right, left, context);
+
+        assertBoxedStrictEqual(result, right);
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {value: Type.float(123.45)},
+        });
+      });
+
+      // <<value::float-size(32)-signed>> = <<123.45::size(32)>>
+      it("float type modifier, 32-bit size modifier", () => {
+        const left = Type.bitstringPattern([
+          Type.bitstringSegment(Type.variablePattern("value"), {
+            type: "float",
+            size: Type.integer(32),
+            signedness: "signed",
+          }),
+        ]);
+
+        const right = Type.bitstring([
+          Type.bitstringSegment(Type.float(123.45), {
+            type: "float",
+            size: Type.integer(32),
+          }),
+        ]);
+
+        const result = Interpreter.matchOperator(right, left, context);
+
+        assertBoxedStrictEqual(result, right);
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {value: Type.float(123.44999694824219)},
+        });
+      });
+
+      // <<value::float-size(16)-signed>> = <<123.45::size(16)>>
+      it("float type modifier, 16-bit size modifier", () => {
+        const left = Type.bitstringPattern([
+          Type.bitstringSegment(Type.variablePattern("value"), {
+            type: "float",
+            size: Type.integer(16),
+            signedness: "signed",
+          }),
+        ]);
+
+        const right = Type.bitstring([
+          Type.bitstringSegment(Type.float(123.45), {
+            type: "float",
+            size: Type.integer(16),
+          }),
+        ]);
+
+        const result = Interpreter.matchOperator(right, left, context);
+
+        assertBoxedStrictEqual(result, right);
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {value: Type.float(123.4375)},
+        });
+      });
+
+      // <<_value::float-size(size)-signed>> = <<1::1, 0::1, 1::1, 0::1, 1::1, 0::1, 1::1, 0::1>>
+      it("float type modifier, unsupported size modifier", () => {
+        const left = Type.bitstringPattern([
+          Type.bitstringSegment(Type.variablePattern("value"), {
+            type: "float",
+            size: Type.integer(8),
+            signedness: "signed",
+          }),
+        ]);
+
+        // 170 == 0b10101010
+        const right = Type.bitstring([1, 0, 1, 0, 1, 0, 1, 0]);
+
+        assertBoxedError(
+          () => Interpreter.matchOperator(right, left, context),
+          "MatchError",
+          buildMatchErrorMsg(right),
+        );
+      });
+
+      // <<value::integer-signed>> = <<1::1, 0::1, 1::1, 0::1, 1::1, 0::1, 1::1, 0::1>>
+      it("integer type modifier", () => {
+        const left = Type.bitstringPattern([
+          Type.bitstringSegment(Type.variablePattern("value"), {
+            type: "integer",
+            signedness: "signed",
+          }),
+        ]);
+
+        // 170 == 0b10101010
+        const right = Type.bitstring([1, 0, 1, 0, 1, 0, 1, 0]);
+
+        const result = Interpreter.matchOperator(right, left, context);
+
+        assertBoxedStrictEqual(result, right);
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {value: Type.integer(-86)},
+        });
+      });
+
+      // <value::utf8-signed>> won't compile
+      // it("utf8 type modifier")
+
+      // <value::utf16-signed>> won't compile
+      // it("utf16 type modifier")
+
+      // <value::utf32-signed>> won't compile
+      // it("utf32 type modifier")
+    });
+
+    describe("bitstring segment decoding, unsigned modifier", () => {
+      // <<value::unsigned>> = <<1::1, 0::1, 1::1, 0::1, 1::1, 0::1, 1::1, 0::1>>
+      // The test would be the same as "integer type modifier", because the encoder always specifies the segment's type.
+      // it("no type modifier")
+
+      // <<value::binary-unsigned>> won't compile
+      // it("binary type modifier")
+
+      // <<value::bitstring-unsigned>> won't compile
+      // it("bitstring type modifier")
+
+      // <<value::float-size(64)-unsigned>> = <<123.45::size(64)>>
+      it("float type modifier, 64-bit size modifier", () => {
+        const left = Type.bitstringPattern([
+          Type.bitstringSegment(Type.variablePattern("value"), {
+            type: "float",
+            size: Type.integer(64),
+            signedness: "unsigned",
+          }),
+        ]);
+
+        const right = Type.bitstring([
+          Type.bitstringSegment(Type.float(123.45), {
+            type: "float",
+            size: Type.integer(64),
+          }),
+        ]);
+
+        const result = Interpreter.matchOperator(right, left, context);
+
+        assertBoxedStrictEqual(result, right);
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {value: Type.float(123.45)},
+        });
+      });
+
+      // <<value::float-size(32)-unsigned>> = <<123.45::size(32)>>
+      it("float type modifier, 32-bit size modifier", () => {
+        const left = Type.bitstringPattern([
+          Type.bitstringSegment(Type.variablePattern("value"), {
+            type: "float",
+            size: Type.integer(32),
+            signedness: "unsigned",
+          }),
+        ]);
+
+        const right = Type.bitstring([
+          Type.bitstringSegment(Type.float(123.45), {
+            type: "float",
+            size: Type.integer(32),
+          }),
+        ]);
+
+        const result = Interpreter.matchOperator(right, left, context);
+
+        assertBoxedStrictEqual(result, right);
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {value: Type.float(123.44999694824219)},
+        });
+      });
+
+      // <<value::float-size(16)-unsigned>> = <<123.45::size(16)>>
+      it("float type modifier, 16-bit size modifier", () => {
+        const left = Type.bitstringPattern([
+          Type.bitstringSegment(Type.variablePattern("value"), {
+            type: "float",
+            size: Type.integer(16),
+            signedness: "unsigned",
+          }),
+        ]);
+
+        const right = Type.bitstring([
+          Type.bitstringSegment(Type.float(123.45), {
+            type: "float",
+            size: Type.integer(16),
+          }),
+        ]);
+
+        const result = Interpreter.matchOperator(right, left, context);
+
+        assertBoxedStrictEqual(result, right);
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {value: Type.float(123.4375)},
+        });
+      });
+
+      // <<_value::float-size(size)-unsigned>> = <<1::1, 0::1, 1::1, 0::1, 1::1, 0::1, 1::1, 0::1>>
+      it("float type modifier, unsupported size modifier", () => {
+        const left = Type.bitstringPattern([
+          Type.bitstringSegment(Type.variablePattern("value"), {
+            type: "float",
+            size: Type.integer(8),
+            signedness: "unsigned",
+          }),
+        ]);
+
+        // 170 == 0b10101010
+        const right = Type.bitstring([1, 0, 1, 0, 1, 0, 1, 0]);
+
+        assertBoxedError(
+          () => Interpreter.matchOperator(right, left, context),
+          "MatchError",
+          buildMatchErrorMsg(right),
+        );
+      });
+
+      // <<value::integer-unsigned>> = <<1::1, 0::1, 1::1, 0::1, 1::1, 0::1, 1::1, 0::1>>
+      it("integer type modifier", () => {
+        const left = Type.bitstringPattern([
+          Type.bitstringSegment(Type.variablePattern("value"), {
+            type: "integer",
+            signedness: "unsigned",
+          }),
+        ]);
+
+        // 170 == 0b10101010
+        const right = Type.bitstring([1, 0, 1, 0, 1, 0, 1, 0]);
+
+        const result = Interpreter.matchOperator(right, left, context);
+
+        assertBoxedStrictEqual(result, right);
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {value: Type.integer(170)},
+        });
+      });
+
+      // <value::utf8-unsigned>> won't compile
+      // it("utf8 type modifier")
+
+      // <value::utf16-unsigned>> won't compile
+      // it("utf16 type modifier")
+
+      // <value::utf32-unsigned>> won't compile
+      // it("utf32 type modifier")
+    });
+
+    // TODO: finish overhaul, remember about Elixir consistency tests
+    // describe("cons pattern", () => {
+    //   describe("[h | t]", () => {
+    //     let left;
+    //     beforeEach(() => {
+    //       left = Type.consPattern(
+    //         Type.variablePattern("h"),
+    //         Type.variablePattern("t"),
+    //       );
+    //     });
+    //     it("[h | t] = 1", () => {
+    //       const right = Type.integer(1);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | t] = []", () => {
+    //       const right = Type.list();
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | t] = [1]", () => {
+    //       const right = Type.list([Type.integer(1)]);
+    //       const result = Interpreter.matchOperator(right, left, vars);
+    //       assert.deepStrictEqual(result, right);
+    //       assert.deepStrictEqual(vars, {
+    //         a: Type.integer(9),
+    //         h: Type.integer(1),
+    //         t: Type.list(),
+    //       });
+    //     });
+    //     it("[h | t] = [1, 2]", () => {
+    //       const right = Type.list([Type.integer(1), Type.integer(2)]);
+    //       const result = Interpreter.matchOperator(right, left, vars);
+    //       assert.deepStrictEqual(result, right);
+    //       assert.deepStrictEqual(vars, {
+    //         a: Type.integer(9),
+    //         h: Type.integer(1),
+    //         t: Type.list([Type.integer(2)]),
+    //       });
+    //     });
+    //     it("[h | t] = [1 | 2]", () => {
+    //       const right = Type.improperList([Type.integer(1), Type.integer(2)]);
+    //       const result = Interpreter.matchOperator(right, left, vars);
+    //       assert.deepStrictEqual(result, right);
+    //       assert.deepStrictEqual(vars, {
+    //         a: Type.integer(9),
+    //         h: Type.integer(1),
+    //         t: Type.integer(2),
+    //       });
+    //     });
+    //     it("[h | t] = [1, 2, 3]", () => {
+    //       const right = Type.list([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       const result = Interpreter.matchOperator(right, left, vars);
+    //       assert.deepStrictEqual(result, right);
+    //       assert.deepStrictEqual(vars, {
+    //         a: Type.integer(9),
+    //         h: Type.integer(1),
+    //         t: Type.list([Type.integer(2), Type.integer(3)]),
+    //       });
+    //     });
+    //     it("[h | t] = [1, 2 | 3]", () => {
+    //       const right = Type.improperList([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       const result = Interpreter.matchOperator(right, left, vars);
+    //       assert.deepStrictEqual(result, right);
+    //       assert.deepStrictEqual(vars, {
+    //         a: Type.integer(9),
+    //         h: Type.integer(1),
+    //         t: Type.improperList([Type.integer(2), Type.integer(3)]),
+    //       });
+    //     });
+    //   });
+    //   describe("[1 | t]", () => {
+    //     let left;
+    //     beforeEach(() => {
+    //       left = Type.consPattern(Type.integer(1), Type.variablePattern("t"));
+    //     });
+    //     it("[1 | t] = 1", () => {
+    //       const right = Type.integer(1);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[1 | t] = []", () => {
+    //       const right = Type.list();
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[1 | t] = [1]", () => {
+    //       const right = Type.list([Type.integer(1)]);
+    //       const result = Interpreter.matchOperator(right, left, vars);
+    //       assert.deepStrictEqual(result, right);
+    //       assert.deepStrictEqual(vars, {
+    //         a: Type.integer(9),
+    //         t: Type.list(),
+    //       });
+    //     });
+    //     it("[1 | t] = [5]", () => {
+    //       const right = Type.list([Type.integer(5)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[1 | t] = [1, 2]", () => {
+    //       const right = Type.list([Type.integer(1), Type.integer(2)]);
+    //       const result = Interpreter.matchOperator(right, left, vars);
+    //       assert.deepStrictEqual(result, right);
+    //       assert.deepStrictEqual(vars, {
+    //         a: Type.integer(9),
+    //         t: Type.list([Type.integer(2)]),
+    //       });
+    //     });
+    //     it("[1 | t] = [5, 2]", () => {
+    //       const right = Type.list([Type.integer(5), Type.integer(2)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[1 | t] = [1 | 2]", () => {
+    //       const right = Type.improperList([Type.integer(1), Type.integer(2)]);
+    //       const result = Interpreter.matchOperator(right, left, vars);
+    //       assert.deepStrictEqual(result, right);
+    //       assert.deepStrictEqual(vars, {
+    //         a: Type.integer(9),
+    //         t: Type.integer(2),
+    //       });
+    //     });
+    //     it("[1 | t] = [5 | 2]", () => {
+    //       const right = Type.improperList([Type.integer(5), Type.integer(2)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[1 | t] = [1, 2, 3]", () => {
+    //       const right = Type.list([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       const result = Interpreter.matchOperator(right, left, vars);
+    //       assert.deepStrictEqual(result, right);
+    //       assert.deepStrictEqual(vars, {
+    //         a: Type.integer(9),
+    //         t: Type.list([Type.integer(2), Type.integer(3)]),
+    //       });
+    //     });
+    //     it("[1 | t] = [5, 2, 3]", () => {
+    //       const right = Type.list([
+    //         Type.integer(5),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[1 | t] = [1, 2 | 3]", () => {
+    //       const right = Type.improperList([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       const result = Interpreter.matchOperator(right, left, vars);
+    //       assert.deepStrictEqual(result, right);
+    //       assert.deepStrictEqual(vars, {
+    //         a: Type.integer(9),
+    //         t: Type.improperList([Type.integer(2), Type.integer(3)]),
+    //       });
+    //     });
+    //     it("[1 | t] = [5, 2 | 3]", () => {
+    //       const right = Type.improperList([
+    //         Type.integer(5),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //   });
+    //   describe("[h | 3]", () => {
+    //     let left;
+    //     beforeEach(() => {
+    //       left = Type.consPattern(Type.variablePattern("h"), Type.integer(3));
+    //     });
+    //     it("[h | 3] = 3", () => {
+    //       const right = Type.integer(3);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | 3] = []", () => {
+    //       const right = Type.list();
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | 3] = [3]", () => {
+    //       const right = Type.list([Type.integer(3)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | 3] = [2, 3]", () => {
+    //       const right = Type.list([Type.integer(2), Type.integer(3)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | 3] = [2 | 3]", () => {
+    //       const right = Type.improperList([Type.integer(2), Type.integer(3)]);
+    //       const result = Interpreter.matchOperator(right, left, vars);
+    //       assert.deepStrictEqual(result, right);
+    //       assert.deepStrictEqual(vars, {
+    //         a: Type.integer(9),
+    //         h: Type.integer(2),
+    //       });
+    //     });
+    //     it("[h | 3] = [1, 2, 3]", () => {
+    //       const right = Type.list([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | 3] = [1, 2 | 3]", () => {
+    //       const right = Type.improperList([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //   });
+    //   describe("[h | []]", () => {
+    //     let left;
+    //     beforeEach(() => {
+    //       left = Type.consPattern(Type.variablePattern("h"), Type.list());
+    //     });
+    //     it("[h | []] = 3", () => {
+    //       const right = Type.integer(3);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | []] = []", () => {
+    //       const right = Type.list();
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | []] = [3]", () => {
+    //       const right = Type.list([Type.integer(3)]);
+    //       const result = Interpreter.matchOperator(right, left, vars);
+    //       assert.deepStrictEqual(result, right);
+    //       assert.deepStrictEqual(vars, {
+    //         a: Type.integer(9),
+    //         h: Type.integer(3),
+    //       });
+    //     });
+    //     it("[h | []] = [2, 3]", () => {
+    //       const right = Type.list([Type.integer(2), Type.integer(3)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | []] = [2 | 3]", () => {
+    //       const right = Type.improperList([Type.integer(2), Type.integer(3)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | []] = [1, 2, 3]", () => {
+    //       const right = Type.list([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | []] = [1, 2 | 3]", () => {
+    //       const right = Type.improperList([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //   });
+    //   describe("[h | [3]]", () => {
+    //     let left;
+    //     beforeEach(() => {
+    //       left = Type.consPattern(
+    //         Type.variablePattern("h"),
+    //         Type.list([Type.integer(3)]),
+    //       );
+    //     });
+    //     it("[h | [3]] = 3", () => {
+    //       const right = Type.integer(3);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [3]] = []", () => {
+    //       const right = Type.list();
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [3]] = [3]", () => {
+    //       const right = Type.list([Type.integer(3)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [3]] = [2, 3]", () => {
+    //       const right = Type.list([Type.integer(2), Type.integer(3)]);
+    //       const result = Interpreter.matchOperator(right, left, vars);
+    //       assert.deepStrictEqual(result, right);
+    //       assert.deepStrictEqual(vars, {
+    //         a: Type.integer(9),
+    //         h: Type.integer(2),
+    //       });
+    //     });
+    //     it("[h | [3]] = [2 | 3]", () => {
+    //       const right = Type.improperList([Type.integer(2), Type.integer(3)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [3]] = [1, 2, 3]", () => {
+    //       const right = Type.list([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [3]] = [1, 2 | 3]", () => {
+    //       const right = Type.improperList([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //   });
+    //   describe("[h | [2, 3]]", () => {
+    //     let left;
+    //     beforeEach(() => {
+    //       left = Type.consPattern(
+    //         Type.variablePattern("h"),
+    //         Type.list([Type.integer(2), Type.integer(3)]),
+    //       );
+    //     });
+    //     it("[h | [2, 3]] = 3", () => {
+    //       const right = Type.integer(3);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [2, 3]] = []", () => {
+    //       const right = Type.list();
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [2, 3]] = [3]", () => {
+    //       const right = Type.list([Type.integer(3)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [2, 3]] = [2, 3]", () => {
+    //       const right = Type.list([Type.integer(2), Type.integer(3)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [2, 3]] = [2 | 3]", () => {
+    //       const right = Type.improperList([Type.integer(2), Type.integer(3)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [2, 3]] = [1, 2, 3]", () => {
+    //       const right = Type.list([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       const result = Interpreter.matchOperator(right, left, vars);
+    //       assert.deepStrictEqual(result, right);
+    //       assert.deepStrictEqual(vars, {
+    //         a: Type.integer(9),
+    //         h: Type.integer(1),
+    //       });
+    //     });
+    //     it("[h | [2, 3]] = [1, 2 | 3]", () => {
+    //       const right = Type.improperList([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //   });
+    //   describe("[h | [2 | 3]]", () => {
+    //     let left;
+    //     beforeEach(() => {
+    //       left = Type.consPattern(
+    //         Type.variablePattern("h"),
+    //         Type.consPattern(Type.integer(2), Type.integer(3)),
+    //       );
+    //     });
+    //     it("[h | [2 | 3]] = 3", () => {
+    //       const right = Type.integer(3);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [2 | 3]] = []", () => {
+    //       const right = Type.list();
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [2 | 3]] = [3]", () => {
+    //       const right = Type.list([Type.integer(3)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [2 | 3]] = [2, 3]", () => {
+    //       const right = Type.list([Type.integer(2), Type.integer(3)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [2 | 3]] = [2 | 3]", () => {
+    //       const right = Type.improperList([Type.integer(2), Type.integer(3)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [2 | 3]] = [1, 2, 3]", () => {
+    //       const right = Type.list([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [2 | 3]] = [1, 2 | 3]", () => {
+    //       const right = Type.improperList([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       const result = Interpreter.matchOperator(right, left, vars);
+    //       assert.deepStrictEqual(result, right);
+    //       assert.deepStrictEqual(vars, {
+    //         a: Type.integer(9),
+    //         h: Type.integer(1),
+    //       });
+    //     });
+    //   });
+    //   describe("[h | [1, 2, 3]]", () => {
+    //     let left;
+    //     beforeEach(() => {
+    //       left = Type.consPattern(
+    //         Type.variablePattern("h"),
+    //         Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]),
+    //       );
+    //     });
+    //     it("[h | [1, 2, 3]] = 3", () => {
+    //       const right = Type.integer(3);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [1, 2, 3]] = []", () => {
+    //       const right = Type.list();
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [1, 2, 3]] = [3]", () => {
+    //       const right = Type.list([Type.integer(3)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [1, 2, 3]] = [2, 3]", () => {
+    //       const right = Type.list([Type.integer(2), Type.integer(3)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [1, 2, 3]] = [2 | 3]", () => {
+    //       const right = Type.improperList([Type.integer(2), Type.integer(3)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [1, 2, 3]] = [1, 2, 3]", () => {
+    //       const right = Type.list([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [1, 2, 3]] = [1, 2 | 3]", () => {
+    //       const right = Type.improperList([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //   });
+    //   describe("[h | [1, 2 | 3]]", () => {
+    //     let left;
+    //     beforeEach(() => {
+    //       left = Type.consPattern(
+    //         Type.variablePattern("h"),
+    //         Type.consPattern(
+    //           Type.integer(1),
+    //           Type.consPattern(Type.integer(2), Type.integer(3)),
+    //         ),
+    //       );
+    //     });
+    //     it("[h | [1, 2 | 3]] = 3", () => {
+    //       const right = Type.integer(3);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [1, 2 | 3]] = []", () => {
+    //       const right = Type.list();
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [1, 2 | 3]] = [3]", () => {
+    //       const right = Type.list([Type.integer(3)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [1, 2 | 3]] = [2, 3]", () => {
+    //       const right = Type.list([Type.integer(2), Type.integer(3)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [1, 2 | 3]] = [2 | 3]", () => {
+    //       const right = Type.improperList([Type.integer(2), Type.integer(3)]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [1, 2 | 3]] = [1, 2, 3]", () => {
+    //       const right = Type.list([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[h | [1, 2 | 3]] = [1, 2 | 3]", () => {
+    //       const right = Type.improperList([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //   });
+    //   describe("[1 | [2 | [3 | []]]]", () => {
+    //     let left;
+    //     beforeEach(() => {
+    //       left = Type.consPattern(
+    //         Type.integer(1),
+    //         Type.consPattern(
+    //           Type.integer(2),
+    //           Type.consPattern(Type.integer(3), Type.list()),
+    //         ),
+    //       );
+    //     });
+    //     it("[1 | [2 | [3 | []]]] = [1, 2, 3, 4]", () => {
+    //       const right = Type.list([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //         Type.integer(4),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[1 | [2 | [3 | []]]] = [1, 2, 3 | 4]", () => {
+    //       const right = Type.improperList([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //         Type.integer(4),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[1 | [2 | [3 | []]]] = [1, 2, 3]", () => {
+    //       const right = Type.list([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       const result = Interpreter.matchOperator(right, left, vars);
+    //       assert.deepStrictEqual(result, right);
+    //       assert.deepStrictEqual(vars, {a: Type.integer(9)});
+    //     });
+    //   });
+    //   describe("[1 | [2 | [3 | 4]]]", () => {
+    //     let left;
+    //     beforeEach(() => {
+    //       left = Type.consPattern(
+    //         Type.integer(1),
+    //         Type.consPattern(
+    //           Type.integer(2),
+    //           Type.consPattern(Type.integer(3), Type.integer(4)),
+    //         ),
+    //       );
+    //     });
+    //     it("[1 | [2 | [3 | 4]]] = [1, 2, 3, 4]", () => {
+    //       const right = Type.list([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //         Type.integer(4),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[1 | [2 | [3 | 4]]] = [1, 2, 3 | 4]", () => {
+    //       const right = Type.improperList([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //         Type.integer(4),
+    //       ]);
+    //       const result = Interpreter.matchOperator(right, left, vars);
+    //       assert.deepStrictEqual(result, right);
+    //       assert.deepStrictEqual(vars, {a: Type.integer(9)});
+    //     });
+    //     it("[1 | [2 | [3 | 4]]] = [1, 2, 3]", () => {
+    //       const right = Type.list([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //   });
+    //   describe("[1 | [2 | [3 | [4]]]]", () => {
+    //     let left;
+    //     beforeEach(() => {
+    //       left = Type.consPattern(
+    //         Type.integer(1),
+    //         Type.consPattern(
+    //           Type.integer(2),
+    //           Type.consPattern(Type.integer(3), Type.list([Type.integer(4)])),
+    //         ),
+    //       );
+    //     });
+    //     it("[1 | [2 | [3 | [4]]]] = [1, 2, 3, 4]", () => {
+    //       const right = Type.list([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //         Type.integer(4),
+    //       ]);
+    //       const result = Interpreter.matchOperator(right, left, vars);
+    //       assert.deepStrictEqual(result, right);
+    //       assert.deepStrictEqual(vars, {a: Type.integer(9)});
+    //     });
+    //     it("[1 | [2 | [3 | [4]]]] = [1, 2, 3 | 4]", () => {
+    //       const right = Type.improperList([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //         Type.integer(4),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //     it("[1 | [2 | [3 | [4]]]] = [1, 2, 3]", () => {
+    //       const right = Type.list([
+    //         Type.integer(1),
+    //         Type.integer(2),
+    //         Type.integer(3),
+    //       ]);
+    //       assertMatchError(
+    //         () => Interpreter.matchOperator(right, left, vars),
+    //         right,
+    //       );
+    //     });
+    //   });
+    // });
+
+    // TODO: finish overhaul, remember about Elixir consistency tests
+    // describe("float type", () => {
+    //   it("left float == right float", () => {
+    //     // 2.0 = 2.0
+    //     const result = Interpreter.matchOperator(
+    //       Type.float(2.0),
+    //       Type.float(2.0),
+    //       vars,
+    //     );
+    //     assert.deepStrictEqual(result, Type.float(2.0));
+    //     assert.deepStrictEqual(vars, {a: Type.integer(9)});
+    //   });
+    //   it("left float != right float", () => {
+    //     const myFloat = Type.float(3.0);
+    //     // 2.0 = 3.0
+    //     assertMatchError(
+    //       () => Interpreter.matchOperator(myFloat, Type.float(2.0), vars),
+    //       myFloat,
+    //     );
+    //   });
+    //   it("left float != right non-float", () => {
+    //     const myAtom = Type.atom("abc");
+    //     // 2.0 = :abc
+    //     assertMatchError(
+    //       () => Interpreter.matchOperator(myAtom, Type.float(2.0), vars),
+    //       myAtom,
+    //     );
+    //   });
+    // });
+
+    // TODO: finish overhaul, remember about Elixir consistency tests
+    // describe("integer type", () => {
+    //   it("left integer == right integer", () => {
+    //     // 2 = 2
+    //     const result = Interpreter.matchOperator(
+    //       Type.integer(2),
+    //       Type.integer(2),
+    //       vars,
+    //     );
+    //     assert.deepStrictEqual(result, Type.integer(2));
+    //     assert.deepStrictEqual(vars, {a: Type.integer(9)});
+    //   });
+    //   it("left integer != right integer", () => {
+    //     const myInteger = Type.integer(3);
+    //     // 2 = 3
+    //     assertMatchError(
+    //       () => Interpreter.matchOperator(myInteger, Type.integer(2), vars),
+    //       myInteger,
+    //     );
+    //   });
+    //   it("left integer != right non-integer", () => {
+    //     const myAtom = Type.atom("abc");
+    //     // 2 = :abc
+    //     assertMatchError(
+    //       () => Interpreter.matchOperator(myAtom, Type.integer(2), vars),
+    //       myAtom,
+    //     );
+    //   });
+    // });
+
+    // TODO: finish overhaul, remember about Elixir consistency tests
+    // describe("list type", () => {
+    //   let list1;
+    //   beforeEach(() => {
+    //     list1 = Type.list([Type.integer(1), Type.integer(2)]);
+    //   });
+    //   it("[1, 2] = [1, 2]", () => {
+    //     const result = Interpreter.matchOperator(list1, list1, vars);
+    //     assert.deepStrictEqual(result, list1);
+    //     assert.deepStrictEqual(vars, {a: Type.integer(9)});
+    //   });
+    //   it("[1, 2] = [1, 3]", () => {
+    //     const list2 = Type.list([Type.integer(1), Type.integer(3)]);
+    //     assertMatchError(
+    //       () => Interpreter.matchOperator(list2, list1, vars),
+    //       list2,
+    //     );
+    //   });
+    //   it("[1, 2] = [1 | 2]", () => {
+    //     const list2 = Type.improperList([Type.integer(1), Type.integer(2)]);
+    //     assertMatchError(
+    //       () => Interpreter.matchOperator(list2, list1, vars),
+    //       list2,
+    //     );
+    //   });
+    //   it("[1, 2] = :abc", () => {
+    //     const myAtom = Type.atom("abc");
+    //     assertMatchError(
+    //       () => Interpreter.matchOperator(myAtom, list1, vars),
+    //       myAtom,
+    //     );
+    //   });
+    //   it("[] = [1, 2]", () => {
+    //     assertMatchError(
+    //       () => Interpreter.matchOperator(list1, Type.list(), vars),
+    //       list1,
+    //     );
+    //   });
+    //   it("[1, 2] = []", () => {
+    //     const emptyList = Type.list();
+    //     assertMatchError(
+    //       () => Interpreter.matchOperator(emptyList, list1, vars),
+    //       emptyList,
+    //     );
+    //   });
+    //   it("[] = []", () => {
+    //     const emptyList = Type.list();
+    //     const result = Interpreter.matchOperator(emptyList, emptyList, vars);
+    //     assert.deepStrictEqual(result, emptyList);
+    //     assert.deepStrictEqual(vars, {a: Type.integer(9)});
+    //   });
+    //   it("[x, 2, y] = [1, 2, 3]", () => {
+    //     const left = Type.list([
+    //       Type.variablePattern("x"),
+    //       Type.integer(2),
+    //       Type.variablePattern("y"),
+    //     ]);
+    //     const right = Type.list([
+    //       Type.integer(1),
+    //       Type.integer(2),
+    //       Type.integer(3),
+    //     ]);
+    //     const result = Interpreter.matchOperator(right, left, vars);
+    //     assert.deepStrictEqual(result, right);
+    //     const expectedVars = {
+    //       a: Type.integer(9),
+    //       x: Type.integer(1),
+    //       y: Type.integer(3),
+    //     };
+    //     assert.deepStrictEqual(vars, expectedVars);
+    //   });
+    // });
+
+    describe("map type", () => {
+      const map = Type.map([
+        [Type.atom("x"), Type.integer(1)],
+        [Type.atom("y"), Type.integer(2)],
+      ]);
+
+      const emptyMap = Type.map();
+
+      // %{x: 1, y: 2} = %{x: 1, y: 2}
+      it("left and right maps have the same items", () => {
+        const left = map;
+        const right = structuredClone(map);
+        const result = Interpreter.matchOperator(right, left, context);
+
+        assert.deepStrictEqual(result, right);
+        assert.deepStrictEqual(context.vars, varsWithEmptyMatchedValues);
+      });
+
+      // %{x: 1, y: 2} = %{x: 1, y: 2, z: 3}
+      it("right map has all the same items as the left map plus additional ones", () => {
+        const left = map;
+
+        const right = Type.map([
+          [Type.atom("x"), Type.integer(1)],
+          [Type.atom("y"), Type.integer(2)],
+          [Type.atom("z"), Type.integer(3)],
+        ]);
+
+        const result = Interpreter.matchOperator(right, left, context);
+
+        assert.deepStrictEqual(result, right);
+        assert.deepStrictEqual(context.vars, varsWithEmptyMatchedValues);
+      });
+
+      // %{x: 1, y: 2, z: 3} = %{x: 1, y: 2}
+      // The error message on the client may have diffent map keys ordering (the map keys order in Elixir is unpredictable).
+      it("right map is missing some some keys from the left map", () => {
+        const left = Type.map([
+          [Type.atom("x"), Type.integer(1)],
+          [Type.atom("y"), Type.integer(2)],
+          [Type.atom("z"), Type.integer(3)],
+        ]);
+
+        const right = map;
+
+        assertBoxedError(
+          () => Interpreter.matchOperator(right, left, context),
+          "MatchError",
+          buildMatchErrorMsg(right),
+        );
+      });
+
+      // %{x: 1, y: 2} = %{x: 1, y: 3}
+      // The error message on the client may have diffent map keys ordering (the map keys order in Elixir is unpredictable).
+      it("some values in the left map don't match values in the right map", () => {
+        const left = map;
+
+        const right = Type.map([
+          [Type.atom("x"), Type.integer(1)],
+          [Type.atom("y"), Type.integer(3)],
+        ]);
+
+        assertBoxedError(
+          () => Interpreter.matchOperator(right, left, context),
+          "MatchError",
+          buildMatchErrorMsg(right),
+        );
+      });
+
+      // %{x: 1, y: 2} = :abc
+      it("left map != right non-map", () => {
+        const left = map;
+        const right = Type.atom("abc");
+
+        assertBoxedError(
+          () => Interpreter.matchOperator(right, left, context),
+          "MatchError",
+          buildMatchErrorMsg(right),
+        );
+      });
+
+      // {k: x, m: 2, n: z} = %{k: 1, m: 2, n: 3}
+      it("left map has variables", () => {
+        const left = Type.map([
+          [Type.atom("k"), Type.variablePattern("x")],
+          [Type.atom("m"), Type.integer(2)],
+          [Type.atom("n"), Type.variablePattern("z")],
+        ]);
+
+        const right = Type.map([
+          [Type.atom("k"), Type.integer(1)],
+          [Type.atom("m"), Type.integer(2)],
+          [Type.atom("n"), Type.integer(3)],
+        ]);
+
+        const result = Interpreter.matchOperator(right, left, context);
+
+        assert.deepStrictEqual(result, right);
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            x: Type.integer(1),
+            z: Type.integer(3),
+          },
+        });
+      });
+
+      // %{x: 1, y: 2} = %{}
+      it("left is a non-empty map, right is an empty map", () => {
+        const left = map;
+        const right = emptyMap;
+
+        assertBoxedError(
+          () => Interpreter.matchOperator(right, left, context),
+          "MatchError",
+          buildMatchErrorMsg(right),
+        );
+      });
+
+      // %{} = %{x: 1, y: 2}
+      it("left is an empty map, right is a non-empty map", () => {
+        const left = emptyMap;
+        const right = map;
+        const result = Interpreter.matchOperator(right, left, context);
+
+        assert.deepStrictEqual(result, right);
+
+        assert.deepStrictEqual(context.vars, varsWithEmptyMatchedValues);
+      });
+
+      // %{} = %{}
+      it("both left and right maps are empty", () => {
+        const left = emptyMap;
+        const right = emptyMap;
+        const result = Interpreter.matchOperator(right, left, context);
+
+        assert.deepStrictEqual(result, right);
+
+        assert.deepStrictEqual(context.vars, varsWithEmptyMatchedValues);
+      });
+    });
+
+    // A match inside a pattern constrains the term from both sides, so a
+    // variable on either side binds to the term rather than to what stands
+    // opposite it.
+    describe("match pattern", () => {
+      const term = Type.map([
+        [Type.atom("a"), Type.integer(1)],
+        [Type.atom("b"), Type.integer(2)],
+      ]);
+
+      const constraint = Type.map([[Type.atom("a"), Type.integer(1)]]);
+
+      // %{a: 1} = x = %{a: 1, b: 2}
+      it("binds a variable standing on the right of the match", () => {
+        const pattern = Type.matchPattern(constraint, Type.variablePattern("x"));
+
+        const result = Interpreter.matchOperator(term, pattern, context);
+
+        assert.deepStrictEqual(result, term);
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {x: term},
+        });
+      });
+
+      // x = %{a: 1} = %{a: 1, b: 2}
+      it("binds a variable standing on the left of the match", () => {
+        const pattern = Type.matchPattern(Type.variablePattern("x"), constraint);
+
+        const result = Interpreter.matchOperator(term, pattern, context);
+
+        assert.deepStrictEqual(result, term);
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {x: term},
+        });
+      });
+
+      // x = %{a: 3}, matched against %{a: 1, b: 2} without raising
+      it("fails on a constraint standing on the right of the match", () => {
+        const pattern = Type.matchPattern(
+          Type.variablePattern("x"),
+          Type.map([[Type.atom("a"), Type.integer(3)]]),
+        );
+
+        const result = Interpreter.matchOperator(term, pattern, context, false);
+
+        assert.isFalse(result);
+      });
+
+      // %{a: 3} = x, matched against %{a: 1, b: 2} without raising
+      it("fails on a constraint standing on the left of the match", () => {
+        const pattern = Type.matchPattern(
+          Type.map([[Type.atom("a"), Type.integer(3)]]),
+          Type.variablePattern("x"),
+        );
+
+        const result = Interpreter.matchOperator(term, pattern, context, false);
+
+        assert.isFalse(result);
+      });
+
+      // %{a: 3} = x = %{a: 1, b: 2}
+      it("raises when the term fails the constraint standing beside it", () => {
+        const pattern = Type.matchPattern(
+          Type.map([[Type.atom("a"), Type.integer(3)]]),
+          Type.variablePattern("x"),
+        );
+
+        assertBoxedError(
+          () => Interpreter.matchOperator(term, pattern, context),
+          "MatchError",
+          buildMatchErrorMsg(term),
+        );
+      });
+    });
+
+    describe("match placeholder", () => {
+      it("on the left", () => {
+        // _placeholder = 2
+        const result = Interpreter.matchOperator(Type.integer(2), Type.matchPlaceholder(), context);
+
+        assert.deepStrictEqual(result, Type.integer(2));
+
+        // Verify no variable was bound from the placeholder
+        assert.deepStrictEqual(context.vars, varsWithEmptyMatchedValues);
+      });
+
+      it("on the right", () => {
+        const expectedVars = {...varsWithEmptyMatchedValues};
+        delete expectedVars.__matched__;
+
+        // fn 2 = _placeholder -> :ok end
+        const fun = Type.anonymousFunction(
+          1,
+          [
+            {
+              params: (context) => [
+                Interpreter.matchOperator(Type.matchPlaceholder(), Type.integer(2), context),
+              ],
+              guards: [],
+              body: (context) => {
+                // Unlike "on the left" which tests matchOperator() directly, this test uses
+                // callAnonymousFunction() which calls updateVarsToMatchedValues() after matching,
+                // deleting __matched__ from context.vars.
+                // Verify no variable was bound from the placeholder.
+                assert.deepStrictEqual(context.vars, expectedVars);
+
+                return Type.atom("ok");
+              },
+            },
+          ],
+          context,
+        );
+
+        const result = Interpreter.callAnonymousFunction(fun, [Type.integer(2)]);
+
+        assert.deepStrictEqual(result, Type.atom("ok"));
+      });
+
+      // <<prefix::size(8), _rest::binary>> = "hello"
+      it("last bitstring segment", () => {
+        const myBitstring = Type.bitstring("hello");
+
+        const result = Interpreter.matchOperator(
+          myBitstring,
+          Type.bitstringPattern([
+            Type.bitstringSegment(Type.variablePattern("prefix"), {
+              type: "integer",
+              size: Type.integer(8),
+            }),
+            Type.bitstringSegment(Type.matchPlaceholder(), {
+              type: "binary",
+            }),
+          ]),
+          context,
+        );
+
+        assertBoxedStrictEqual(result, myBitstring);
+
+        // Match placeholder doesn't bind to variables, so prefix should be the only variable
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            prefix: Type.integer(104),
+          },
+        });
+      });
+
+      // <<_prefix::size(8), rest::binary>> = "hello"
+      it("non-last bitstring segment", () => {
+        const myBitstring = Type.bitstring("hello");
+
+        const result = Interpreter.matchOperator(
+          myBitstring,
+          Type.bitstringPattern([
+            Type.bitstringSegment(Type.matchPlaceholder(), {
+              type: "integer",
+              size: Type.integer(8),
+            }),
+            Type.bitstringSegment(Type.variablePattern("rest"), {
+              type: "binary",
+            }),
+          ]),
+          context,
+        );
+
+        assertBoxedStrictEqual(result, myBitstring);
+
+        assertBoxedStrictEqual(context.vars.__matched__.rest, Type.bitstring("ello"));
+
+        // Match placeholder doesn't bind to variables, so only rest should be bound
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            rest: context.vars.__matched__.rest,
+          },
+        });
+      });
+    });
+
+    describe("nested match operators", () => {
+      it("x = 2 = 2", () => {
+        const result = Interpreter.matchOperator(
+          Interpreter.matchOperator(Type.integer(2), Type.integer(2), context),
+          Type.variablePattern("x"),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.integer(2));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            x: Type.integer(2),
+          },
+        });
+      });
+
+      it("x = 2 = 3", () => {
+        assertBoxedError(
+          () =>
+            Interpreter.matchOperator(
+              Interpreter.matchOperator(Type.integer(3), Type.integer(2), context),
+              Type.variablePattern("x"),
+              context,
+            ),
+          "MatchError",
+          buildMatchErrorMsg(Type.integer(3)),
+        );
+      });
+
+      it("2 = x = 2", () => {
+        const result = Interpreter.matchOperator(
+          Interpreter.matchOperator(Type.integer(2), Type.variablePattern("x"), context),
+          Type.integer(2),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.integer(2));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            x: Type.integer(2),
+          },
+        });
+      });
+
+      it("2 = x = 3", () => {
+        assertBoxedError(
+          () =>
+            Interpreter.matchOperator(
+              Interpreter.matchOperator(Type.integer(3), Type.variablePattern("x"), context),
+              Type.integer(2),
+              context,
+            ),
+          "MatchError",
+          buildMatchErrorMsg(Type.integer(3)),
+        );
+      });
+
+      it("2 = 2 = x, (x = 2)", () => {
+        const context = contextFixture({
+          vars: {
+            a: Type.integer(9),
+            x: Type.integer(2),
+          },
+        });
+
+        const result = Interpreter.matchOperator(
+          Interpreter.matchOperator(context.vars.x, Type.integer(2), context),
+          Type.integer(2),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.integer(2));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          x: Type.integer(2),
+          __matched__: {},
+        });
+      });
+
+      it("2 = 2 = x, (x = 3)", () => {
+        const context = contextFixture({
+          vars: {
+            a: Type.integer(9),
+            x: Type.integer(3),
+          },
+        });
+
+        assertBoxedError(
+          () =>
+            Interpreter.matchOperator(
+              Interpreter.matchOperator(context.vars.x, Type.integer(2), context),
+              Type.integer(2),
+              context,
+            ),
+          "MatchError",
+          buildMatchErrorMsg(context.vars.x),
+        );
+      });
+
+      it("1 = 2 = x, (x = 2)", () => {
+        const context = contextFixture({
+          vars: {
+            a: Type.integer(9),
+            x: Type.integer(2),
+          },
+        });
+
+        assertBoxedError(
+          () =>
+            Interpreter.matchOperator(
+              Interpreter.matchOperator(context.vars.x, Type.integer(2), context),
+              Type.integer(1),
+              context,
+            ),
+          "MatchError",
+          buildMatchErrorMsg(Type.integer(2)),
+        );
+      });
+
+      it("y = x + (x = 3) + x, (x = 11)", () => {
+        const context = contextFixture({
+          vars: {
+            a: Type.integer(9),
+            x: Type.integer(11),
+          },
+        });
+
+        const result = Interpreter.matchOperator(
+          Erlang["+/2"](
+            Erlang["+/2"](
+              context.vars.x,
+              Interpreter.matchOperator(Type.integer(3), Type.variablePattern("x"), context),
+            ),
+            context.vars.x,
+          ),
+          Type.variablePattern("y"),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.integer(25));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          x: Type.integer(11),
+          __matched__: {
+            x: Type.integer(3),
+            y: Type.integer(25),
+          },
+        });
+      });
+
+      it("[1 = 1] = [1 = 1]", () => {
+        const result = Interpreter.matchOperator(
+          Type.list([Interpreter.matchOperator(Type.integer(1), Type.integer(1), context)]),
+          Type.list([Interpreter.matchOperator(Type.integer(1), Type.integer(1), context)]),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(1)]));
+        assert.deepStrictEqual(context.vars, varsWithEmptyMatchedValues);
+      });
+
+      it("[1 = 1] = [1 = 2]", () => {
+        assertBoxedError(
+          () =>
+            Interpreter.matchOperator(
+              Type.list([Interpreter.matchOperator(Type.integer(2), Type.integer(1), context)]),
+              Type.list([Interpreter.matchOperator(Type.integer(1), Type.integer(1), context)]),
+              context,
+            ),
+          "MatchError",
+          buildMatchErrorMsg(Type.integer(2)),
+        );
+      });
+
+      it("[1 = 1] = [2 = 1]", () => {
+        assertBoxedError(
+          () =>
+            Interpreter.matchOperator(
+              Type.list([Interpreter.matchOperator(Type.integer(1), Type.integer(2), context)]),
+              Type.list([Interpreter.matchOperator(Type.integer(1), Type.integer(1), context)]),
+              context,
+            ),
+          "MatchError",
+          buildMatchErrorMsg(Type.integer(1)),
+        );
+      });
+
+      // TODO: client error message for this case is inconsistent with server error message (see test/elixir/hologram/ex_js_consistency/match_operator_test.exs)
+      it("[1 = 2] = [1 = 1]", () => {
+        assertBoxedError(
+          () =>
+            Interpreter.matchOperator(
+              Type.list([Interpreter.matchOperator(Type.integer(1), Type.integer(1), context)]),
+              Type.list([Interpreter.matchOperator(Type.integer(2), Type.integer(1), context)]),
+              context,
+            ),
+          "MatchError",
+          buildMatchErrorMsg(Type.integer(2)),
+        );
+      });
+
+      // TODO: client error message for this case is inconsistent with server error message (see test/elixir/hologram/ex_js_consistency/match_operator_test.exs)
+      it("[2 = 1] = [1 = 1]", () => {
+        assertBoxedError(
+          () =>
+            Interpreter.matchOperator(
+              Type.list([Interpreter.matchOperator(Type.integer(1), Type.integer(1), context)]),
+              Type.list([Interpreter.matchOperator(Type.integer(1), Type.integer(2), context)]),
+              context,
+            ),
+          "MatchError",
+          buildMatchErrorMsg(Type.integer(1)),
+        );
+      });
+
+      it("{a = b, 2, 3} = {1, c = d, 3} = {1, 2, e = f}", () => {
+        const context = contextFixture({
+          vars: {
+            a: Type.integer(9),
+            f: Type.integer(3),
+          },
+        });
+
+        const result = Interpreter.matchOperator(
+          Interpreter.matchOperator(
+            Type.tuple([
+              Type.integer(1),
+              Type.integer(2),
+              Interpreter.matchOperator(context.vars.f, Type.variablePattern("e"), context),
+            ]),
+            Type.tuple([
+              Type.integer(1),
+              Interpreter.matchOperator(
+                Type.variablePattern("d"),
+                Type.variablePattern("c"),
+                context,
+              ),
+              Type.integer(3),
+            ]),
+            context,
+          ),
+          Type.tuple([
+            Interpreter.matchOperator(
+              Type.variablePattern("b"),
+              Type.variablePattern("a"),
+              context,
+            ),
+            Type.integer(2),
+            Type.integer(3),
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.tuple([Type.integer(1), Type.integer(2), Type.integer(3)]),
+        );
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          f: Type.integer(3),
+          __matched__: {
+            a: Type.integer(1),
+            b: Type.integer(1),
+            c: Type.integer(2),
+            d: Type.integer(2),
+            e: Type.integer(3),
+          },
+        });
+      });
+    });
+
+    describe("nested match pattern (with uresolved variables)", () => {
+      it("[[a | b] = [c | d]] = [[1, 2, 3]]", () => {
+        const result = Interpreter.matchOperator(
+          Type.list([Type.list([Type.integer(1), Type.integer(2), Type.integer(3)])]),
+          Type.list([
+            Interpreter.matchOperator(
+              Type.consPattern(Type.variablePattern("c"), Type.variablePattern("d")),
+              Type.consPattern(Type.variablePattern("a"), Type.variablePattern("b")),
+              context,
+            ),
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([Type.list([Type.integer(1), Type.integer(2), Type.integer(3)])]),
+        );
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            a: Type.integer(1),
+            b: Type.list([Type.integer(2), Type.integer(3)]),
+            c: Type.integer(1),
+            d: Type.list([Type.integer(2), Type.integer(3)]),
+          },
+        });
+      });
+
+      it("[[[a | b] = [c | d]] = [[e | f]]] = [[[1, 2, 3]]]", () => {
+        const result = Interpreter.matchOperator(
+          Type.list([Type.list([Type.list([Type.integer(1), Type.integer(2), Type.integer(3)])])]),
+          Type.list([
+            Interpreter.matchOperator(
+              Type.list([Type.consPattern(Type.variablePattern("e"), Type.variablePattern("f"))]),
+              Type.list([
+                Interpreter.matchOperator(
+                  Type.consPattern(Type.variablePattern("c"), Type.variablePattern("d")),
+                  Type.consPattern(Type.variablePattern("a"), Type.variablePattern("b")),
+                  context,
+                ),
+              ]),
+              context,
+            ),
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([Type.list([Type.list([Type.integer(1), Type.integer(2), Type.integer(3)])])]),
+        );
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            a: Type.integer(1),
+            b: Type.list([Type.integer(2), Type.integer(3)]),
+            c: Type.integer(1),
+            d: Type.list([Type.integer(2), Type.integer(3)]),
+            e: Type.integer(1),
+            f: Type.list([Type.integer(2), Type.integer(3)]),
+          },
+        });
+      });
+
+      it("[[a, b] = [c, d]] = [[1, 2]]", () => {
+        const result = Interpreter.matchOperator(
+          Type.list([Type.list([Type.integer(1), Type.integer(2)])]),
+          Type.list([
+            Interpreter.matchOperator(
+              Type.list([Type.variablePattern("c"), Type.variablePattern("d")]),
+              Type.list([Type.variablePattern("a"), Type.variablePattern("b")]),
+              context,
+            ),
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.list([Type.list([Type.integer(1), Type.integer(2)])]));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            a: Type.integer(1),
+            b: Type.integer(2),
+            c: Type.integer(1),
+            d: Type.integer(2),
+          },
+        });
+      });
+
+      it("[[[a, b] = [c, d]] = [[e, f]]] = [[[1, 2]]]", () => {
+        const result = Interpreter.matchOperator(
+          Type.list([Type.list([Type.list([Type.integer(1), Type.integer(2)])])]),
+          Type.list([
+            Interpreter.matchOperator(
+              Type.list([Type.list([Type.variablePattern("e"), Type.variablePattern("f")])]),
+              Type.list([
+                Interpreter.matchOperator(
+                  Type.list([Type.variablePattern("c"), Type.variablePattern("d")]),
+                  Type.list([Type.variablePattern("a"), Type.variablePattern("b")]),
+                  context,
+                ),
+              ]),
+              context,
+            ),
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([Type.list([Type.list([Type.integer(1), Type.integer(2)])])]),
+        );
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            a: Type.integer(1),
+            b: Type.integer(2),
+            c: Type.integer(1),
+            d: Type.integer(2),
+            e: Type.integer(1),
+            f: Type.integer(2),
+          },
+        });
+      });
+
+      it("[x = y] = [1]", () => {
+        const result = Interpreter.matchOperator(
+          Type.list([Type.integer(1)]),
+          Type.list([
+            Interpreter.matchOperator(
+              Type.variablePattern("y"),
+              Type.variablePattern("x"),
+              context,
+            ),
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(1)]));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            x: Type.integer(1),
+            y: Type.integer(1),
+          },
+        });
+      });
+
+      it("[1 = x] = [1]", () => {
+        const result = Interpreter.matchOperator(
+          Type.list([Type.integer(1)]),
+          Type.list([
+            Interpreter.matchOperator(Type.variablePattern("x"), Type.integer(1), context),
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(1)]));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            x: Type.integer(1),
+          },
+        });
+      });
+
+      it("[x = 1] = [1]", () => {
+        const result = Interpreter.matchOperator(
+          Type.list([Type.integer(1)]),
+          Type.list([
+            Interpreter.matchOperator(Type.integer(1), Type.variablePattern("x"), context),
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(1)]));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            x: Type.integer(1),
+          },
+        });
+      });
+
+      it("[x = y = z] = [1]", () => {
+        const result = Interpreter.matchOperator(
+          Type.list([Type.integer(1)]),
+          Type.list([
+            Interpreter.matchOperator(
+              Interpreter.matchOperator(
+                Type.variablePattern("z"),
+                Type.variablePattern("y"),
+                context,
+              ),
+              Type.variablePattern("x"),
+              context,
+            ),
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(1)]));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            x: Type.integer(1),
+            y: Type.integer(1),
+            z: Type.integer(1),
+          },
+        });
+      });
+
+      it("[1 = x = y] = [1]", () => {
+        const result = Interpreter.matchOperator(
+          Type.list([Type.integer(1)]),
+          Type.list([
+            Interpreter.matchOperator(
+              Interpreter.matchOperator(
+                Type.variablePattern("y"),
+                Type.variablePattern("x"),
+                context,
+              ),
+              Type.integer(1),
+              context,
+            ),
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(1)]));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            x: Type.integer(1),
+            y: Type.integer(1),
+          },
+        });
+      });
+
+      it("[x = 1 = y] = [1]", () => {
+        const result = Interpreter.matchOperator(
+          Type.list([Type.integer(1)]),
+          Type.list([
+            Interpreter.matchOperator(
+              Interpreter.matchOperator(Type.variablePattern("y"), Type.integer(1), context),
+              Type.variablePattern("x"),
+              context,
+            ),
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(1)]));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            x: Type.integer(1),
+            y: Type.integer(1),
+          },
+        });
+      });
+
+      it("[x = y = 1] = [1]", () => {
+        const result = Interpreter.matchOperator(
+          Type.list([Type.integer(1)]),
+          Type.list([
+            Interpreter.matchOperator(
+              Interpreter.matchOperator(Type.integer(1), Type.variablePattern("y"), context),
+              Type.variablePattern("x"),
+              context,
+            ),
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(1)]));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            x: Type.integer(1),
+            y: Type.integer(1),
+          },
+        });
+      });
+
+      it("[v = x = y = z] = [1]", () => {
+        const result = Interpreter.matchOperator(
+          Type.list([Type.integer(1)]),
+          Type.list([
+            Interpreter.matchOperator(
+              Interpreter.matchOperator(
+                Interpreter.matchOperator(
+                  Type.variablePattern("z"),
+                  Type.variablePattern("y"),
+                  context,
+                ),
+                Type.variablePattern("x"),
+                context,
+              ),
+              Type.variablePattern("v"),
+              context,
+            ),
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(1)]));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            v: Type.integer(1),
+            x: Type.integer(1),
+            y: Type.integer(1),
+            z: Type.integer(1),
+          },
+        });
+      });
+
+      it("[1 = x = y = z] = [1]", () => {
+        const result = Interpreter.matchOperator(
+          Type.list([Type.integer(1)]),
+          Type.list([
+            Interpreter.matchOperator(
+              Interpreter.matchOperator(
+                Interpreter.matchOperator(
+                  Type.variablePattern("z"),
+                  Type.variablePattern("y"),
+                  context,
+                ),
+                Type.variablePattern("x"),
+                context,
+              ),
+              Type.integer(1),
+              context,
+            ),
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(1)]));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            x: Type.integer(1),
+            y: Type.integer(1),
+            z: Type.integer(1),
+          },
+        });
+      });
+
+      it("[x = 1 = y = z] = [1]", () => {
+        const result = Interpreter.matchOperator(
+          Type.list([Type.integer(1)]),
+          Type.list([
+            Interpreter.matchOperator(
+              Interpreter.matchOperator(
+                Interpreter.matchOperator(
+                  Type.variablePattern("z"),
+                  Type.variablePattern("y"),
+                  context,
+                ),
+                Type.integer(1),
+                context,
+              ),
+              Type.variablePattern("x"),
+              context,
+            ),
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(1)]));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            x: Type.integer(1),
+            y: Type.integer(1),
+            z: Type.integer(1),
+          },
+        });
+      });
+
+      it("[x = y = 1 = z] = [1]", () => {
+        const result = Interpreter.matchOperator(
+          Type.list([Type.integer(1)]),
+          Type.list([
+            Interpreter.matchOperator(
+              Interpreter.matchOperator(
+                Interpreter.matchOperator(Type.variablePattern("z"), Type.integer(1), context),
+                Type.variablePattern("y"),
+                context,
+              ),
+              Type.variablePattern("x"),
+              context,
+            ),
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(1)]));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            x: Type.integer(1),
+            y: Type.integer(1),
+            z: Type.integer(1),
+          },
+        });
+      });
+
+      it("[x = y = z = 1] = [1]", () => {
+        const result = Interpreter.matchOperator(
+          Type.list([Type.integer(1)]),
+          Type.list([
+            Interpreter.matchOperator(
+              Interpreter.matchOperator(
+                Interpreter.matchOperator(Type.integer(1), Type.variablePattern("z"), context),
+                Type.variablePattern("y"),
+                context,
+              ),
+              Type.variablePattern("x"),
+              context,
+            ),
+          ]),
+          context,
+        );
+        assert.deepStrictEqual(result, Type.list([Type.integer(1)]));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            x: Type.integer(1),
+            y: Type.integer(1),
+            z: Type.integer(1),
+          },
+        });
+      });
+
+      it("[x = y = z] = [a = b = c = 2]", () => {
+        const result = Interpreter.matchOperator(
+          Type.list([
+            Interpreter.matchOperator(
+              Interpreter.matchOperator(
+                Interpreter.matchOperator(Type.integer(2), Type.variablePattern("c"), context),
+                Type.variablePattern("b"),
+                context,
+              ),
+              Type.variablePattern("a"),
+              context,
+            ),
+          ]),
+          Type.list([
+            Interpreter.matchOperator(
+              Interpreter.matchOperator(
+                Type.variablePattern("z"),
+                Type.variablePattern("y"),
+                context,
+              ),
+              Type.variablePattern("x"),
+              context,
+            ),
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(2)]));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            a: Type.integer(2),
+            b: Type.integer(2),
+            c: Type.integer(2),
+            x: Type.integer(2),
+            y: Type.integer(2),
+            z: Type.integer(2),
+          },
+        });
+      });
+
+      it("%{x: %{a: a, b: b} = %{a: c, b: d}} = %{x: %{a: 1, b: 2}}", () => {
+        const result = Interpreter.matchOperator(
+          Type.map([
+            [
+              Type.atom("x"),
+              Type.map([
+                [Type.atom("a"), Type.integer(1)],
+                [Type.atom("b"), Type.integer(2)],
+              ]),
+            ],
+          ]),
+          Type.map([
+            [
+              Type.atom("x"),
+              Interpreter.matchOperator(
+                Type.map([
+                  [Type.atom("a"), Type.variablePattern("c")],
+                  [Type.atom("b"), Type.variablePattern("d")],
+                ]),
+                Type.map([
+                  [Type.atom("a"), Type.variablePattern("a")],
+                  [Type.atom("b"), Type.variablePattern("b")],
+                ]),
+                context,
+              ),
+            ],
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.map([
+            [
+              Type.atom("x"),
+              Type.map([
+                [Type.atom("a"), Type.integer(1)],
+                [Type.atom("b"), Type.integer(2)],
+              ]),
+            ],
+          ]),
+        );
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            a: Type.integer(1),
+            b: Type.integer(2),
+            c: Type.integer(1),
+            d: Type.integer(2),
+          },
+        });
+      });
+
+      it("%{y: %{x: %{a: a, b: b} = %{a: c, b: d}} = %{x: %{a: e, b: f}}} = %{y: %{x: %{a: 1, b: 2}}}", () => {
+        const result = Interpreter.matchOperator(
+          Type.map([
+            [
+              Type.atom("y"),
+              Type.map([
+                [
+                  Type.atom("x"),
+                  Type.map([
+                    [Type.atom("a"), Type.integer(1)],
+                    [Type.atom("b"), Type.integer(2)],
+                  ]),
+                ],
+              ]),
+            ],
+          ]),
+          Type.map([
+            [
+              Type.atom("y"),
+              Interpreter.matchOperator(
+                Type.map([
+                  [
+                    Type.atom("x"),
+                    Type.map([
+                      [Type.atom("a"), Type.variablePattern("e")],
+                      [Type.atom("b"), Type.variablePattern("f")],
+                    ]),
+                  ],
+                ]),
+                Type.map([
+                  [
+                    Type.atom("x"),
+                    Interpreter.matchOperator(
+                      Type.map([
+                        [Type.atom("a"), Type.variablePattern("c")],
+                        [Type.atom("b"), Type.variablePattern("d")],
+                      ]),
+                      Type.map([
+                        [Type.atom("a"), Type.variablePattern("a")],
+                        [Type.atom("b"), Type.variablePattern("b")],
+                      ]),
+                      context,
+                    ),
+                  ],
+                ]),
+                context,
+              ),
+            ],
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.map([
+            [
+              Type.atom("y"),
+              Type.map([
+                [
+                  Type.atom("x"),
+                  Type.map([
+                    [Type.atom("a"), Type.integer(1)],
+                    [Type.atom("b"), Type.integer(2)],
+                  ]),
+                ],
+              ]),
+            ],
+          ]),
+        );
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            a: Type.integer(1),
+            b: Type.integer(2),
+            c: Type.integer(1),
+            d: Type.integer(2),
+            e: Type.integer(1),
+            f: Type.integer(2),
+          },
+        });
+      });
+
+      it("{{a, b} = {c, d}} = {{1, 2}}", () => {
+        const result = Interpreter.matchOperator(
+          Type.tuple([Type.tuple([Type.integer(1), Type.integer(2)])]),
+          Type.tuple([
+            Interpreter.matchOperator(
+              Type.tuple([Type.variablePattern("c"), Type.variablePattern("d")]),
+              Type.tuple([Type.variablePattern("a"), Type.variablePattern("b")]),
+              context,
+            ),
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.tuple([Type.tuple([Type.integer(1), Type.integer(2)])]),
+        );
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            a: Type.integer(1),
+            b: Type.integer(2),
+            c: Type.integer(1),
+            d: Type.integer(2),
+          },
+        });
+      });
+
+      it("{{{a, b} = {c, d}} = {{e, f}}} = {{{1, 2}}}", () => {
+        const result = Interpreter.matchOperator(
+          Type.tuple([Type.tuple([Type.tuple([Type.integer(1), Type.integer(2)])])]),
+          Type.tuple([
+            Interpreter.matchOperator(
+              Type.tuple([Type.tuple([Type.variablePattern("e"), Type.variablePattern("f")])]),
+              Type.tuple([
+                Interpreter.matchOperator(
+                  Type.tuple([Type.variablePattern("c"), Type.variablePattern("d")]),
+                  Type.tuple([Type.variablePattern("a"), Type.variablePattern("b")]),
+                  context,
+                ),
+              ]),
+              context,
+            ),
+          ]),
+          context,
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.tuple([Type.tuple([Type.tuple([Type.integer(1), Type.integer(2)])])]),
+        );
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            a: Type.integer(1),
+            b: Type.integer(2),
+            c: Type.integer(1),
+            d: Type.integer(2),
+            e: Type.integer(1),
+            f: Type.integer(2),
+          },
+        });
+      });
+    });
+
+    // TODO: finish overhaul, remember about Elixir consistency tests
+    // describe("tuple type", () => {
+    //   let tuple1;
+    //   beforeEach(() => {
+    //     tuple1 = Type.tuple([Type.integer(1), Type.integer(2)]);
+    //   });
+    //   it("{1, 2} = {1, 2}", () => {
+    //     const result = Interpreter.matchOperator(tuple1, tuple1, vars);
+    //     assert.deepStrictEqual(result, tuple1);
+    //     assert.deepStrictEqual(vars, {a: Type.integer(9)});
+    //   });
+    //   it("{1, 2} = {1, 3}", () => {
+    //     const tuple2 = Type.tuple([Type.integer(1), Type.integer(3)]);
+    //     assertMatchError(
+    //       () => Interpreter.matchOperator(tuple2, tuple1, vars),
+    //       tuple2,
+    //     );
+    //   });
+    //   it("{1, 2} = :abc", () => {
+    //     const myAtom = Type.atom("abc");
+    //     assertMatchError(
+    //       () => Interpreter.matchOperator(myAtom, tuple1, vars),
+    //       myAtom,
+    //     );
+    //   });
+    //   it("{} = {1, 2}", () => {
+    //     assertMatchError(
+    //       () => Interpreter.matchOperator(tuple1, Type.tuple([]), vars),
+    //       tuple1,
+    //     );
+    //   });
+    //   it("{1, 2} = {}", () => {
+    //     const emptyTuple = Type.tuple([]);
+    //     assertMatchError(
+    //       () => Interpreter.matchOperator(emptyTuple, tuple1, vars),
+    //       emptyTuple,
+    //     );
+    //   });
+    //   it("{} = {}", () => {
+    //     const emptyTuple = Type.tuple([]);
+    //     const result = Interpreter.matchOperator(emptyTuple, emptyTuple, vars);
+    //     assert.deepStrictEqual(result, emptyTuple);
+    //     assert.deepStrictEqual(vars, {a: Type.integer(9)});
+    //   });
+    //   it("{x, 2, y} = {1, 2, 3}", () => {
+    //     const left = Type.tuple([
+    //       Type.variablePattern("x"),
+    //       Type.integer(2),
+    //       Type.variablePattern("y"),
+    //     ]);
+    //     const right = Type.tuple([
+    //       Type.integer(1),
+    //       Type.integer(2),
+    //       Type.integer(3),
+    //     ]);
+    //     const result = Interpreter.matchOperator(right, left, vars);
+    //     assert.deepStrictEqual(result, right);
+    //     const expectedVars = {
+    //       a: Type.integer(9),
+    //       x: Type.integer(1),
+    //       y: Type.integer(3),
+    //     };
+    //     assert.deepStrictEqual(vars, expectedVars);
+    //   });
+    // });
+
+    describe("variable pattern", () => {
+      // x = 2
+      it("variable pattern == anything", () => {
+        const result = Interpreter.matchOperator(
+          Type.integer(2),
+          Type.variablePattern("x"),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.integer(2));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            x: Type.integer(2),
+          },
+        });
+      });
+
+      // [x, x] = [1, 1]
+      it("multiple variables with the same name being matched to the same value", () => {
+        const result = Interpreter.matchOperator(
+          Type.list([Type.integer(1), Type.integer(1)]),
+          Type.list([Type.variablePattern("x"), Type.variablePattern("x")]),
+          context,
+        );
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(1), Type.integer(1)]));
+
+        assert.deepStrictEqual(context.vars, {
+          a: Type.integer(9),
+          __matched__: {
+            x: Type.integer(1),
+          },
+        });
+      });
+
+      // [x, x] = [1, 2]
+      it("multiple variables with the same name being matched to the different values", () => {
+        const left = Type.list([Type.variablePattern("x"), Type.variablePattern("x")]);
+
+        const right = Type.list([Type.integer(1), Type.integer(2)]);
+
+        assertBoxedError(
+          () => Interpreter.matchOperator(right, left, context),
+          "MatchError",
+          buildMatchErrorMsg(right),
+        );
+      });
+
+      // [x, x] = [%{a: 1}, %{a: 1, b: 2}]
+      it("multiple variables with the same name being matched to a map and its superset", () => {
+        const left = Type.list([Type.variablePattern("x"), Type.variablePattern("x")]);
+
+        const right = Type.list([
+          Type.map([[Type.atom("a"), Type.integer(1)]]),
+          Type.map([
+            [Type.atom("a"), Type.integer(1)],
+            [Type.atom("b"), Type.integer(2)],
+          ]),
+        ]);
+
+        assertBoxedError(
+          () => Interpreter.matchOperator(right, left, context),
+          "MatchError",
+          buildMatchErrorMsg(right),
+        );
+      });
+    });
+
+    describe("named function params", () => {
+      it("(a = 1)", () => {
+        const alias = Type.alias("Hologram.Test.Fixtures.ExJsConsistency.MatchOperator.Module1");
+
+        const fun = Type.atom("test_a");
+        const args = Type.list([Type.integer(1)]);
+        const result = Interpreter.callNamedFunction(alias, fun, args);
+
+        assert.deepStrictEqual(result, Type.map([[Type.atom("a"), Type.integer(1)]]));
+      });
+
+      it("(1 = a)", () => {
+        const alias = Type.alias("Hologram.Test.Fixtures.ExJsConsistency.MatchOperator.Module1");
+
+        const fun = Type.atom("test_b");
+        const args = Type.list([Type.integer(1)]);
+        const result = Interpreter.callNamedFunction(alias, fun, args);
+
+        assert.deepStrictEqual(result, Type.map([[Type.atom("a"), Type.integer(1)]]));
+      });
+
+      it("(a = b = 1)", () => {
+        const alias = Type.alias("Hologram.Test.Fixtures.ExJsConsistency.MatchOperator.Module1");
+
+        const fun = Type.atom("test_c");
+        const args = Type.list([Type.integer(1)]);
+        const result = Interpreter.callNamedFunction(alias, fun, args);
+
+        assert.deepStrictEqual(
+          result,
+          Type.map([
+            [Type.atom("a"), Type.integer(1)],
+            [Type.atom("b"), Type.integer(1)],
+          ]),
+        );
+      });
+
+      it("(a = 1 = b)", () => {
+        const alias = Type.alias("Hologram.Test.Fixtures.ExJsConsistency.MatchOperator.Module1");
+
+        const fun = Type.atom("test_d");
+        const args = Type.list([Type.integer(1)]);
+        const result = Interpreter.callNamedFunction(alias, fun, args);
+
+        assert.deepStrictEqual(
+          result,
+          Type.map([
+            [Type.atom("a"), Type.integer(1)],
+            [Type.atom("b"), Type.integer(1)],
+          ]),
+        );
+      });
+    });
+  });
+
+  describe("maybeInitModuleProxy()", () => {
+    beforeEach(() => {
+      delete globalThis.Elixir_MyModuleExName;
+      delete globalThis.Erlang_My_Module;
+    });
+
+    describe("Elixir module (default)", () => {
+      it("proxy hasn't been initiated yet", () => {
+        Interpreter.maybeInitModuleProxy("MyModuleExName", "Elixir_MyModuleExName");
+
+        assert.deepStrictEqual(
+          globalThis.Elixir_MyModuleExName.__exModule__,
+          Type.alias("MyModuleExName"),
+        );
+
+        assert.deepStrictEqual(globalThis.Elixir_MyModuleExName.__exports__, new Set());
+
+        assert.deepStrictEqual(globalThis.Elixir_MyModuleExName.__jsBindings__, new Map());
+
+        assert.equal(globalThis.Elixir_MyModuleExName.__jsName__, "Elixir_MyModuleExName");
+
+        globalThis.Elixir_MyModuleExName["my_defined_fun/3"] = () => "my_defined_fun/3 result";
+
+        assert.equal(
+          globalThis.Elixir_MyModuleExName["my_defined_fun/3"](),
+          "my_defined_fun/3 result",
+        );
+
+        assertBoxedError(
+          () => globalThis.Elixir_MyModuleExName["my_undefined_fun/3"](),
+          "UndefinedFunctionError",
+          buildUndefinedFunctionErrorMsg(Type.alias("MyModuleExName"), "my_undefined_fun", 3),
+        );
+      });
+
+      it("proxy has been already initiated", () => {
+        Interpreter.maybeInitModuleProxy("MyModuleExName", "Elixir_MyModuleExName");
+
+        globalThis.Elixir_MyModuleExName["my_defined_fun/3"] = () => "my_defined_fun/3 result";
+
+        globalThis.Elixir_MyModuleExName.__exports__.add("my_defined_fun/3");
+
+        Interpreter.maybeInitModuleProxy("MyModuleExName", "Elixir_MyModuleExName");
+
+        assert.equal(
+          globalThis.Elixir_MyModuleExName["my_defined_fun/3"](),
+          "my_defined_fun/3 result",
+        );
+
+        assert.deepStrictEqual(
+          globalThis.Elixir_MyModuleExName.__exports__,
+          new Set(["my_defined_fun/3"]),
+        );
+      });
+    });
+
+    describe("Erlang module", () => {
+      it("proxy hasn't been initiated yet", () => {
+        Interpreter.maybeInitModuleProxy("my_module", "Erlang_My_Module", "erlang");
+
+        assert.deepStrictEqual(globalThis.Erlang_My_Module.__exModule__, Type.atom("my_module"));
+
+        assert.deepStrictEqual(globalThis.Erlang_My_Module.__exports__, new Set());
+
+        assert.deepStrictEqual(globalThis.Erlang_My_Module.__jsBindings__, new Map());
+
+        assert.equal(globalThis.Erlang_My_Module.__jsName__, "Erlang_My_Module");
+
+        globalThis.Erlang_My_Module["my_defined_fun/3"] = () => "my_defined_fun/3 result";
+
+        assert.equal(globalThis.Erlang_My_Module["my_defined_fun/3"](), "my_defined_fun/3 result");
+
+        assertBoxedError(
+          () => globalThis.Erlang_My_Module["my_undefined_fun/3"](),
+          "UndefinedFunctionError",
+          buildUndefinedFunctionErrorMsg(Type.atom("my_module"), "my_undefined_fun", 3),
+        );
+      });
+
+      it("proxy has been already initiated", () => {
+        Interpreter.maybeInitModuleProxy("my_module", "Erlang_My_Module", "erlang");
+
+        globalThis.Erlang_My_Module["my_defined_fun/3"] = () => "my_defined_fun/3 result";
+
+        globalThis.Erlang_My_Module.__exports__.add("my_defined_fun/3");
+
+        Interpreter.maybeInitModuleProxy("my_module", "Erlang_My_Module", "erlang");
+
+        assert.equal(globalThis.Erlang_My_Module["my_defined_fun/3"](), "my_defined_fun/3 result");
+
+        assert.deepStrictEqual(
+          globalThis.Erlang_My_Module.__exports__,
+          new Set(["my_defined_fun/3"]),
+        );
+      });
+    });
+  });
+
+  it("moduleExName()", () => {
+    const name = "Aaa.Bbb.Ccc";
+    const alias = Type.alias(name);
+    const result = Interpreter.moduleExName(alias);
+
+    assert.equal(result, name);
+  });
+
+  describe("moduleJsName()", () => {
+    describe("boxed alias argument", () => {
+      it("Elixir module alias without camel case segments", () => {
+        const alias = Type.atom("Elixir.Aaa.Bbb.Ccc");
+        const result = Interpreter.moduleJsName(alias);
+
+        assert.equal(result, "Elixir_Aaa_Bbb_Ccc");
+      });
+
+      it("Elixir module alias with camel case segments", () => {
+        const alias = Type.atom("Elixir.AaaBbb.CccDdd");
+        const result = Interpreter.moduleJsName(alias);
+
+        assert.equal(result, "Elixir_AaaBbb_CccDdd");
+      });
+
+      it(":erlang alias", () => {
+        const alias = Type.atom("erlang");
+        const result = Interpreter.moduleJsName(alias);
+
+        assert.equal(result, "Erlang");
+      });
+
+      it("single-segment Erlang module alias", () => {
+        const alias = Type.atom("aaa");
+        const result = Interpreter.moduleJsName(alias);
+
+        assert.equal(result, "Erlang_Aaa");
+      });
+
+      it("multiple-segment Erlang module alias", () => {
+        const alias = Type.atom("aaa_bbb");
+        const result = Interpreter.moduleJsName(alias);
+
+        assert.equal(result, "Erlang_Aaa_Bbb");
+      });
+    });
+
+    describe("JS string argument", () => {
+      it("Elixir module alias without camel case segments", () => {
+        const result = Interpreter.moduleJsName("Elixir.Aaa.Bbb.Ccc");
+        assert.equal(result, "Elixir_Aaa_Bbb_Ccc");
+      });
+
+      it("Elixir module alias with camel case segments", () => {
+        const result = Interpreter.moduleJsName("Elixir.AaaBbb.CccDdd");
+        assert.equal(result, "Elixir_AaaBbb_CccDdd");
+      });
+
+      it(":erlang alias", () => {
+        const result = Interpreter.moduleJsName("erlang");
+        assert.equal(result, "Erlang");
+      });
+
+      it("single-segment Erlang module alias", () => {
+        const result = Interpreter.moduleJsName("aaa");
+        assert.equal(result, "Erlang_Aaa");
+      });
+
+      it("multiple-segment Erlang module alias", () => {
+        const result = Interpreter.moduleJsName("aaa_bbb");
+        assert.equal(result, "Erlang_Aaa_Bbb");
+      });
+    });
+  });
+
+  describe("moduleProxy()", () => {
+    it("boxed alias argument", () => {
+      const alias = Type.alias("String.Chars");
+      const result = Interpreter.moduleProxy(alias);
+
+      assert.equal(result, Elixir_String_Chars);
+    });
+
+    it("JS string argument", () => {
+      const alias = "Elixir.String.Chars";
+      const result = Interpreter.moduleProxy(alias);
+
+      assert.equal(result, Elixir_String_Chars);
+    });
+  });
+
+  it("normalizeError()", () => {
+    const result = Interpreter.normalizeError(Type.atom("badarg"));
+
+    assert.deepStrictEqual(result, Type.errorStruct("ArgumentError", "argument error"));
+  });
+
+  it("raiseArgumentError()", () => {
+    assertBoxedError(() => Interpreter.raiseArgumentError("abc"), "ArgumentError", "abc");
+  });
+
+  describe("raiseBadArityError()", () => {
+    const buildFun = (arity) =>
+      Type.anonymousFunction(arity, [], contextFixture(), "-my_fun/1-fun-0-");
+
+    it("called with no args", () => {
+      const fun = buildFun(1);
+
+      assertBoxedError(
+        () => Interpreter.raiseBadArityError(fun, []),
+        "BadArityError",
+        buildBadArityErrorMsg(fun, []),
+      );
+    });
+
+    it("called with a single arg", () => {
+      const fun = buildFun(2);
+      const args = [Type.integer(9)];
+
+      assertBoxedError(
+        () => Interpreter.raiseBadArityError(fun, args),
+        "BadArityError",
+        buildBadArityErrorMsg(fun, args),
+      );
+    });
+
+    it("called with multiple args", () => {
+      const fun = buildFun(1);
+      const args = [Type.integer(9), Type.integer(8)];
+
+      assertBoxedError(
+        () => Interpreter.raiseBadArityError(fun, args),
+        "BadArityError",
+        buildBadArityErrorMsg(fun, args),
+      );
+    });
+  });
+
+  it("raiseBadFunctionError()", () => {
+    const term = Type.atom("abc");
+
+    let caught;
+
+    try {
+      Interpreter.raiseBadFunctionError(term);
+    } catch (e) {
+      caught = e;
+    }
+
+    assert.deepStrictEqual(
+      caught.value,
+      Type.struct("BadFunctionError", [
+        [Type.atom("__exception__"), Type.boolean(true)],
+        [Type.atom("term"), term],
+      ]),
+    );
+
+    assert.equal(boxedErrorMessage(caught), "(BadFunctionError) expected a function, got: :abc");
+  });
+
+  it("raiseBadMapError()", () => {
+    const term = Type.atom("abc");
+
+    let caught;
+
+    try {
+      Interpreter.raiseBadMapError(term);
+    } catch (e) {
+      caught = e;
+    }
+
+    assert.deepStrictEqual(
+      caught.value,
+      Type.struct("BadMapError", [
+        [Type.atom("__exception__"), Type.boolean(true)],
+        [Type.atom("term"), term],
+      ]),
+    );
+
+    assert.equal(boxedErrorMessage(caught), "(BadMapError) expected a map, got:\n\n    :abc\n");
+  });
+
+  describe("raiseBifError()", () => {
+    beforeEach(() => {
+      CallStack.reset();
+    });
+
+    it("replaces the function's own frame with the raising frame", () => {
+      const callerFrame = {
+        module: "MyModule",
+        function: "my_fun",
+        arityOrArgs: 1,
+        file: "lib/my_module.ex",
+        line: 11,
+        errorInfo: null,
+      };
+
+      const ownFrame = {
+        module: "maps",
+        function: "get",
+        arityOrArgs: 2,
+        file: null,
+        line: null,
+        errorInfo: null,
+      };
+
+      CallStack.push(callerFrame);
+      CallStack.push(ownFrame);
+
+      const args = [Type.atom("a"), Type.atom("b")];
+      const reason = ["badmap", Type.atom("b")];
+
+      let caught;
+
+      try {
+        Interpreter.raiseBifError(reason, "erlang", "map_get", args);
+      } catch (e) {
+        caught = e;
+      }
+
+      assert.deepStrictEqual(caught.stacktrace, [
+        {
+          module: "erlang",
+          function: "map_get",
+          arityOrArgs: Type.list(args),
+          file: null,
+          line: null,
+          errorInfo: Type.map([[Type.atom("module"), Type.atom("erl_erts_errors")]]),
+        },
+        callerFrame,
+      ]);
+
+      assert.equal(boxedErrorMessage(caught), "(BadMapError) expected a map, got:\n\n    :b\n");
+    });
+
+    it("the raising frame stands alone when frame tracking is disabled", () => {
+      const args = [Type.atom("a"), Type.atom("b")];
+      const reason = ["badmap", Type.atom("b")];
+
+      let caught;
+
+      try {
+        Interpreter.raiseBifError(reason, "maps", "find", args);
+      } catch (e) {
+        caught = e;
+      }
+
+      assert.deepStrictEqual(caught.stacktrace, [
+        {
+          module: "maps",
+          function: "find",
+          arityOrArgs: Type.list(args),
+          file: null,
+          line: null,
+          errorInfo: Type.map([[Type.atom("module"), Type.atom("erl_stdlib_errors")]]),
+        },
+      ]);
+    });
+
+    it("names the kernel formatter for a kernel module", () => {
+      const args = [Type.atom("abc")];
+
+      let caught;
+
+      try {
+        Interpreter.raiseBifError("badarg", "os", "system_time", args);
+      } catch (e) {
+        caught = e;
+      }
+
+      assert.deepStrictEqual(
+        caught.stacktrace[0].errorInfo,
+        Type.map([[Type.atom("module"), Type.atom("erl_kernel_errors")]]),
+      );
+    });
+
+    it("names the format module the raise site states over the inferred one", () => {
+      const args = [Type.atom("abc")];
+
+      let caught;
+
+      try {
+        Interpreter.raiseBifError("badarg", "erlang", "map_get", args, "erl_stdlib_errors");
+      } catch (e) {
+        caught = e;
+      }
+
+      assert.deepStrictEqual(
+        caught.stacktrace[0].errorInfo,
+        Type.map([[Type.atom("module"), Type.atom("erl_stdlib_errors")]]),
+      );
+    });
+
+    it("derives the message against the raising frame", () => {
+      const args = [Type.atom("a")];
+
+      let caught;
+
+      try {
+        Interpreter.raiseBifError("badarg", "maps", "from_list", args);
+      } catch (e) {
+        caught = e;
+      }
+
+      assert.equal(
+        boxedErrorMessage(caught),
+        "(ArgumentError) errors were found at the given arguments:\n\n  * 1st argument: not a list\n",
+      );
+    });
+
+    it("plants the cause in the error_info map", () => {
+      const args = [
+        Type.bitstring("abc"),
+        Type.bitstring("b"),
+        Type.bitstring("x"),
+        Type.list([Type.atom("y")]),
+      ];
+
+      let caught;
+
+      try {
+        Interpreter.raiseBifError(
+          "badarg",
+          "binary",
+          "replace",
+          args,
+          "erl_stdlib_errors",
+          "badopt",
+        );
+      } catch (e) {
+        caught = e;
+      }
+
+      assert.deepStrictEqual(caught.stacktrace, [
+        {
+          module: "binary",
+          function: "replace",
+          arityOrArgs: Type.list(args),
+          file: null,
+          line: null,
+          errorInfo: Type.map([
+            [Type.atom("module"), Type.atom("erl_stdlib_errors")],
+            [Type.atom("cause"), Type.atom("badopt")],
+          ]),
+        },
+      ]);
+
+      assert.equal(
+        boxedErrorMessage(caught),
+        "(ArgumentError) errors were found at the given arguments:\n\n  * 4th argument: invalid options\n",
+      );
+    });
+
+    it("omits error_info when the format module is null", () => {
+      const args = [Type.atom("a"), Type.list()];
+
+      let caught;
+
+      try {
+        Interpreter.raiseBifError("badarg", "erlang", "++", args, null);
+      } catch (e) {
+        caught = e;
+      }
+
+      assert.deepStrictEqual(caught.stacktrace, [
+        {
+          module: "erlang",
+          function: "++",
+          arityOrArgs: Type.list(args),
+          file: null,
+          line: null,
+          errorInfo: null,
+        },
+      ]);
+
+      assert.equal(boxedErrorMessage(caught), "(ArgumentError) argument error");
+    });
+  });
+
+  describe("raiseBitstringConstructionError()", () => {
+    beforeEach(() => {
+      CallStack.reset();
+    });
+
+    it("decorates the enclosing function's frame with the error_info", () => {
+      const enclosingFrame = {
+        module: "MyModule",
+        function: "my_fun",
+        arityOrArgs: 1,
+        file: "lib/my_module.ex",
+        line: 11,
+        errorInfo: null,
+      };
+
+      CallStack.push(enclosingFrame);
+
+      let caught;
+
+      try {
+        Interpreter.raiseBitstringConstructionError(1, "binary", "type", Type.integer(170));
+      } catch (e) {
+        caught = e;
+      }
+
+      assert.deepStrictEqual(caught.stacktrace, [
+        {
+          ...enclosingFrame,
+          errorInfo: Type.map([
+            [
+              Type.atom("cause"),
+              Type.tuple([
+                Type.integer(1),
+                Type.atom("binary"),
+                Type.atom("type"),
+                Type.integer(170),
+              ]),
+            ],
+            [Type.atom("function"), Type.atom("format_bs_fail")],
+            [Type.atom("module"), Type.atom("erl_erts_errors")],
+          ]),
+        },
+      ]);
+    });
+
+    it("leaves the frame on the call stack undecorated", () => {
+      const enclosingFrame = {
+        module: "MyModule",
+        function: "my_fun",
+        arityOrArgs: 1,
+        file: "lib/my_module.ex",
+        line: 11,
+        errorInfo: null,
+      };
+
+      CallStack.push(enclosingFrame);
+
+      try {
+        Interpreter.raiseBitstringConstructionError(1, "binary", "type", Type.integer(170));
+      } catch {
+        // The decoration must not leak into later traces taken through the
+        // same frame.
+      }
+
+      assert.isNull(CallStack.peek().errorInfo);
+    });
+
+    it("the error_info stands alone when frame tracking is disabled", () => {
+      let caught;
+
+      try {
+        Interpreter.raiseBitstringConstructionError(1, "binary", "type", Type.integer(170));
+      } catch (e) {
+        caught = e;
+      }
+
+      assert.deepStrictEqual(caught.stacktrace, [
+        {
+          module: null,
+          function: null,
+          arityOrArgs: 0,
+          file: null,
+          line: null,
+          errorInfo: Type.map([
+            [
+              Type.atom("cause"),
+              Type.tuple([
+                Type.integer(1),
+                Type.atom("binary"),
+                Type.atom("type"),
+                Type.integer(170),
+              ]),
+            ],
+            [Type.atom("function"), Type.atom("format_bs_fail")],
+            [Type.atom("module"), Type.atom("erl_erts_errors")],
+          ]),
+        },
+      ]);
+    });
+
+    it("derives the message against the decorated frame", () => {
+      let caught;
+
+      try {
+        Interpreter.raiseBitstringConstructionError(2, "float", "invalid", Type.integer(24));
+      } catch (e) {
+        caught = e;
+      }
+
+      assert.deepStrictEqual(caught.value, Type.atom("badarg"));
+
+      assert.equal(
+        boxedErrorMessage(caught),
+        "(ArgumentError) construction of binary failed: segment 2 of type 'float': expected one of the supported sizes 16, 32, or 64 but got: 24",
+      );
+    });
+  });
+
+  it("raiseCaseClauseError()", () => {
+    const term = Type.atom("abc");
+
+    let caught;
+
+    try {
+      Interpreter.raiseCaseClauseError(term);
+    } catch (e) {
+      caught = e;
+    }
+
+    assert.deepStrictEqual(
+      caught.value,
+      Type.struct("CaseClauseError", [
+        [Type.atom("__exception__"), Type.boolean(true)],
+        [Type.atom("term"), term],
+      ]),
+    );
+
+    assert.equal(
+      boxedErrorMessage(caught),
+      "(CaseClauseError) no case clause matching:\n\n    :abc\n",
+    );
+  });
+
+  it("raiseCompileError()", () => {
+    assertBoxedError(() => Interpreter.raiseCompileError("abc"), "CompileError", "abc");
+  });
+
+  it("raiseError()", () => {
+    assertBoxedError(() => Interpreter.raiseError("Aaa.Bbb", "abc"), "Aaa.Bbb", "abc");
+  });
+
+  describe("raiseFramelessError()", () => {
+    beforeEach(() => {
+      CallStack.reset();
+    });
+
+    it("drops the function's own frame and attributes the error to the caller", () => {
+      const callerFrame = {
+        module: "MyModule",
+        function: "my_fun",
+        arityOrArgs: 1,
+        file: "lib/my_module.ex",
+        line: 11,
+        errorInfo: null,
+      };
+
+      const ownFrame = {
+        module: "maps",
+        function: "get",
+        arityOrArgs: 3,
+        file: null,
+        line: null,
+        errorInfo: null,
+      };
+
+      CallStack.push(callerFrame);
+      CallStack.push(ownFrame);
+
+      let caught;
+
+      try {
+        Interpreter.raiseFramelessError(["badmap", Type.atom("b")]);
+      } catch (e) {
+        caught = e;
+      }
+
+      assert.deepStrictEqual(caught.stacktrace, [callerFrame]);
+
+      assert.equal(boxedErrorMessage(caught), "(BadMapError) expected a map, got:\n\n    :b\n");
+    });
+
+    it("raises with an empty trace when frame tracking is disabled", () => {
+      let caught;
+
+      try {
+        Interpreter.raiseFramelessError(["badmap", Type.atom("b")]);
+      } catch (e) {
+        caught = e;
+      }
+
+      assert.deepStrictEqual(caught.stacktrace, []);
+
+      assert.equal(boxedErrorMessage(caught), "(BadMapError) expected a map, got:\n\n    :b\n");
+    });
+  });
+
+  describe("raiseFunctionClauseError()", () => {
+    beforeEach(() => {
+      CallStack.reset();
+    });
+
+    it("replaces the function's own frame with an args-bearing raising frame", () => {
+      const callerFrame = {
+        module: "MyModule",
+        function: "my_fun",
+        arityOrArgs: 1,
+        file: "lib/my_module.ex",
+        line: 11,
+        errorInfo: null,
+      };
+
+      const ownFrame = {
+        module: "sets",
+        function: "filter",
+        arityOrArgs: 2,
+        file: null,
+        line: null,
+        errorInfo: null,
+      };
+
+      CallStack.push(callerFrame);
+      CallStack.push(ownFrame);
+
+      const args = [Type.atom("a"), Type.atom("b")];
+
+      let caught;
+
+      try {
+        Interpreter.raiseFunctionClauseError("sets", "filter", 2, args);
+      } catch (e) {
+        caught = e;
+      }
+
+      assert.deepStrictEqual(caught.stacktrace, [
+        {
+          module: "sets",
+          function: "filter",
+          arityOrArgs: Type.list(args),
+          file: null,
+          line: null,
+          errorInfo: null,
+        },
+        callerFrame,
+      ]);
+
+      assert.deepStrictEqual(
+        caught.value,
+        Type.struct("FunctionClauseError", [
+          [Type.atom("__exception__"), Type.boolean(true)],
+          [Type.atom("args"), Type.list(args)],
+          [Type.atom("arity"), Type.integer(2)],
+          [Type.atom("clauses"), Type.nil()],
+          [Type.atom("function"), Type.atom("filter")],
+          [Type.atom("kind"), Type.nil()],
+          [Type.atom("module"), Type.atom("sets")],
+        ]),
+      );
+
+      assert.equal(
+        boxedErrorMessage(caught),
+        "(FunctionClauseError) no function clause matching in :sets.filter/2\n\nThe following arguments were given to :sets.filter/2:\n\n    # 1\n    :a\n\n    # 2\n    :b\n",
+      );
+    });
+
+    it("carries the bare arity when args are not given", () => {
+      let caught;
+
+      try {
+        Interpreter.raiseFunctionClauseError("sets", "fold", 3);
+      } catch (e) {
+        caught = e;
+      }
+
+      assert.deepStrictEqual(caught.stacktrace, [
+        {
+          module: "sets",
+          function: "fold",
+          arityOrArgs: 3,
+          file: null,
+          line: null,
+          errorInfo: null,
+        },
+      ]);
+
+      assert.deepStrictEqual(
+        caught.value,
+        Type.struct("FunctionClauseError", [
+          [Type.atom("__exception__"), Type.boolean(true)],
+          [Type.atom("args"), Type.nil()],
+          [Type.atom("arity"), Type.integer(3)],
+          [Type.atom("clauses"), Type.nil()],
+          [Type.atom("function"), Type.atom("fold")],
+          [Type.atom("kind"), Type.nil()],
+          [Type.atom("module"), Type.atom("sets")],
+        ]),
+      );
+
+      assert.equal(
+        boxedErrorMessage(caught),
+        "(FunctionClauseError) no function clause matching in :sets.fold/3",
+      );
+    });
+
+    describe("with registered clause heads", () => {
+      const blamedNode = (match, source) =>
+        Type.map([
+          [Type.atom("match?"), Type.boolean(match)],
+          [Type.atom("source"), Type.bitstring(source)],
+        ]);
+
+      // def my_fun(x, y) when is_integer(x) and x + 1 > y
+      const defineClauseHeads = (blame = true) => {
+        const clauseHead = {
+          params: (_context) => [Type.variablePattern("x"), Type.variablePattern("y")],
+          guards: [],
+        };
+
+        if (blame) {
+          clauseHead.blame = {
+            params: ["x", "y"],
+            guards: [
+              {
+                operator: "and",
+                operands: [
+                  {
+                    source: "is_integer(x)",
+                    test: (context) => Erlang["is_integer/1"](context.vars.x),
+                  },
+                  {
+                    source: "x + 1 > y",
+                    test: (context) =>
+                      Erlang[">/2"](Erlang["+/2"](context.vars.x, Type.integer(1)), context.vars.y),
+                  },
+                ],
+              },
+            ],
+          };
+        }
+
+        Interpreter.defineFunctionClauseHeads("MyBlamedModule", "my_fun", 2, "public", [
+          clauseHead,
+        ]);
+      };
+
+      // The leaf of a guard that compares x with the given integer
+      const equals = (value) => ({
+        source: `x === ${value}`,
+        test: (context) => Erlang["=:=/2"](context.vars.x, Type.integer(value)),
+      });
+
+      // The blamed guards of def my_fun(x) with the given guards, called with the given x
+      const blamedGuards = (guards, x) => {
+        const clauses = raisedError(guards, x).value.data["atom(clauses)"][1];
+
+        return clauses.data[0].data[1];
+      };
+
+      // The error def my_fun(x) with the given guards raises when called with the given x
+      const raisedError = (guards, x) => {
+        Interpreter.defineFunctionClauseHeads("MyChainModule", "my_fun", 1, "public", [
+          {
+            params: (_context) => [Type.variablePattern("x")],
+            guards: [],
+            blame: {params: ["x"], guards: guards},
+          },
+        ]);
+
+        try {
+          Interpreter.raiseFunctionClauseError("MyChainModule", "my_fun", 1, [x]);
+        } catch (error) {
+          return error;
+        }
+      };
+
+      it("keeps a chain nested in an operand as a chain", () => {
+        // def my_fun(x) when is_integer(x) and (x === 1 or x === 2 or x === 3)
+        const guards = [
+          {
+            operator: "and",
+            operands: [
+              {
+                source: "is_integer(x)",
+                test: (context) => Erlang["is_integer/1"](context.vars.x),
+              },
+              {operator: "or", operands: [equals(1), equals(2), equals(3)]},
+            ],
+          },
+        ];
+
+        assert.deepStrictEqual(
+          blamedGuards(guards, Type.integer(2)),
+          Type.list([
+            Type.tuple([
+              Type.atom("and"),
+              Type.list([
+                blamedNode(true, "is_integer(x)"),
+                Type.tuple([
+                  Type.atom("or"),
+                  Type.list([
+                    blamedNode(false, "x === 1"),
+                    blamedNode(true, "x === 2"),
+                    blamedNode(false, "x === 3"),
+                  ]),
+                ]),
+              ]),
+            ]),
+          ]),
+        );
+      });
+
+      it("keeps three operands side by side", () => {
+        // def my_fun(x) when x === 1 or x === 2 or x === 3
+        const guards = [{operator: "or", operands: [equals(1), equals(2), equals(3)]}];
+
+        assert.deepStrictEqual(
+          blamedGuards(guards, Type.integer(2)),
+          Type.list([
+            Type.tuple([
+              Type.atom("or"),
+              Type.list([
+                blamedNode(false, "x === 1"),
+                blamedNode(true, "x === 2"),
+                blamedNode(false, "x === 3"),
+              ]),
+            ]),
+          ]),
+        );
+      });
+
+      it("keeps two operands side by side", () => {
+        // def my_fun(x) when x === 1 or x === 2
+        const guards = [{operator: "or", operands: [equals(1), equals(2)]}];
+
+        assert.deepStrictEqual(
+          blamedGuards(guards, Type.integer(2)),
+          Type.list([
+            Type.tuple([
+              Type.atom("or"),
+              Type.list([blamedNode(false, "x === 1"), blamedNode(true, "x === 2")]),
+            ]),
+          ]),
+        );
+      });
+
+      it("marks the parts of the clause head that didn't match", () => {
+        defineClauseHeads();
+
+        const args = [Type.integer(1), Type.integer(9)];
+
+        let caught;
+
+        try {
+          Interpreter.raiseFunctionClauseError("MyBlamedModule", "my_fun", 2, args);
+        } catch (e) {
+          caught = e;
+        }
+
+        const clauses = caught.value.data["atom(clauses)"][1];
+
+        assert.deepStrictEqual(
+          clauses,
+          Type.list([
+            Type.tuple([
+              Type.list([blamedNode(true, "x"), blamedNode(true, "y")]),
+              Type.list([
+                Type.tuple([
+                  Type.atom("and"),
+                  Type.list([blamedNode(true, "is_integer(x)"), blamedNode(false, "x + 1 > y")]),
+                ]),
+              ]),
+            ]),
+          ]),
+        );
+
+        assert.deepStrictEqual(caught.value.data["atom(kind)"][1], Type.atom("def"));
+      });
+
+      it("raises a FunctionClauseError with its attempted clause for a guard of 5,000 operands", () => {
+        // def my_fun(x) when x === 0 or x === 1 or ... or x === 4999
+        const operands = Array.from({length: 5000}, (_value, i) => equals(i));
+        const guards = [{operator: "or", operands: operands}];
+
+        const expectedGuard = operands.map((operand) => `-${operand.source}-`).join(" or ");
+
+        assert.equal(
+          boxedErrorMessage(raisedError(guards, Type.integer(-1))),
+          `(FunctionClauseError) no function clause matching in MyChainModule.my_fun/1\n\nThe following arguments were given to MyChainModule.my_fun/1:\n\n    # 1\n    -1\n\nAttempted function clauses (showing 1 out of 1):\n\n    def my_fun(x) when ${expectedGuard}\n`,
+        );
+      });
+
+      it("treats a guard that raises as one that didn't hold", () => {
+        defineClauseHeads();
+
+        const args = [Type.atom("abc"), Type.integer(9)];
+
+        let caught;
+
+        try {
+          Interpreter.raiseFunctionClauseError("MyBlamedModule", "my_fun", 2, args);
+        } catch (e) {
+          caught = e;
+        }
+
+        const clauses = caught.value.data["atom(clauses)"][1];
+        const guard = clauses.data[0].data[1].data[0];
+
+        assert.deepStrictEqual(
+          guard,
+          Type.tuple([
+            Type.atom("and"),
+            Type.list([blamedNode(false, "is_integer(x)"), blamedNode(false, "x + 1 > y")]),
+          ]),
+        );
+      });
+
+      it("leaves the clauses out when the heads carry no rendered sources", () => {
+        defineClauseHeads(false);
+
+        let caught;
+
+        try {
+          Interpreter.raiseFunctionClauseError("MyBlamedModule", "my_fun", 2, [
+            Type.integer(1),
+            Type.integer(9),
+          ]);
+        } catch (e) {
+          caught = e;
+        }
+
+        assert.deepStrictEqual(caught.value.data["atom(clauses)"][1], Type.nil());
+
+        assert.deepStrictEqual(caught.value.data["atom(kind)"][1], Type.nil());
+      });
+    });
+  });
+
+  it("raiseFunctionClauseErrorMsg()", () => {
+    assertBoxedError(
+      () => Interpreter.raiseFunctionClauseErrorMsg("my_message"),
+      "FunctionClauseError",
+      "my_message",
+    );
+  });
+
+  it("raiseMatchError()", () => {
+    const term = Type.atom("abc");
+
+    let caught;
+
+    try {
+      Interpreter.raiseMatchError(term);
+    } catch (e) {
+      caught = e;
+    }
+
+    assert.deepStrictEqual(
+      caught.value,
+      Type.struct("MatchError", [
+        [Type.atom("__exception__"), Type.boolean(true)],
+        [Type.atom("term"), term],
+      ]),
+    );
+
+    assert.equal(
+      boxedErrorMessage(caught),
+      "(MatchError) no match of right hand side value:\n\n    :abc\n",
+    );
+  });
+
+  it("raiseTryClauseError()", () => {
+    const term = Type.atom("abc");
+
+    let caught;
+
+    try {
+      Interpreter.raiseTryClauseError(term);
+    } catch (e) {
+      caught = e;
+    }
+
+    assert.deepStrictEqual(
+      caught.value,
+      Type.struct("TryClauseError", [
+        [Type.atom("__exception__"), Type.boolean(true)],
+        [Type.atom("term"), term],
+      ]),
+    );
+
+    assert.equal(
+      boxedErrorMessage(caught),
+      "(TryClauseError) no try clause matching:\n\n    :abc\n",
+    );
+  });
+
+  describe("raiseUndefinedFunctionError()", () => {
+    it("the module is available but doesn't export the function", () => {
+      assertBoxedError(
+        () => Interpreter.raiseUndefinedFunctionError(Type.alias("Aaa.Bbb"), "my_fun", 2),
+        "UndefinedFunctionError",
+        "function Aaa.Bbb.my_fun/2 is undefined or private",
+      );
+    });
+
+    it("the module is not available", () => {
+      assertBoxedError(
+        () => Interpreter.raiseUndefinedFunctionError(Type.alias("MyModule"), "my_fun", 2, false),
+        "UndefinedFunctionError",
+        "function MyModule.my_fun/2 is undefined (module MyModule is not available). Make sure the module name is correct and has been specified in full (or that an alias has been defined)",
+      );
+    });
+
+    it("carries the missing function as fields", () => {
+      let caught;
+
+      try {
+        Interpreter.raiseUndefinedFunctionError(Type.alias("Aaa.Bbb"), "my_fun", 2);
+      } catch (e) {
+        caught = e;
+      }
+
+      assert.deepStrictEqual(
+        caught.value,
+        Type.struct("UndefinedFunctionError", [
+          [Type.atom("__exception__"), Type.boolean(true)],
+          [Type.atom("arity"), Type.integer(2)],
+          [Type.atom("function"), Type.atom("my_fun")],
+          [Type.atom("message"), Type.nil()],
+          [Type.atom("module"), Type.alias("Aaa.Bbb")],
+          [Type.atom("reason"), Type.atom("function not exported")],
+        ]),
+      );
+    });
+
+    it("adds a hint when the function is a reflection function", () => {
+      assertBoxedError(
+        () => Interpreter.raiseUndefinedFunctionError(Type.alias("Aaa.Bbb"), "__changeset__", 0),
+        "UndefinedFunctionError",
+        "function Aaa.Bbb.__changeset__/0 is undefined or private. A reflection function (__changeset__/0, __schema__/1, __schema__/2) that client code calls on a module it does not name, such as mod.__changeset__(), is bundled only for the types the page can see; a call through apply/3 with a function name known only at runtime is not detected.",
+      );
+    });
+
+    it("adds a hint of its own when the function is a struct function", () => {
+      assertBoxedError(
+        () => Interpreter.raiseUndefinedFunctionError(Type.alias("Aaa.Bbb"), "__struct__", 0),
+        "UndefinedFunctionError",
+        "function Aaa.Bbb.__struct__/0 is undefined or private. The browser loads a struct type's __struct__ functions when a struct of the type or the type's module reaches it from the server, or when the page's client code names the type. It loads none for a module that client code builds from a string.",
+      );
+    });
+
+    it("adds the hint after the text for a module that is not available", () => {
+      assertBoxedError(
+        () =>
+          Interpreter.raiseUndefinedFunctionError(Type.alias("Aaa.Bbb"), "__struct__", 1, false),
+        "UndefinedFunctionError",
+        "function Aaa.Bbb.__struct__/1 is undefined (module Aaa.Bbb is not available). The browser loads a struct type's __struct__ functions when a struct of the type or the type's module reaches it from the server, or when the page's client code names the type. It loads none for a module that client code builds from a string.",
+      );
+    });
+
+    it("adds no hint for a function of another arity", () => {
+      assertBoxedError(
+        () => Interpreter.raiseUndefinedFunctionError(Type.alias("Aaa.Bbb"), "__changeset__", 1),
+        "UndefinedFunctionError",
+        "function Aaa.Bbb.__changeset__/1 is undefined or private",
+      );
+    });
+  });
+
+  it("raiseWithClauseError()", () => {
+    const term = Type.atom("abc");
+
+    let caught;
+
+    try {
+      Interpreter.raiseWithClauseError(term);
+    } catch (e) {
+      caught = e;
+    }
+
+    assert.deepStrictEqual(
+      caught.value,
+      Type.struct("WithClauseError", [
+        [Type.atom("__exception__"), Type.boolean(true)],
+        [Type.atom("term"), term],
+      ]),
+    );
+
+    assert.equal(
+      boxedErrorMessage(caught),
+      "(WithClauseError) no with clause matching:\n\n    :abc\n",
+    );
+  });
+
+  describe("registerJsBindings()", () => {
+    const $1 = {name: "import_1"};
+    const $2 = {name: "import_2"};
+
+    beforeEach(() => {
+      delete globalThis.Elixir_Aaa_Bbb;
+      delete globalThis.Elixir_Ccc_Ddd;
+    });
+
+    it("initializes module proxy if not yet initialized", () => {
+      Interpreter.registerJsBindings({"Aaa.Bbb": {my_alias: $1}});
+
+      assert.isDefined(globalThis.Elixir_Aaa_Bbb);
+
+      assert.deepStrictEqual(globalThis.Elixir_Aaa_Bbb.__exModule__, Type.alias("Aaa.Bbb"));
+    });
+
+    it("sets bindings on module proxy", () => {
+      Interpreter.registerJsBindings({"Aaa.Bbb": {my_alias: $1}});
+
+      assert.deepStrictEqual(globalThis.Elixir_Aaa_Bbb.__jsBindings__, new Map([["my_alias", $1]]));
+    });
+
+    it("registers bindings for multiple modules", () => {
+      Interpreter.registerJsBindings({
+        "Aaa.Bbb": {alias_1: $1},
+        "Ccc.Ddd": {alias_2: $2},
+      });
+
+      assert.deepStrictEqual(globalThis.Elixir_Aaa_Bbb.__jsBindings__, new Map([["alias_1", $1]]));
+
+      assert.deepStrictEqual(globalThis.Elixir_Ccc_Ddd.__jsBindings__, new Map([["alias_2", $2]]));
+    });
+
+    it("merges bindings when module proxy already exists", () => {
+      Interpreter.defineElixirFunction("Aaa.Bbb", "my_fun", 0, "public", []);
+      Interpreter.registerJsBindings({"Aaa.Bbb": {existing_alias: $1}});
+
+      Interpreter.registerJsBindings({"Aaa.Bbb": {new_alias: $2}});
+
+      assert.deepStrictEqual(
+        globalThis.Elixir_Aaa_Bbb.__jsBindings__,
+        new Map([
+          ["existing_alias", $1],
+          ["new_alias", $2],
+        ]),
+      );
+
+      assert.isDefined(globalThis.Elixir_Aaa_Bbb["my_fun/0"]);
+    });
+  });
+
+  describe("resolveErrorMessage()", () => {
+    it("returns the message when the struct has a message field", () => {
+      const struct = Type.errorStruct("MyError", "my message");
+      const result = Interpreter.resolveErrorMessage(struct);
+
+      assert.equal(result, "my message");
+    });
+
+    it("derives the message through the exception module's message/1 callback", () => {
+      globalThis.Elixir_MyDerivedError = {
+        "message/1": (struct) => {
+          const reason = struct.data["atom(reason)"][1];
+          return Type.bitstring(`derived: ${Interpreter.inspect(reason)}`);
+        },
+      };
+
+      const struct = Type.struct("MyDerivedError", [
+        [Type.atom("__exception__"), Type.boolean(true)],
+        [Type.atom("reason"), Type.atom("some_reason")],
+      ]);
+
+      const result = Interpreter.resolveErrorMessage(struct);
+
+      assert.equal(result, "derived: :some_reason");
+
+      // cleanup
+      delete globalThis.Elixir_MyDerivedError;
+    });
+  });
+
+  describe("setFrameLine()", () => {
+    beforeEach(() => {
+      CallStack.reset();
+    });
+
+    afterEach(() => {
+      CallStack.reset();
+    });
+
+    it("records the line on the frame the call is being made from", () => {
+      CallStack.push({
+        module: "MyModule",
+        function: "my_fun",
+        arityOrArgs: 1,
+        file: "lib/my_module.ex",
+        line: 11,
+        errorInfo: null,
+      });
+
+      Interpreter.setFrameLine(22);
+
+      assert.equal(CallStack.peek().line, 22);
+    });
+
+    it("records nothing when no frame is being tracked", () => {
+      Interpreter.setFrameLine(22);
+
+      assert.deepStrictEqual(CallStack.snapshot(), []);
+    });
+  });
+
+  describe("toBoolean()", () => {
+    const callerFrame = () => ({
+      module: "MyModule",
+      function: "my_fun",
+      arityOrArgs: 1,
+      file: "lib/my_module.ex",
+      line: 17,
+      errorInfo: null,
+    });
+
+    const outerFrame = () => ({
+      module: "MyModule",
+      function: "my_outer_fun",
+      arityOrArgs: 0,
+      file: "lib/my_module.ex",
+      line: 5,
+      errorInfo: null,
+    });
+
+    const catchError = (fun) => {
+      try {
+        fun();
+      } catch (error) {
+        return error;
+      }
+    };
+
+    beforeEach(() => {
+      CallStack.reset();
+    });
+
+    afterEach(() => {
+      CallStack.reset();
+    });
+
+    it("returns false for boxed false", () => {
+      assert.isFalse(Interpreter.toBoolean(Type.boolean(false)));
+    });
+
+    it("returns true for boxed true", () => {
+      assert.isTrue(Interpreter.toBoolean(Type.boolean(true)));
+    });
+
+    it("attributes the error to the function the call is made from", () => {
+      CallStack.push(outerFrame());
+      CallStack.push(callerFrame());
+
+      const caught = catchError(() => Interpreter.toBoolean(Type.nil()));
+
+      assert.deepStrictEqual(caught.stacktrace, [callerFrame(), outerFrame()]);
+    });
+
+    it("keeps the frame's own line when no line is given", () => {
+      CallStack.push(callerFrame());
+
+      const caught = catchError(() => Interpreter.toBoolean(Type.nil()));
+
+      assert.equal(caught.stacktrace[0].line, 17);
+    });
+
+    it("leaves the live frame's line alone", () => {
+      CallStack.push(callerFrame());
+
+      catchError(() => Interpreter.toBoolean(Type.nil(), 16));
+
+      assert.equal(CallStack.peek().line, 17);
+    });
+
+    it("raises ArgumentError for a term that is not a boolean", () => {
+      assertBoxedError(
+        () => Interpreter.toBoolean(Type.integer(2)),
+        "ArgumentError",
+        "argument error: 2",
+      );
+    });
+
+    it("raises ArgumentError for nil", () => {
+      assertBoxedError(
+        () => Interpreter.toBoolean(Type.nil()),
+        "ArgumentError",
+        "argument error: nil",
+      );
+    });
+
+    it("raises with an empty trace when no frame is being tracked", () => {
+      const caught = catchError(() => Interpreter.toBoolean(Type.nil(), 16));
+
+      assert.deepStrictEqual(caught.stacktrace, []);
+
+      assert.equal(boxedErrorMessage(caught), "(ArgumentError) argument error: nil");
+    });
+
+    it("reports the given line on the frame the call is made from", () => {
+      CallStack.push(outerFrame());
+      CallStack.push(callerFrame());
+
+      const caught = catchError(() => Interpreter.toBoolean(Type.nil(), 16));
+
+      assert.deepStrictEqual(caught.stacktrace, [{...callerFrame(), line: 16}, outerFrame()]);
+    });
+  });
+
+  // Tests here that mirror an Elixir consistency test in test/elixir/hologram/ex_js_consistency/try_test.exs
+  // share its exact name; always update both together.
+  describe("try()", () => {
+    let context;
+
+    beforeEach(() => {
+      context = contextFixture({
+        vars: {
+          a: Type.integer(1),
+          b: Type.integer(2),
+        },
+      });
+    });
+
+    it("body without any errors, throws or exists / vars are not mutated in body", () => {
+      // try do
+      //   a = 3
+      //   :ok
+      // end
+      const body = (context) => {
+        Interpreter.matchOperator(Type.integer(3), Type.variablePattern("a"), context);
+        return Type.atom("ok");
+      };
+
+      const result = Interpreter.try(body, [], [], [], null, context);
+
+      assert.deepStrictEqual(result, Type.atom("ok"));
+      assert.deepStrictEqual(context.vars.a, Type.integer(1));
+    });
+
+    it("does not leak rescue clause bindings into the outer context", () => {
+      const body = (_context) => {
+        throw new HologramBoxedError(Type.errorStruct("RuntimeError", "boom"));
+      };
+
+      const rescueClauses = [
+        {
+          variable: null,
+          modules: [],
+          body: (context) => {
+            Interpreter.matchOperator(Type.integer(3), Type.variablePattern("a"), context);
+
+            Interpreter.updateVarsToMatchedValues(context);
+
+            return context.vars.a;
+          },
+        },
+      ];
+
+      const result = Interpreter.try(body, rescueClauses, [], [], null, context);
+
+      assert.deepStrictEqual(result, Type.integer(3));
+      assert.deepStrictEqual(context.vars.a, Type.integer(1));
+    });
+
+    it("binds the captured boxed stacktrace in rescue clause scope", () => {
+      const error = new HologramBoxedError(Type.errorStruct("RuntimeError", "boom"));
+
+      error.stacktrace = [
+        {
+          module: "MyModule",
+          function: "my_fun",
+          arityOrArgs: 2,
+          file: "lib/my_module.ex",
+          line: 11,
+          errorInfo: null,
+        },
+      ];
+
+      const body = (_context) => {
+        throw error;
+      };
+
+      const rescueClauses = [
+        {
+          variable: null,
+          modules: [],
+          body: (context) => context.stacktrace,
+        },
+      ];
+
+      const result = Interpreter.try(body, rescueClauses, [], [], null, context);
+
+      assert.deepStrictEqual(
+        result,
+        Type.list([
+          Type.tuple([
+            Type.alias("MyModule"),
+            Type.atom("my_fun"),
+            Type.integer(2),
+            Type.list([
+              Type.tuple([Type.atom("file"), Type.charlist("lib/my_module.ex")]),
+              Type.tuple([Type.atom("line"), Type.integer(11)]),
+            ]),
+          ]),
+        ]),
+      );
+
+      // The binding is clause-scoped and doesn't leak into the outer context.
+      assert.isNull(context.stacktrace);
+    });
+
+    it("binds the captured boxed stacktrace in catch clause scope", () => {
+      const error = new HologramBoxedError(Type.atom("my_value"), Type.atom("throw"));
+
+      error.stacktrace = [
+        {
+          module: "MyModule",
+          function: "my_fun",
+          arityOrArgs: 2,
+          file: "lib/my_module.ex",
+          line: 11,
+          errorInfo: null,
+        },
+      ];
+
+      const body = (_context) => {
+        throw error;
+      };
+
+      const catchClauses = [
+        {
+          kind: Type.variablePattern("kind"),
+          value: Type.variablePattern("value"),
+          guards: [],
+          body: (context) => context.stacktrace,
+        },
+      ];
+
+      const result = Interpreter.try(body, [], catchClauses, [], null, context);
+
+      assert.deepStrictEqual(
+        result,
+        Type.list([
+          Type.tuple([
+            Type.alias("MyModule"),
+            Type.atom("my_fun"),
+            Type.integer(2),
+            Type.list([
+              Type.tuple([Type.atom("file"), Type.charlist("lib/my_module.ex")]),
+              Type.tuple([Type.atom("line"), Type.integer(11)]),
+            ]),
+          ]),
+        ]),
+      );
+    });
+
+    it("runs the after block on success without changing the return value", () => {
+      const body = (_context) => Type.atom("ok");
+
+      let afterRan = false;
+
+      const afterBlock = (_context) => {
+        afterRan = true;
+        return Type.atom("after");
+      };
+
+      const result = Interpreter.try(body, [], [], [], afterBlock, context);
+
+      assert.deepStrictEqual(result, Type.atom("ok"));
+      assert.isTrue(afterRan);
+    });
+
+    it("runs the after block and re-propagates the error when no clause matches", () => {
+      const boxedError = new HologramBoxedError(Type.errorStruct("MyError", "my message"));
+
+      const body = (_context) => {
+        throw boxedError;
+      };
+
+      let afterRan = false;
+
+      const afterBlock = (_context) => {
+        afterRan = true;
+      };
+
+      let caught;
+
+      try {
+        Interpreter.try(body, [], [], [], afterBlock, context);
+      } catch (error) {
+        caught = error;
+      }
+
+      assert.equal(caught, boxedError);
+      assert.isTrue(afterRan);
+    });
+
+    it("re-propagates a non-HologramBoxedError and still runs the after block", () => {
+      const nativeError = new HologramInterpreterError("native error");
+
+      const body = (_context) => {
+        throw nativeError;
+      };
+
+      let afterRan = false;
+
+      const afterBlock = (_context) => {
+        afterRan = true;
+      };
+
+      let caught;
+
+      try {
+        Interpreter.try(body, [], [], [], afterBlock, context);
+      } catch (error) {
+        caught = error;
+      }
+
+      assert.equal(caught, nativeError);
+      assert.isTrue(afterRan);
+    });
+
+    it("propagates an error raised by the after block on the success path", () => {
+      const body = (_context) => Type.atom("ok");
+
+      const afterError = new HologramBoxedError(Type.errorStruct("RuntimeError", "after ran"));
+
+      const afterBlock = (_context) => {
+        throw afterError;
+      };
+
+      let caught;
+
+      try {
+        Interpreter.try(body, [], [], [], afterBlock, context);
+      } catch (error) {
+        caught = error;
+      }
+
+      assert.equal(caught, afterError);
+    });
+
+    it("an after-block error replaces the do-block error on the failure path", () => {
+      const bodyError = new HologramBoxedError(Type.errorStruct("ArgumentError", "boom"));
+
+      const body = (_context) => {
+        throw bodyError;
+      };
+
+      const afterError = new HologramBoxedError(Type.errorStruct("RuntimeError", "after ran"));
+
+      const afterBlock = (_context) => {
+        throw afterError;
+      };
+
+      let caught;
+
+      try {
+        Interpreter.try(body, [], [], [], afterBlock, context);
+      } catch (error) {
+        caught = error;
+      }
+
+      assert.equal(caught, afterError);
+    });
+
+    it("matches the do block result against the else clauses", () => {
+      const body = (_context) => Type.integer(2);
+
+      const elseClauses = [
+        {
+          match: Type.integer(1),
+          guards: [],
+          body: (_context) => Type.atom("one"),
+        },
+        {
+          match: Type.integer(2),
+          guards: [],
+          body: (_context) => Type.atom("two"),
+        },
+      ];
+
+      const result = Interpreter.try(body, [], [], elseClauses, null, context);
+
+      assert.deepStrictEqual(result, Type.atom("two"));
+    });
+
+    it("raises TryClauseError when no else clause matches", () => {
+      const body = (_context) => Type.integer(3);
+
+      const elseClauses = [
+        {
+          match: Type.integer(1),
+          guards: [],
+          body: (_context) => Type.atom("one"),
+        },
+      ];
+
+      assertBoxedError(
+        () => Interpreter.try(body, [], [], elseClauses, null, context),
+        "TryClauseError",
+        "no try clause matching:\n\n    3\n",
+      );
+    });
+
+    it("runs the after block when an else clause does not match", () => {
+      const body = (_context) => Type.integer(3);
+
+      const elseClauses = [
+        {
+          match: Type.integer(1),
+          guards: [],
+          body: (_context) => Type.atom("one"),
+        },
+      ];
+
+      let afterRan = false;
+
+      const afterBlock = (_context) => {
+        afterRan = true;
+      };
+
+      let caught;
+
+      try {
+        Interpreter.try(body, [], [], elseClauses, afterBlock, context);
+      } catch (error) {
+        caught = error;
+      }
+
+      assert.instanceOf(caught, HologramBoxedError);
+      assert.isTrue(afterRan);
+    });
+
+    it("rescues an :error-kind failure with a bare rescue clause", () => {
+      const struct = Type.errorStruct("ArgumentError", "bad arg");
+
+      const body = (_context) => {
+        throw new HologramBoxedError(struct);
+      };
+
+      const rescueClauses = [
+        {variable: null, modules: [], body: (_context) => Type.atom("rescued")},
+      ];
+
+      const result = Interpreter.try(body, rescueClauses, [], [], null, context);
+
+      assert.deepStrictEqual(result, Type.atom("rescued"));
+    });
+
+    it("binds the rescued exception struct to the clause variable", () => {
+      const struct = Type.errorStruct("ArgumentError", "bad arg");
+
+      const body = (_context) => {
+        throw new HologramBoxedError(struct);
+      };
+
+      const rescueClauses = [
+        {
+          variable: Type.variablePattern("e"),
+          modules: [],
+          body: (context) => context.vars.e,
+        },
+      ];
+
+      const result = Interpreter.try(body, rescueClauses, [], [], null, context);
+
+      assert.deepStrictEqual(result, struct);
+    });
+
+    it("rescues an exception whose module is listed in the rescue clause", () => {
+      const struct = Type.errorStruct("ArgumentError", "bad arg");
+
+      const body = (_context) => {
+        throw new HologramBoxedError(struct);
+      };
+
+      const rescueClauses = [
+        {
+          variable: null,
+          modules: [Type.alias("ArgumentError")],
+          body: (_context) => Type.atom("rescued"),
+        },
+      ];
+
+      const result = Interpreter.try(body, rescueClauses, [], [], null, context);
+
+      assert.deepStrictEqual(result, Type.atom("rescued"));
+    });
+
+    it("rescues a bare :error reason normalized into an exception struct", () => {
+      const body = (_context) => {
+        throw new HologramBoxedError(Type.atom("badarg"));
+      };
+
+      const rescueClauses = [
+        {
+          variable: Type.variablePattern("e"),
+          modules: [Type.alias("ArgumentError")],
+          body: (context) => context.vars.e,
+        },
+      ];
+
+      const result = Interpreter.try(body, rescueClauses, [], [], null, context);
+
+      assert.deepStrictEqual(result, Type.errorStruct("ArgumentError", "argument error"));
+    });
+
+    // Case not possible on the server - normalizing a reason there always
+    // succeeds, so every error reaching a rescue carries its exception struct.
+    describe("error that never derived its exception struct", () => {
+      let normalizeErrorStub;
+
+      // Mirrors the derivation machinery faulting, which leaves a bare reason
+      // with no normalized form (see HologramBoxedError).
+      const buildStructlessError = () => {
+        normalizeErrorStub = sinon.stub(Interpreter, "normalizeError").callsFake(() => {
+          throw new TypeError("my fault");
+        });
+
+        const error = new HologramBoxedError(Type.atom("badarg"));
+
+        normalizeErrorStub.restore();
+        normalizeErrorStub = null;
+
+        return error;
+      };
+
+      afterEach(() => {
+        normalizeErrorStub?.restore();
+        normalizeErrorStub = null;
+      });
+
+      it("isn't claimed by a bare rescue clause", () => {
+        const error = buildStructlessError();
+
+        const body = (_context) => {
+          throw error;
+        };
+
+        const rescueClauses = [
+          {
+            variable: Type.variablePattern("e"),
+            modules: [],
+            body: (context) => context.vars.e,
+          },
+        ];
+
+        let caught;
+
+        try {
+          Interpreter.try(body, rescueClauses, [], [], null, context);
+        } catch (thrownError) {
+          caught = thrownError;
+        }
+
+        assert.equal(caught, error);
+      });
+
+      it("isn't claimed by a rescue clause listing modules", () => {
+        const error = buildStructlessError();
+
+        const body = (_context) => {
+          throw error;
+        };
+
+        const rescueClauses = [
+          {
+            variable: null,
+            modules: [Type.alias("ArgumentError")],
+            body: (_context) => Type.atom("rescued"),
+          },
+        ];
+
+        let caught;
+
+        try {
+          Interpreter.try(body, rescueClauses, [], [], null, context);
+        } catch (thrownError) {
+          caught = thrownError;
+        }
+
+        assert.equal(caught, error);
+      });
+    });
+
+    it("reraise re-raises the rescued exception", () => {
+      // try (raise ArgumentError) rescue error -> reraise error, __STACKTRACE__
+      // reraise expands to :erlang.raise(:error, error, __STACKTRACE__), so the
+      // rescued exception propagates unchanged, preserving the stacktrace of
+      // the original raise site - not the rescue clause that re-raises.
+      CallStack.reset();
+
+      CallStack.push({
+        module: "MyModule",
+        function: "my_fun",
+        arityOrArgs: 0,
+        file: "lib/my_module.ex",
+        line: 11,
+        errorInfo: null,
+      });
+
+      const struct = Type.errorStruct("ArgumentError", "my message");
+
+      const body = (_context) => {
+        throw new HologramBoxedError(struct);
+      };
+
+      const rescueClauses = [
+        {
+          variable: Type.variablePattern("error"),
+          modules: [],
+          body: (context) =>
+            Erlang["raise/3"](Type.atom("error"), context.vars.error, context.stacktrace),
+        },
+      ];
+
+      let caught;
+
+      try {
+        Interpreter.try(body, rescueClauses, [], [], null, context);
+      } catch (e) {
+        caught = e;
+      }
+
+      CallStack.reset();
+
+      assert.instanceOf(caught, HologramBoxedError);
+      assert.deepStrictEqual(caught.struct, struct);
+
+      assert.deepStrictEqual(
+        caught.stacktrace,
+        Type.list([
+          Type.tuple([
+            Type.alias("MyModule"),
+            Type.atom("my_fun"),
+            Type.integer(0),
+            Type.list([
+              Type.tuple([Type.atom("file"), Type.charlist("lib/my_module.ex")]),
+              Type.tuple([Type.atom("line"), Type.integer(11)]),
+            ]),
+          ]),
+        ]),
+      );
+    });
+
+    it("__STACKTRACE__ holds the stacktrace pointing to where the error was raised", () => {
+      // Mirrors the consistency test (try_test.exs "__STACKTRACE__ holds the
+      // stacktrace pointing to where the error was raised"): the raise-site
+      // frame is on the call stack when the error is constructed, and
+      // __STACKTRACE__ (compiled to context.stacktrace) evaluates to the boxed
+      // captured trace in rescue clause scope.
+      CallStack.reset();
+
+      CallStack.push({
+        module: "MyModule",
+        function: "my_fun",
+        arityOrArgs: 0,
+        file: "lib/my_module.ex",
+        line: 11,
+        errorInfo: null,
+      });
+
+      const body = (_context) => {
+        throw new HologramBoxedError(Type.errorStruct("RuntimeError", "boom"));
+      };
+
+      // rescue _exception -> __STACKTRACE__
+      const rescueClauses = [
+        {
+          variable: Type.variablePattern("_exception"),
+          modules: [],
+          body: (context) => context.stacktrace,
+        },
+      ];
+
+      const result = Interpreter.try(body, rescueClauses, [], [], null, context);
+
+      CallStack.reset();
+
+      assert.deepStrictEqual(
+        result,
+        Type.list([
+          Type.tuple([
+            Type.alias("MyModule"),
+            Type.atom("my_fun"),
+            Type.integer(0),
+            Type.list([
+              Type.tuple([Type.atom("file"), Type.charlist("lib/my_module.ex")]),
+              Type.tuple([Type.atom("line"), Type.integer(11)]),
+            ]),
+          ]),
+        ]),
+      );
+    });
+
+    it("does not rescue an exception whose module is not listed", () => {
+      const boxedError = new HologramBoxedError(Type.errorStruct("RuntimeError", "boom"));
+
+      const body = (_context) => {
+        throw boxedError;
+      };
+
+      const rescueClauses = [
+        {
+          variable: null,
+          modules: [Type.alias("ArgumentError")],
+          body: (_context) => Type.atom("rescued"),
+        },
+      ];
+
+      let caught;
+
+      try {
+        Interpreter.try(body, rescueClauses, [], [], null, context);
+      } catch (error) {
+        caught = error;
+      }
+
+      assert.equal(caught, boxedError);
+    });
+
+    it("does not rescue a :throw-kind failure", () => {
+      const boxedError = new HologramBoxedError(Type.atom("thrown"), Type.atom("throw"));
+
+      const body = (_context) => {
+        throw boxedError;
+      };
+
+      const rescueClauses = [
+        {variable: null, modules: [], body: (_context) => Type.atom("rescued")},
+      ];
+
+      let caught;
+
+      try {
+        Interpreter.try(body, rescueClauses, [], [], null, context);
+      } catch (error) {
+        caught = error;
+      }
+
+      assert.equal(caught, boxedError);
+    });
+
+    it("catches a :throw failure, binding the thrown value", () => {
+      const thrown = Type.atom("thrown_value");
+
+      const body = (_context) => {
+        throw new HologramBoxedError(thrown, Type.atom("throw"));
+      };
+
+      const catchClauses = [
+        {
+          kind: Type.atom("throw"),
+          value: Type.variablePattern("v"),
+          guards: [],
+          body: (context) => context.vars.v,
+        },
+      ];
+
+      const result = Interpreter.try(body, [], catchClauses, [], null, context);
+
+      assert.deepStrictEqual(result, thrown);
+    });
+
+    it("catches an :exit failure", () => {
+      const reason = Type.atom("reason");
+
+      const body = (_context) => {
+        throw new HologramBoxedError(reason, Type.atom("exit"));
+      };
+
+      const catchClauses = [
+        {
+          kind: Type.atom("exit"),
+          value: Type.variablePattern("r"),
+          guards: [],
+          body: (context) => context.vars.r,
+        },
+      ];
+
+      const result = Interpreter.try(body, [], catchClauses, [], null, context);
+
+      assert.deepStrictEqual(result, reason);
+    });
+
+    it("catches an :error failure, binding the exception struct", () => {
+      const struct = Type.errorStruct("ArgumentError", "bad arg");
+
+      const body = (_context) => {
+        throw new HologramBoxedError(struct);
+      };
+
+      const catchClauses = [
+        {
+          kind: Type.atom("error"),
+          value: Type.variablePattern("e"),
+          guards: [],
+          body: (context) => context.vars.e,
+        },
+      ];
+
+      const result = Interpreter.try(body, [], catchClauses, [], null, context);
+
+      assert.deepStrictEqual(result, struct);
+    });
+
+    it("catches when the clause guard passes", () => {
+      const body = (_context) => {
+        throw new HologramBoxedError(Type.integer(5), Type.atom("throw"));
+      };
+
+      const guard = (context) => Erlang["==/2"](context.vars.n, Type.integer(5));
+
+      const catchClauses = [
+        {
+          kind: Type.atom("throw"),
+          value: Type.variablePattern("n"),
+          guards: [guard],
+          body: (_context) => Type.atom("caught"),
+        },
+      ];
+
+      const result = Interpreter.try(body, [], catchClauses, [], null, context);
+
+      assert.deepStrictEqual(result, Type.atom("caught"));
+    });
+
+    it("does not catch when the clause guard fails", () => {
+      const boxedError = new HologramBoxedError(Type.integer(5), Type.atom("throw"));
+
+      const body = (_context) => {
+        throw boxedError;
+      };
+
+      const guard = (context) => Erlang["==/2"](context.vars.n, Type.integer(0));
+
+      const catchClauses = [
+        {
+          kind: Type.atom("throw"),
+          value: Type.variablePattern("n"),
+          guards: [guard],
+          body: (_context) => Type.atom("caught"),
+        },
+      ];
+
+      let caught;
+
+      try {
+        Interpreter.try(body, [], catchClauses, [], null, context);
+      } catch (error) {
+        caught = error;
+      }
+
+      assert.equal(caught, boxedError);
+    });
+
+    it("does not catch when the clause kind does not match", () => {
+      const boxedError = new HologramBoxedError(Type.atom("x"), Type.atom("exit"));
+
+      const body = (_context) => {
+        throw boxedError;
+      };
+
+      const catchClauses = [
+        {
+          kind: Type.atom("throw"),
+          value: Type.variablePattern("v"),
+          guards: [],
+          body: (_context) => Type.atom("caught"),
+        },
+      ];
+
+      let caught;
+
+      try {
+        Interpreter.try(body, [], catchClauses, [], null, context);
+      } catch (error) {
+        caught = error;
+      }
+
+      assert.equal(caught, boxedError);
+    });
+
+    it("does not catch when the value pattern does not match", () => {
+      const boxedError = new HologramBoxedError(Type.atom("actual"), Type.atom("throw"));
+
+      const body = (_context) => {
+        throw boxedError;
+      };
+
+      const catchClauses = [
+        {
+          kind: Type.atom("throw"),
+          value: Type.atom("expected"),
+          guards: [],
+          body: (_context) => Type.atom("caught"),
+        },
+      ];
+
+      let caught;
+
+      try {
+        Interpreter.try(body, [], catchClauses, [], null, context);
+      } catch (error) {
+        caught = error;
+      }
+
+      assert.equal(caught, boxedError);
+    });
+
+    it("falls through from rescue to catch for a :throw failure", () => {
+      const body = (_context) => {
+        throw new HologramBoxedError(Type.atom("thrown"), Type.atom("throw"));
+      };
+
+      const rescueClauses = [
+        {variable: null, modules: [], body: (_context) => Type.atom("rescued")},
+      ];
+
+      const catchClauses = [
+        {
+          kind: Type.atom("throw"),
+          value: Type.variablePattern("v"),
+          guards: [],
+          body: (context) => context.vars.v,
+        },
+      ];
+
+      const result = Interpreter.try(body, rescueClauses, catchClauses, [], null, context);
+
+      assert.deepStrictEqual(result, Type.atom("thrown"));
+    });
+  });
+
+  it("updateVarsToMatchedValues()", () => {
+    const context = contextFixture({
+      vars: {
+        a: 1,
+        b: 2,
+        c: 3,
+        __matched__: {
+          d: 4,
+          a: 11,
+          e: 5,
+          c: 33,
+        },
+      },
+    });
+
+    const result = Interpreter.updateVarsToMatchedValues(context);
+
+    const expected = contextFixture({
+      vars: {
+        a: 11,
+        b: 2,
+        c: 33,
+        d: 4,
+        e: 5,
+      },
+    });
+
+    assert.equal(result, context);
+    assert.deepStrictEqual(result, expected);
+  });
+
+  // IMPORTANT!
+  // Each JavaScript test has a related Elixir consistency test in test/elixir/hologram/ex_js_consistency/with_test.exs
+  // and a related feature test in test/features/test/control_flow/with_test.exs.
+  // Always update all three together.
+  describe("with()", () => {
+    let context, body;
+
+    beforeEach(() => {
+      context = contextFixture({
+        vars: {
+          a: Type.atom("ok"),
+        },
+      });
+
+      body = (context) => {
+        return Type.tuple([context.vars.a, context.vars.b]);
+      };
+    });
+
+    it("evaluates the body when there are no clauses", () => {
+      // with do: nil
+      const result = Interpreter.with(
+        (_context) => {
+          return Type.atom("nil");
+        },
+        [],
+        [],
+        context,
+      );
+
+      const expected = Type.atom("nil");
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("returns the unmatched value when there are no else clauses", () => {
+      // with :error <- a do
+      //   :body
+      // end
+      const result = Interpreter.with(
+        (_context) => Type.atom("body"),
+        [
+          {
+            match: Type.atom("error"),
+            guards: [],
+            expression: (context) => context.vars.a,
+          },
+        ],
+        [],
+        context,
+      );
+
+      const expected = Type.atom("ok");
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    describe("match clauses", () => {
+      it("returns the body result for a single matching clause", () => {
+        // with b <- a do
+        //   {a, b}
+        // end
+        const result = Interpreter.with(
+          body,
+          [
+            {
+              match: Type.variablePattern("b"),
+              guards: [],
+              expression: (context) => context.vars.a,
+            },
+          ],
+          [],
+          context,
+        );
+
+        const expected = Type.tuple([Type.atom("ok"), Type.atom("ok")]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("returns the body result for multiple matching clauses", () => {
+        // with b <- a,
+        //      :ok <- b do
+        //   {a, b}
+        // end
+        const result = Interpreter.with(
+          body,
+          [
+            {
+              match: Type.variablePattern("b"),
+              guards: [],
+              expression: (context) => context.vars.a,
+            },
+            {
+              match: Type.atom("ok"),
+              guards: [],
+              expression: (context) => context.vars.b,
+            },
+          ],
+          [],
+          context,
+        );
+
+        const expected = Type.tuple([Type.atom("ok"), Type.atom("ok")]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("returns the body result for a clause with a passing guard", () => {
+        // with b when b == :ok <- a do
+        //   {a, b}
+        // end
+
+        const guard = (context) => Erlang["==/2"](context.vars.b, Type.atom("ok"));
+
+        const result = Interpreter.with(
+          body,
+          [
+            {
+              match: Type.variablePattern("b"),
+              guards: [guard],
+              expression: (context) => context.vars.a,
+            },
+          ],
+          [],
+          context,
+        );
+
+        const expected = Type.tuple([Type.atom("ok"), Type.atom("ok")]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+    });
+
+    describe("bare clauses", () => {
+      it("evaluates a bare expression clause that binds a variable", () => {
+        // with b = a do
+        //   {a, b}
+        // end
+        const result = Interpreter.with(
+          body,
+          [
+            {
+              expression: (context) =>
+                Interpreter.matchOperator(context.vars.a, Type.variablePattern("b"), context),
+            },
+          ],
+          [],
+          context,
+        );
+
+        const expected = Type.tuple([Type.atom("ok"), Type.atom("ok")]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("evaluates a bare expression clause that does not bind a variable", () => {
+        // with b <- a,
+        //      :noop do
+        //   {a, b}
+        // end
+        const result = Interpreter.with(
+          body,
+          [
+            {
+              match: Type.variablePattern("b"),
+              guards: [],
+              expression: (context) => context.vars.a,
+            },
+            {
+              expression: (_context) => Type.atom("noop"),
+            },
+          ],
+          [],
+          context,
+        );
+
+        const expected = Type.tuple([Type.atom("ok"), Type.atom("ok")]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("evaluates multiple bare expression clauses", () => {
+        // with b = a,
+        //      c = b do
+        //   {a, b, c}
+        // end
+        const result = Interpreter.with(
+          (context) => Type.tuple([context.vars.a, context.vars.b, context.vars.c]),
+          [
+            {
+              expression: (context) =>
+                Interpreter.matchOperator(context.vars.a, Type.variablePattern("b"), context),
+            },
+            {
+              expression: (context) =>
+                Interpreter.matchOperator(context.vars.b, Type.variablePattern("c"), context),
+            },
+          ],
+          [],
+          context,
+        );
+
+        const expected = Type.tuple([Type.atom("ok"), Type.atom("ok"), Type.atom("ok")]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("raises a MatchError when a bare clause fails to match", () => {
+        // with :error = a do
+        //   :body
+        // end
+        assertBoxedError(
+          () =>
+            Interpreter.with(
+              (_context) => Type.atom("body"),
+              [
+                {
+                  expression: (context) =>
+                    Interpreter.matchOperator(context.vars.a, Type.atom("error"), context),
+                },
+              ],
+              [],
+              context,
+            ),
+          "MatchError",
+          buildMatchErrorMsg(context.vars.a),
+        );
+      });
+    });
+
+    describe("else clauses", () => {
+      it("routes a failed match to a single else clause", () => {
+        // with :error <- a do
+        //   :body
+        // else
+        //   :ok -> :match
+        // end
+        const result = Interpreter.with(
+          (_context) => Type.atom("body"),
+          [
+            {
+              match: Type.atom("error"),
+              guards: [],
+              expression: (context) => context.vars.a,
+            },
+          ],
+          [
+            {
+              match: Type.atom("ok"),
+              guards: [],
+              body: (_context) => Type.atom("match"),
+            },
+          ],
+          context,
+        );
+
+        const expected = Type.atom("match");
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("selects the matching clause among multiple else clauses", () => {
+        // with :error <- a do
+        //   :body
+        // else
+        //   :a -> :first
+        //   :ok -> :second
+        //   :c -> :third
+        // end
+        const result = Interpreter.with(
+          (_context) => Type.atom("body"),
+          [
+            {
+              match: Type.atom("error"),
+              guards: [],
+              expression: (context) => context.vars.a,
+            },
+          ],
+          [
+            {
+              match: Type.atom("a"),
+              guards: [],
+              body: (_context) => Type.atom("first"),
+            },
+            {
+              match: Type.atom("ok"),
+              guards: [],
+              body: (_context) => Type.atom("second"),
+            },
+            {
+              match: Type.atom("c"),
+              guards: [],
+              body: (_context) => Type.atom("third"),
+            },
+          ],
+          context,
+        );
+
+        const expected = Type.atom("second");
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("selects a guarded else clause when its guard passes", () => {
+        // with :error <- a do
+        //   :body
+        // else
+        //   e when e == :ok -> {:guarded, e}
+        // end
+
+        const guard = (context) => Erlang["==/2"](context.vars.e, Type.atom("ok"));
+
+        const result = Interpreter.with(
+          (_context) => Type.atom("body"),
+          [
+            {
+              match: Type.atom("error"),
+              guards: [],
+              expression: (context) => context.vars.a,
+            },
+          ],
+          [
+            {
+              match: Type.variablePattern("e"),
+              guards: [guard],
+              body: (context) => Type.tuple([Type.atom("guarded"), context.vars.e]),
+            },
+          ],
+          context,
+        );
+
+        const expected = Type.tuple([Type.atom("guarded"), Type.atom("ok")]);
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("routes a failed guard to the else clauses", () => {
+        // with b when b == :no <- a do
+        //   :body
+        // else
+        //   :ok -> {:error, :nomatch}
+        // end
+
+        const guard = (context) => Erlang["==/2"](context.vars.b, Type.atom("no"));
+
+        const expected = Type.tuple([Type.atom("error"), Type.atom("nomatch")]);
+
+        const result = Interpreter.with(
+          (_context) => Type.atom("body"),
+          [
+            {
+              match: Type.variablePattern("b"),
+              guards: [guard],
+              expression: (context) => context.vars.a,
+            },
+          ],
+          [
+            {
+              match: Type.atom("ok"),
+              guards: [],
+              body: (_context) => expected,
+            },
+          ],
+          context,
+        );
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("raises WithClauseError when no else clause matches", () => {
+        // with :error <- a do
+        //   :body
+        // else
+        //   :other -> nil
+        // end
+        assertBoxedError(
+          () =>
+            Interpreter.with(
+              (_context) => Type.atom("body"),
+              [
+                {
+                  match: Type.atom("error"),
+                  guards: [],
+                  expression: (context) => context.vars.a,
+                },
+              ],
+              [
+                {
+                  match: Type.atom("other"),
+                  guards: [],
+                  body: (_context) => Type.nil(),
+                },
+              ],
+              context,
+            ),
+          "WithClauseError",
+          buildWithClauseErrorMsg(context.vars.a),
+        );
+      });
+    });
+
+    describe("variable scoping", () => {
+      it("does not leak assignments into the original context", () => {
+        // a = :ok
+        //
+        // with b <- a do
+        //   a = 2
+        //   {a, b}
+        // end
+        //
+        // a == :ok
+
+        Interpreter.with(
+          (context) => {
+            Interpreter.matchOperator(Type.integer(2), Type.variablePattern("a"), context);
+
+            Interpreter.updateVarsToMatchedValues(context);
+
+            return Type.tuple([context.vars.a, context.vars.b]);
+          },
+          [
+            {
+              match: Type.variablePattern("b"),
+              guards: [],
+              expression: (context) => context.vars.a,
+            },
+          ],
+          [],
+          context,
+        );
+
+        assert.deepStrictEqual(context.vars.a, Type.atom("ok"));
+        assert.deepStrictEqual(context.vars.b, undefined);
+      });
+
+      it("evaluates else clauses in the original context", () => {
+        // x = :original
+        //
+        // with x <- a,
+        //      :fail <- :mismatch do
+        //   x
+        // else
+        //   _fallback -> x
+        // end
+
+        const contextWithX = contextFixture({
+          vars: {
+            a: Type.atom("ok"),
+            x: Type.atom("original"),
+          },
+        });
+
+        const result = Interpreter.with(
+          (context) => context.vars.x,
+          [
+            {
+              match: Type.variablePattern("x"),
+              guards: [],
+              expression: (context) => context.vars.a,
+            },
+            {
+              match: Type.atom("fail"),
+              guards: [],
+              expression: (_context) => Type.atom("mismatch"),
+            },
+          ],
+          [
+            {
+              match: Type.matchPlaceholder(),
+              guards: [],
+              body: (context) => context.vars.x,
+            },
+          ],
+          contextWithX,
+        );
+
+        const expected = Type.atom("original");
+
+        assert.deepStrictEqual(result, expected);
+      });
+
+      it("lets a later clause shadow an earlier binding", () => {
+        // with a <-
+        //        (
+        //          b = 1
+        //          _var = b
+        //          1
+        //        ),
+        //      b <- 2 do
+        //   a + b
+        // end
+        const result = Interpreter.with(
+          (context) => Erlang["+/2"](context.vars.a, context.vars.b),
+          [
+            {
+              match: Type.variablePattern("a"),
+              guards: [],
+              expression: (context) => {
+                Interpreter.matchOperator(Type.integer(1), Type.variablePattern("b"), context);
+
+                Interpreter.updateVarsToMatchedValues(context);
+
+                // `_var = b` is a no-op here. It is kept so this test stays
+                // identical to its Elixir consistency counterpart, where it marks
+                // `b` as used to avoid the unused-variable compiler warning.
+                Interpreter.matchOperator(context.vars.b, Type.matchPlaceholder(), context);
+
+                Interpreter.updateVarsToMatchedValues(context);
+
+                return Type.integer(1);
+              },
+            },
+            {
+              match: Type.variablePattern("b"),
+              guards: [],
+              expression: (_context) => Type.integer(2),
+            },
+          ],
+          [],
+          context,
+        );
+
+        const expected = Type.integer(3);
+
+        assert.deepStrictEqual(result, expected);
+      });
+    });
+  });
+});

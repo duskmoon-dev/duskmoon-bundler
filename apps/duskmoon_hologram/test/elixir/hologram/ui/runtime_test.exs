@@ -1,0 +1,148 @@
+defmodule Hologram.UI.RuntimeTest do
+  use Hologram.Test.BasicCase, async: false
+
+  import Hologram.Test.Stubs
+  import Mox
+
+  alias Hologram.Assets.PathRegistry, as: AssetPathRegistry
+  alias Hologram.UI.Runtime
+
+  use_module_stub :asset_path_registry
+
+  setup :set_mox_global
+
+  setup do
+    setup_asset_path_registry(AssetPathRegistryStub)
+    AssetPathRegistry.register("hologram/runtime.js", "/hologram/runtime-1234567890abcdef.js")
+
+    [
+      context: %{
+        {Hologram.Runtime, :csrf_token} => "test-csrf-token-12345",
+        {Hologram.Runtime, :initial_page?} => false,
+        {Hologram.Runtime, :instance_id} => "test-instance-id-abcde",
+        {Hologram.Runtime, :page_digest} => "102790adb6c3b1956db310be523a7693",
+        {Hologram.Runtime, :page_module} => MyPage,
+        {Hologram.Runtime, :page_mounted?} => false
+      }
+    ]
+  end
+
+  test "initial page, page mounted", %{context: context} do
+    context =
+      context
+      |> Map.put({Hologram.Runtime, :initial_page?}, true)
+      |> Map.put({Hologram.Runtime, :page_mounted?}, true)
+
+    markup = render_component(Runtime, %{}, context)
+
+    refute String.contains?(markup, "globalThis.Hologram._pendingJsInteropActions")
+    refute String.contains?(markup, "globalThis.Hologram.assetManifest")
+    refute String.contains?(markup, "globalThis.Hologram.csrfToken")
+    refute String.contains?(markup, "globalThis.Hologram.dispatchAction")
+    refute String.contains?(markup, "globalThis.Hologram.initialChunkDigests")
+    refute String.contains?(markup, "globalThis.Hologram.initialPageDigest")
+    refute String.contains?(markup, "globalThis.Hologram.instanceId")
+    refute String.contains?(markup, "globalThis.Hologram.pageMountData")
+    refute String.contains?(markup, "hologram/runtime")
+    refute String.contains?(markup, "$CHUNK_SCRIPT_TAGS_PLACEHOLDER")
+    refute String.contains?(markup, "hologram/page")
+  end
+
+  test "initial page, page not mounted", %{context: context} do
+    context = Map.put(context, {Hologram.Runtime, :initial_page?}, true)
+    markup = render_component(Runtime, %{}, context)
+
+    assert String.contains?(markup, "globalThis.Hologram._pendingJsInteropActions")
+    assert String.contains?(markup, "globalThis.Hologram.assetManifest")
+    assert String.contains?(markup, "globalThis.Hologram.csrfToken")
+    assert String.contains?(markup, "globalThis.Hologram.dispatchAction")
+
+    assert String.contains?(
+             markup,
+             "globalThis.Hologram.initialChunkDigests = $CHUNK_DIGESTS_JS_PLACEHOLDER;"
+           )
+
+    assert String.contains?(
+             markup,
+             ~s(globalThis.Hologram.initialPageDigest = "102790adb6c3b1956db310be523a7693")
+           )
+
+    assert String.contains?(markup, "globalThis.Hologram.instanceId")
+    assert String.contains?(markup, "globalThis.Hologram.pageMountData")
+    assert String.contains?(markup, "hologram/runtime")
+    assert String.contains?(markup, "$CHUNK_SCRIPT_TAGS_PLACEHOLDER")
+    assert String.contains?(markup, "hologram/page")
+  end
+
+  test "not initial page, page mounted", %{context: initial_context} do
+    context =
+      initial_context
+      |> Map.delete({Hologram.Runtime, :csrf_token})
+      |> Map.delete({Hologram.Runtime, :instance_id})
+      |> Map.put({Hologram.Runtime, :page_mounted?}, true)
+
+    markup = render_component(Runtime, %{}, context)
+
+    refute String.contains?(markup, "globalThis.Hologram._pendingJsInteropActions")
+    refute String.contains?(markup, "globalThis.Hologram.assetManifest")
+    refute String.contains?(markup, "globalThis.Hologram.csrfToken")
+    refute String.contains?(markup, "globalThis.Hologram.dispatchAction")
+    refute String.contains?(markup, "globalThis.Hologram.initialChunkDigests")
+    refute String.contains?(markup, "globalThis.Hologram.initialPageDigest")
+    refute String.contains?(markup, "globalThis.Hologram.instanceId")
+    refute String.contains?(markup, "globalThis.Hologram.pageMountData")
+    refute String.contains?(markup, "hologram/runtime")
+    refute String.contains?(markup, "$CHUNK_SCRIPT_TAGS_PLACEHOLDER")
+    refute String.contains?(markup, "hologram/page")
+  end
+
+  # This is the navigation case. The mount data reaches the client as its own payload fields, so
+  # the script that would carry it is not rendered - only the page bundle is, and the client drops
+  # that one itself.
+  test "not initial page, page not mounted", %{context: initial_context} do
+    context =
+      initial_context
+      |> Map.delete({Hologram.Runtime, :csrf_token})
+      |> Map.delete({Hologram.Runtime, :instance_id})
+
+    markup = render_component(Runtime, %{}, context)
+
+    refute String.contains?(markup, "globalThis.Hologram._pendingJsInteropActions")
+    refute String.contains?(markup, "globalThis.Hologram.assetManifest")
+    refute String.contains?(markup, "globalThis.Hologram.csrfToken")
+    refute String.contains?(markup, "globalThis.Hologram.dispatchAction")
+    refute String.contains?(markup, "globalThis.Hologram.initialChunkDigests")
+    refute String.contains?(markup, "globalThis.Hologram.initialPageDigest")
+    refute String.contains?(markup, "globalThis.Hologram.instanceId")
+    refute String.contains?(markup, "globalThis.Hologram.pageMountData")
+    refute String.contains?(markup, "hologram/runtime")
+    refute String.contains?(markup, "$CHUNK_SCRIPT_TAGS_PLACEHOLDER")
+    assert String.contains?(markup, "hologram/page")
+  end
+
+  test "csrf_token prop", %{context: initial_context} do
+    context = Map.put(initial_context, {Hologram.Runtime, :initial_page?}, true)
+    markup = render_component(Runtime, %{}, context)
+
+    assert String.contains?(markup, ~s'globalThis.Hologram.csrfToken = "test-csrf-token-12345";')
+  end
+
+  test "instance_id prop", %{context: initial_context} do
+    context = Map.put(initial_context, {Hologram.Runtime, :initial_page?}, true)
+    markup = render_component(Runtime, %{}, context)
+
+    assert String.contains?(
+             markup,
+             ~s'globalThis.Hologram.instanceId = "test-instance-id-abcde";'
+           )
+  end
+
+  test "page bundle script", %{context: context} do
+    markup = render_component(Runtime, %{}, context)
+
+    assert String.contains?(
+             markup,
+             ~s'<script async src="/hologram/page-MyPage-102790adb6c3b1956db310be523a7693.js">'
+           )
+  end
+end

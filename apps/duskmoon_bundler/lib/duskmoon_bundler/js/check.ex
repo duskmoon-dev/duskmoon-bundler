@@ -26,7 +26,12 @@ defmodule DuskmoonBundler.JS.Check do
   end
 
   def lint(files, opts \\ []) do
-    config = Application.get_env(:duskmoon_bundler, :lint, [])
+    profile = Keyword.get(opts, :profile)
+    profile_config = if profile, do: Application.get_env(:duskmoon_bundler, profile, []), else: []
+
+    config =
+      Keyword.get(profile_config, :lint) || Application.get_env(:duskmoon_bundler, :lint, [])
+
     rules = Keyword.get(config, :rules, %{})
 
     if opts[:type_aware] do

@@ -1,0 +1,783 @@
+defmodule Hologram.Realtime.SSE do
+  @moduledoc false
+
+  alias Hologram.Assets.ChunkRegistry
+  alias Hologram.Compiler.Encoder
+  alias Hologram.Component.Action
+  alias Hologram.LiveReload
+  alias Hologram.Realtime
+  alias Hologram.Realtime.Handshake
+  alias Hologram.Realtime.Receipt
+  alias Hologram.Realtime.SSE.Adapters
+  alias Hologram.Realtime.SubscriptionRegistry
+  alias Hologram.Runtime.Session
+
+  # Read only when the host app enables the test seams - see maybe_delay_attach/1.
+  @attach_delay_cookie "hologram_sse_attach_delay_ms"
+
+  # Read only when the host app enables the test seams - see heartbeat_interval_ms/1.
+  @heartbeat_interval_cookie "hologram_sse_heartbeat_interval_ms"
+
+  @heartbeat_interval_ms 15_000
+  @max_heap_size_words 1_000_000
+  @receipts_refresh_interval_ms 12 * 60 * 60 * 1000
+
+  @doc """
+  Returns the name of the cookie carrying the test-only attach delay.
+
+  Honored only when the host app sets `:__sse_test_seams_enabled__`, so it has
+  no effect in production. See `maybe_delay_attach/1`.
+  """
+  @spec attach_delay_cookie() :: String.t()
+  def attach_delay_cookie, do: @attach_delay_cookie
+
+  @doc """
+  Builds the SSE event-stream chunk for an `action` broadcast: the standard
+  `event:`/`id:`/`data:` framing with the given id and, as the data payload, a JSON
+  object holding the encoded `%Action{}` struct under `action` and the digests of the
+  chunks its struct types need under `chunks` (see `Hologram.Assets.ChunkRegistry`),
+  which the client loads before it runs the action.
+  """
+  @spec encode_action_envelope(integer, Action.t()) :: String.t()
+  def encode_action_envelope(id, %Action{} = action) do
+    {:ok, encoded_action} = Encoder.encode_term(action)
+    data = Jason.encode!(%{action: encoded_action, chunks: ChunkRegistry.lookup_term(action)})
+
+    "event: action\nid: #{id}\ndata: #{data}\n\n"
+  end
+
+  @doc """
+  Builds the SSE event-stream chunk for an `add_sub_receipts` event: the
+  standard `event:`/`id:`/`data:` framing with the given id and the encoded
+  list of `{channel, cid, token}` triples as the data payload.
+  """
+  @spec encode_add_sub_receipts_envelope(integer, [{any, String.t(), String.t()}]) ::
+          String.t()
+  def encode_add_sub_receipts_envelope(id, receipts) do
+    {:ok, data} = Encoder.encode_term(receipts)
+    "event: add_sub_receipts\nid: #{id}\ndata: #{data}\n\n"
+  end
+
+  @doc """
+  Builds the SSE event-stream chunk for a `broadcast` event: the standard
+  `event:`/`id:`/`data:` framing with the given id and, as the data payload, a JSON
+  object holding the encoded `{action_name, params, [cid1, cid2, ...]}` tuple under
+  `data` and the digests of the chunks the struct types in the params need under
+  `chunks` (see `Hologram.Assets.ChunkRegistry`), which the client loads before it
+  runs the actions.
+
+  The cids list lets the client iterate per-cid dispatch from a single
+  bundled chunk rather than receiving one `event: action` per matching cid.
+  """
+  @spec encode_broadcast_envelope(integer, atom, map, [String.t()]) :: String.t()
+  def encode_broadcast_envelope(id, action_name, params, cids) do
+    {:ok, encoded_tuple} = Encoder.encode_term({action_name, params, cids})
+    data = Jason.encode!(%{chunks: ChunkRegistry.lookup_term(params), data: encoded_tuple})
+
+    "event: broadcast\nid: #{id}\ndata: #{data}\n\n"
+  end
+
+  @doc """
+  Builds the SSE event-stream chunk for a `compilation_error` event: the standard
+  `event:`/`id:`/`data:` framing with the given id and the JSON-encoded lines of the
+  error (see `Hologram.LiveReload.Diagnostic`) as the data payload.
+  """
+  @spec encode_compilation_error_envelope(integer, [[map]]) :: String.t()
+  def encode_compilation_error_envelope(id, lines) do
+    "event: compilation_error\nid: #{id}\ndata: #{Jason.encode!(lines)}\n\n"
+  end
+
+  @doc """
+  Builds the SSE event-stream chunk for a `compiled` event: the standard
+  `event:`/`id:`/`data:` framing with the given id and an empty data payload,
+  since the event says only that a live reload compiled. The empty `data:` line
+  is still sent: the browser drops an event that carries no data field.
+  """
+  @spec encode_compiled_envelope(integer) :: String.t()
+  def encode_compiled_envelope(id) do
+    "event: compiled\nid: #{id}\ndata:\n\n"
+  end
+
+  @doc """
+  Builds the SSE event-stream chunk for a `drop_sub_receipts` event: the
+  standard `event:`/`id:`/`data:` framing with the given id and the encoded
+  list of `{channel, cid}` keys as the data payload.
+  """
+  @spec encode_drop_sub_receipts_envelope(integer, [{any, String.t()}]) :: String.t()
+  def encode_drop_sub_receipts_envelope(id, keys) do
+    {:ok, data} = Encoder.encode_term(keys)
+    "event: drop_sub_receipts\nid: #{id}\ndata: #{data}\n\n"
+  end
+
+  @doc """
+  Builds the SSE event-stream chunk for a `heartbeat` event: an `event:` line and
+  an empty `data:` line. The data line is what makes browsers dispatch the event -
+  the SSE parser discards an event with no data, and never surfaces a comment to
+  JavaScript at all.
+  """
+  @spec encode_heartbeat_envelope() :: String.t()
+  def encode_heartbeat_envelope, do: "event: heartbeat\ndata:\n\n"
+
+  @doc """
+  Builds the SSE event-stream chunk for a `refresh_sub_receipts` event: the
+  standard `event:`/`id:`/`data:` framing with the given id and the encoded
+  list of `{channel, cid, token}` triples as the data payload.
+  """
+  @spec encode_refresh_sub_receipts_envelope(integer, [{any, String.t(), String.t()}]) ::
+          String.t()
+  def encode_refresh_sub_receipts_envelope(id, receipts) do
+    {:ok, data} = Encoder.encode_term(receipts)
+    "event: refresh_sub_receipts\nid: #{id}\ndata: #{data}\n\n"
+  end
+
+  @doc """
+  Builds the SSE event-stream chunk for a `reload` event: the standard
+  `event:`/`id:`/`data:` framing with the given id and, as the data payload, the JSON
+  list of the page modules whose bundles a live reload rebuilt (`"Elixir.MyApp.HomePage"`),
+  or `"all"` when every tab must reload.
+  """
+  @spec encode_reload_envelope(integer, [module] | :all) :: String.t()
+  def encode_reload_envelope(id, pages) do
+    "event: reload\nid: #{id}\ndata: #{Jason.encode!(pages)}\n\n"
+  end
+
+  @doc """
+  Returns the name of the cookie carrying the test-only heartbeat interval.
+
+  Honored only when the host app sets `:__sse_test_seams_enabled__`, so it has
+  no effect in production. See `heartbeat_interval_ms/1`.
+  """
+  @spec heartbeat_interval_cookie() :: String.t()
+  def heartbeat_interval_cookie, do: @heartbeat_interval_cookie
+
+  @doc """
+  Returns the heartbeat interval for the given connection, in milliseconds.
+
+  The handshake response tells the client this number and the stream keeps it, so
+  the client's liveness check and the server's writes agree. Test-only: when the
+  host app sets `:__sse_test_seams_enabled__`, a positive integer in the
+  `hologram_sse_heartbeat_interval_ms` cookie overrides the default, per browser.
+  """
+  @spec heartbeat_interval_ms(Plug.Conn.t()) :: pos_integer
+  def heartbeat_interval_ms(initial_conn) do
+    if Application.get_env(:duskmoon_hologram, :__sse_test_seams_enabled__, false) do
+      conn = Plug.Conn.fetch_cookies(initial_conn)
+
+      with value when is_binary(value) <- conn.cookies[@heartbeat_interval_cookie],
+           {interval_ms, ""} when interval_ms > 0 <- Integer.parse(value) do
+        interval_ms
+      else
+        _no_override -> @heartbeat_interval_ms
+      end
+    else
+      @heartbeat_interval_ms
+    end
+  end
+
+  # No `connection` header: HTTP/2 forbids connection-specific header fields and treats a
+  # response carrying one as malformed, which WebKit enforces by dropping the stream. The
+  # header buys nothing where it is legal either, since HTTP/1.1 keeps connections alive by
+  # default and the adapter writes the header itself when a version needs it spelled out.
+  #
+  # Public so tests can exercise the prep step without entering the blocking
+  # message-pump loop.
+  @doc false
+  @spec prepare(Plug.Conn.t()) :: Plug.Conn.t()
+  def prepare(conn) do
+    conn
+    |> Plug.Conn.put_resp_header("cache-control", "no-cache")
+    |> Plug.Conn.put_resp_header("content-type", "text/event-stream")
+    |> Plug.Conn.send_chunked(200)
+  end
+
+  # Public so tests can step the pump one message at a time without spawning
+  # the blocking loop.
+  @doc false
+  @spec process_message(Plug.Conn.t(), term | nil, term | nil, keyword) ::
+          {:cont, Plug.Conn.t()}
+          | {:cont, Plug.Conn.t(), term | nil, term | nil}
+          | {:halt, Plug.Conn.t()}
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
+  def process_message(conn, session_id, user_id, opts \\ []) do
+    heartbeat_interval_ms =
+      Keyword.get(opts, :heartbeat_interval_ms, @heartbeat_interval_ms)
+
+    receipts_refresh_interval_ms =
+      Keyword.get(opts, :receipts_refresh_interval_ms, @receipts_refresh_interval_ms)
+
+    adapter = Keyword.get(opts, :adapter, Adapters.Passive)
+
+    receive do
+      {:add_sub_receipts, receipts} ->
+        id = System.unique_integer([:positive, :monotonic])
+        chunk_data = encode_add_sub_receipts_envelope(id, receipts)
+
+        case Plug.Conn.chunk(conn, chunk_data) do
+          {:ok, conn} -> {:cont, conn}
+          {:error, _reason} -> {:halt, conn}
+        end
+
+      # A subscription granted from outside any handler. The binding is registered and
+      # its receipt signed here rather than by the grantor, so the authorization carries
+      # the identity this connection holds at delivery time.
+      {:add_subscription, channel, cid} ->
+        conn = Plug.Conn.fetch_query_params(conn)
+        instance_id = conn.query_params["instance_id"]
+
+        SubscriptionRegistry.apply_deltas(instance_id, [{channel, cid}], [], user_id)
+
+        token = Receipt.issue(channel, cid, instance_id, user_id)
+        id = System.unique_integer([:positive, :monotonic])
+        chunk_data = encode_add_sub_receipts_envelope(id, [{channel, cid, token}])
+
+        case Plug.Conn.chunk(conn, chunk_data) do
+          {:ok, conn} -> {:cont, conn}
+          {:error, _reason} -> {:halt, conn}
+        end
+
+      # Deltas a node that does not hold this connection could not apply itself. The
+      # instance id travels in the message rather than being read from the query params,
+      # since the sender identified the connection, not this stream.
+      #
+      # Only the node holding the connection answers. Being subscribed to the announce
+      # topic implies holding the entry in every steady state, but not in recovery ones
+      # (a registry restart empties the table while streams live on) - and applying
+      # against a missing entry would park this pump for the whole attach window.
+      # Staying silent leaves the ask to the requester's republish cadence instead.
+      {:apply_deltas_remote, instance_id, adds, drops, authorizing_user_id, reply_to, waiter_ref} ->
+        if SubscriptionRegistry.bindings_of(instance_id) do
+          result =
+            SubscriptionRegistry.apply_deltas(instance_id, adds, drops, authorizing_user_id)
+
+          send(reply_to, {:apply_deltas_remote_reply, instance_id, waiter_ref, result})
+        end
+
+        {:cont, conn}
+
+      {:broadcast_action, channel, action_name, params, excluded_identities} ->
+        conn = Plug.Conn.fetch_query_params(conn)
+        instance_id = conn.query_params["instance_id"]
+
+        if has_excluded_identity?(instance_id, session_id, user_id, excluded_identities) do
+          {:cont, conn}
+        else
+          bindings = SubscriptionRegistry.bindings_of(instance_id) || %{}
+
+          matching_cids =
+            for {{ch, cid}, _user_id} <- bindings, ch == channel, do: cid
+
+          dispatch_broadcast_to_cids(conn, action_name, params, matching_cids)
+        end
+
+      {:close, _reason} ->
+        {:halt, conn}
+
+      # A live reload whose compile failed, Elixir's or Hologram's. Forwarded as it came:
+      # the tab shows it until a live reload compiles.
+      {:compilation_error, lines} ->
+        id = System.unique_integer([:positive, :monotonic])
+        chunk_data = encode_compilation_error_envelope(id, lines)
+
+        case Plug.Conn.chunk(conn, chunk_data) do
+          {:ok, conn} -> {:cont, conn}
+          {:error, _reason} -> {:halt, conn}
+        end
+
+      # A live reload compiled. Forwarded to every tab: one showing a compilation error
+      # takes it down, whether or not the live reload rebuilt its page.
+      :compiled ->
+        id = System.unique_integer([:positive, :monotonic])
+        chunk_data = encode_compiled_envelope(id)
+
+        case Plug.Conn.chunk(conn, chunk_data) do
+          {:ok, conn} -> {:cont, conn}
+          {:error, _reason} -> {:halt, conn}
+        end
+
+      {:drop_channel, channel} ->
+        conn = Plug.Conn.fetch_query_params(conn)
+        instance_id = conn.query_params["instance_id"]
+        bindings = SubscriptionRegistry.bindings_of(instance_id) || %{}
+
+        keys =
+          bindings
+          |> Map.keys()
+          |> Enum.filter(fn {ch, _cid} -> ch == channel end)
+
+        drop_keys_and_emit(conn, instance_id, keys)
+
+      {:drop_sub_receipts, keys} ->
+        conn = Plug.Conn.fetch_query_params(conn)
+        instance_id = conn.query_params["instance_id"]
+        drop_keys_and_emit(conn, instance_id, keys)
+
+      :heartbeat ->
+        case Plug.Conn.chunk(conn, encode_heartbeat_envelope()) do
+          {:ok, conn} ->
+            schedule_heartbeat(heartbeat_interval_ms)
+            {:cont, conn}
+
+          {:error, _reason} ->
+            {:halt, conn}
+        end
+
+      {:identity_changed, new_session_id, new_user_id} ->
+        maybe_reconcile_identity_subs(:session, session_id, new_session_id)
+        maybe_reconcile_session_announce_sub(session_id, new_session_id)
+        maybe_reconcile_identity_subs(:user, user_id, new_user_id)
+        maybe_reconcile_user_announce_sub(user_id, new_user_id)
+
+        conn = Plug.Conn.fetch_query_params(conn)
+        instance_id = conn.query_params["instance_id"]
+        SubscriptionRegistry.update_identity(instance_id, new_session_id, new_user_id)
+
+        case maybe_drop_identity_change_bindings(conn, instance_id, user_id, new_user_id) do
+          {:cont, conn} -> {:cont, conn, new_session_id, new_user_id}
+          {:halt, conn} -> {:halt, conn}
+        end
+
+      :refresh_receipts ->
+        case dispatch_receipts_refresh(conn) do
+          {:cont, conn} ->
+            schedule_receipts_refresh(receipts_refresh_interval_ms)
+            {:cont, conn}
+
+          {:halt, conn} ->
+            {:halt, conn}
+        end
+
+      # A live reload rebuilt these pages' bundles. Every tab gets the list, and the
+      # client decides whether the page it shows is among them.
+      {:reload, pages} ->
+        id = System.unique_integer([:positive, :monotonic])
+        chunk_data = encode_reload_envelope(id, pages)
+
+        case Plug.Conn.chunk(conn, chunk_data) do
+          {:ok, conn} -> {:cont, conn}
+          {:error, _reason} -> {:halt, conn}
+        end
+
+      # A page render declares the complete subscription set, so the bindings are
+      # replaced rather than folded. Nothing is answered - the renderer computed the
+      # client's diff without the registry.
+      {:replace_subscriptions, new_sub_keys, authorizing_user_id} ->
+        conn = Plug.Conn.fetch_query_params(conn)
+        instance_id = conn.query_params["instance_id"]
+
+        SubscriptionRegistry.replace_bindings(instance_id, new_sub_keys, authorizing_user_id)
+
+        {:cont, conn}
+
+      {:sub, channel} ->
+        topic = Realtime.channel_topic(channel)
+        Phoenix.PubSub.subscribe(Hologram.PubSub, topic)
+        {:cont, conn}
+
+      {:unsub, channel} ->
+        topic = Realtime.channel_topic(channel)
+        Phoenix.PubSub.unsubscribe(Hologram.PubSub, topic)
+        {:cont, conn}
+
+      # Whatever the pump doesn't recognise goes to the server's adapter, which is the only
+      # part that knows how a departed client shows up here.
+      message ->
+        case adapter.handle_message(message) do
+          :closed -> {:halt, conn}
+          :ignore -> {:cont, conn}
+        end
+    end
+  end
+
+  @doc """
+  Opens an SSE stream on the given conn and enters a message-pump loop that
+  runs until the connection is closed.
+
+  ## Options
+
+    * `:heartbeat_interval_ms` - milliseconds between heartbeat events. A proxy
+      keep-alive on the server side, and the client's proof that the stream is
+      alive. Defaults to `15_000`.
+  """
+  @spec stream(Plug.Conn.t(), keyword) :: Plug.Conn.t()
+  def stream(conn, opts \\ []) do
+    conn = Plug.Conn.fetch_query_params(conn)
+    handshake_id = conn.query_params["handshake_id"]
+
+    server_wait_ms =
+      Keyword.get(opts, :server_wait_ms, Handshake.server_wait_ms())
+
+    claimed = claimed_identity(conn)
+
+    case Handshake.redeem(handshake_id, server_wait_ms) do
+      {:ok, validated_bindings, ^claimed} ->
+        configure_backpressure_safety_net()
+
+        heartbeat_interval_ms =
+          Keyword.get(opts, :heartbeat_interval_ms, heartbeat_interval_ms(conn))
+
+        receipts_refresh_interval_ms =
+          Keyword.get(opts, :receipts_refresh_interval_ms, @receipts_refresh_interval_ms)
+
+        schedule_heartbeat(heartbeat_interval_ms)
+        schedule_receipts_refresh(receipts_refresh_interval_ms)
+
+        adapter = adapter_for(conn)
+
+        message_pump_opts = [
+          adapter: adapter,
+          heartbeat_interval_ms: heartbeat_interval_ms,
+          receipts_refresh_interval_ms: receipts_refresh_interval_ms
+        ]
+
+        {_instance_id, session_id, user_id} = claimed
+
+        # Announce topics are joined before the registry attach, so the window between
+        # the connection becoming discoverable and this process listening does not
+        # exist. Anything published in the meantime waits in the mailbox and is applied
+        # once the pump starts, by which point the attach has folded in the handshake's
+        # own bindings.
+        conn
+        |> maybe_subscribe_to_live_reload()
+        |> subscribe_to_announce_topics()
+        |> maybe_delay_attach()
+        |> attach_validated_subscriptions(validated_bindings)
+        |> prepare()
+        |> watch_client(adapter)
+        |> message_pump(session_id, user_id, message_pump_opts)
+
+      :error ->
+        reject_4xx(conn, "Handshake redemption failed")
+
+      {:ok, _bindings, _stashed} ->
+        reject_4xx(conn, "Handshake identity mismatch")
+    end
+  end
+
+  # Public so tests can exercise the registry attach + per-channel PubSub
+  # subscribes without entering the blocking message-pump loop.
+  @doc false
+  @spec attach_validated_subscriptions(Plug.Conn.t(), [{{any, String.t()}, term | nil}]) ::
+          Plug.Conn.t()
+  def attach_validated_subscriptions(initial_conn, validated_bindings) do
+    conn = Plug.Conn.fetch_query_params(initial_conn)
+
+    instance_id = conn.query_params["instance_id"]
+    session_id = Session.get_session_id(conn)
+    user_id = Session.get_user_id(conn)
+
+    validated_channels =
+      SubscriptionRegistry.attach_connection(
+        instance_id,
+        session_id,
+        user_id,
+        self(),
+        validated_bindings
+      )
+
+    Enum.each(validated_channels, fn channel ->
+      topic = Realtime.channel_topic(channel)
+      Phoenix.PubSub.subscribe(Hologram.PubSub, topic)
+    end)
+
+    conn
+  end
+
+  # Public so tests can exercise the pure refresh-list build without entering
+  # the blocking message-pump loop.
+  @doc false
+  @spec build_refresh_receipts(String.t(), %{{any, String.t()} => term | nil}) ::
+          [{any, String.t(), String.t()}]
+  def build_refresh_receipts(instance_id, bindings) do
+    Enum.map(bindings, fn {{channel, cid}, authorizing_user_id} ->
+      token = Receipt.issue(channel, cid, instance_id, authorizing_user_id)
+      {channel, cid, token}
+    end)
+  end
+
+  # Public so tests can exercise the identity-topic diff without entering the
+  # blocking message-pump loop.
+  @doc false
+  @spec maybe_reconcile_identity_subs(:session | :user, term | nil, term | nil) :: :ok
+  def maybe_reconcile_identity_subs(kind, old, new) when kind in [:session, :user] and old == new,
+    do: :ok
+
+  def maybe_reconcile_identity_subs(kind, nil, new) when kind in [:session, :user] do
+    new_topic = Realtime.identity_topic(kind, new)
+    Phoenix.PubSub.subscribe(Hologram.PubSub, new_topic)
+  end
+
+  def maybe_reconcile_identity_subs(kind, old, nil) when kind in [:session, :user] do
+    old_topic = Realtime.identity_topic(kind, old)
+    Phoenix.PubSub.unsubscribe(Hologram.PubSub, old_topic)
+  end
+
+  def maybe_reconcile_identity_subs(kind, old, new) when kind in [:session, :user] do
+    old_topic = Realtime.identity_topic(kind, old)
+    new_topic = Realtime.identity_topic(kind, new)
+
+    Phoenix.PubSub.unsubscribe(Hologram.PubSub, old_topic)
+    Phoenix.PubSub.subscribe(Hologram.PubSub, new_topic)
+  end
+
+  # Public so tests can exercise the announce-topic swap without entering the
+  # blocking message-pump loop.
+  @doc false
+  @spec maybe_reconcile_session_announce_sub(term | nil, term | nil) :: :ok
+  def maybe_reconcile_session_announce_sub(old, new) when old == new, do: :ok
+
+  def maybe_reconcile_session_announce_sub(nil, new) do
+    new_topic = Realtime.session_announce_topic(new)
+    Phoenix.PubSub.subscribe(Hologram.PubSub, new_topic)
+  end
+
+  def maybe_reconcile_session_announce_sub(old, nil) do
+    old_topic = Realtime.session_announce_topic(old)
+    Phoenix.PubSub.unsubscribe(Hologram.PubSub, old_topic)
+  end
+
+  def maybe_reconcile_session_announce_sub(old, new) do
+    old_topic = Realtime.session_announce_topic(old)
+    new_topic = Realtime.session_announce_topic(new)
+
+    Phoenix.PubSub.unsubscribe(Hologram.PubSub, old_topic)
+    Phoenix.PubSub.subscribe(Hologram.PubSub, new_topic)
+  end
+
+  # Public so tests can exercise the announce-topic swap without entering the
+  # blocking message-pump loop.
+  @doc false
+  @spec maybe_reconcile_user_announce_sub(term | nil, term | nil) :: :ok
+  def maybe_reconcile_user_announce_sub(old, new) when old == new, do: :ok
+
+  def maybe_reconcile_user_announce_sub(nil, new) do
+    new_topic = Realtime.user_announce_topic(new)
+    Phoenix.PubSub.subscribe(Hologram.PubSub, new_topic)
+  end
+
+  def maybe_reconcile_user_announce_sub(old, nil) do
+    old_topic = Realtime.user_announce_topic(old)
+    Phoenix.PubSub.unsubscribe(Hologram.PubSub, old_topic)
+  end
+
+  def maybe_reconcile_user_announce_sub(old, new) do
+    old_topic = Realtime.user_announce_topic(old)
+    new_topic = Realtime.user_announce_topic(new)
+
+    Phoenix.PubSub.unsubscribe(Hologram.PubSub, old_topic)
+    Phoenix.PubSub.subscribe(Hologram.PubSub, new_topic)
+  end
+
+  # Public so tests can exercise subscription wiring without entering the
+  # blocking message-pump loop.
+  @doc false
+  @spec subscribe_to_announce_topics(Plug.Conn.t()) :: Plug.Conn.t()
+  def subscribe_to_announce_topics(conn) do
+    conn = Plug.Conn.fetch_query_params(conn)
+
+    instance_id = conn.query_params["instance_id"]
+    instance_topic = Realtime.instance_announce_topic(instance_id)
+    Phoenix.PubSub.subscribe(Hologram.PubSub, instance_topic)
+
+    session_id = Session.get_session_id(conn)
+    session_topic = Realtime.session_announce_topic(session_id)
+    Phoenix.PubSub.subscribe(Hologram.PubSub, session_topic)
+
+    if user_id = Session.get_user_id(conn) do
+      user_topic = Realtime.user_announce_topic(user_id)
+      Phoenix.PubSub.subscribe(Hologram.PubSub, user_topic)
+    end
+
+    conn
+  end
+
+  # The server-specific half of the stream, picked from the conn so nothing needs
+  # configuring. Bandit is matched by name only - Hologram doesn't depend on it.
+  defp adapter_for(%Plug.Conn{adapter: {Bandit.Adapter, _state}}), do: Adapters.Bandit
+
+  defp adapter_for(_conn), do: Adapters.Passive
+
+  defp claimed_identity(conn) do
+    {
+      conn.query_params["instance_id"],
+      Session.get_session_id(conn),
+      Session.get_user_id(conn)
+    }
+  end
+
+  # Caps the SSE process's heap so a slow consumer can't bloat the BEAM by
+  # accumulating broadcasts in its mailbox. Depends on the default `:on_heap`
+  # mailbox - do NOT switch the SSE process to `message_queue_data: :off_heap`
+  # without revisiting this guard, since off-heap message data is not counted
+  # against `:max_heap_size`.
+  defp configure_backpressure_safety_net do
+    Process.flag(:max_heap_size, %{
+      size: @max_heap_size_words,
+      kill: true,
+      error_logger: true
+    })
+  end
+
+  defp dispatch_broadcast_to_cids(conn, _action_name, _params, []), do: {:cont, conn}
+
+  defp dispatch_broadcast_to_cids(conn, action_name, params, cids) do
+    id = System.unique_integer([:positive, :monotonic])
+    chunk = encode_broadcast_envelope(id, action_name, params, cids)
+
+    case Plug.Conn.chunk(conn, chunk) do
+      {:ok, conn} -> {:cont, conn}
+      {:error, _reason} -> {:halt, conn}
+    end
+  end
+
+  defp dispatch_receipts_refresh(initial_conn) do
+    conn = Plug.Conn.fetch_query_params(initial_conn)
+    instance_id = conn.query_params["instance_id"]
+    bindings = SubscriptionRegistry.bindings_of(instance_id) || %{}
+
+    if map_size(bindings) == 0 do
+      {:cont, conn}
+    else
+      receipts = build_refresh_receipts(instance_id, bindings)
+      id = System.unique_integer([:positive, :monotonic])
+
+      case Plug.Conn.chunk(conn, encode_refresh_sub_receipts_envelope(id, receipts)) do
+        {:ok, conn} -> {:cont, conn}
+        {:error, _reason} -> {:halt, conn}
+      end
+    end
+  end
+
+  defp drop_keys_and_emit(conn, _instance_id, []), do: {:cont, conn}
+
+  defp drop_keys_and_emit(conn, instance_id, keys) do
+    {_actually_dropped, zero_crossing_channels} =
+      SubscriptionRegistry.drop_keys(instance_id, keys)
+
+    Enum.each(zero_crossing_channels, fn channel ->
+      topic = Realtime.channel_topic(channel)
+      Phoenix.PubSub.unsubscribe(Hologram.PubSub, topic)
+    end)
+
+    id = System.unique_integer([:positive, :monotonic])
+    chunk_data = encode_drop_sub_receipts_envelope(id, keys)
+
+    case Plug.Conn.chunk(conn, chunk_data) do
+      {:ok, conn} -> {:cont, conn}
+      {:error, _reason} -> {:halt, conn}
+    end
+  end
+
+  defp has_excluded_identity?(instance_id, session_id, user_id, excluded_identities) do
+    instance_id
+    |> own_identities(session_id, user_id)
+    |> Enum.any?(&(&1 in excluded_identities))
+  end
+
+  # Test-only seam. Holds the stream open before it attaches, so a test can put a
+  # command on the wire while the instance still has no registry entry - the boot-time
+  # race a subscription declared from a command has to survive. That race is otherwise
+  # unreproducible over a local loop, where the attach reliably wins.
+  #
+  # Scoped by cookie rather than application env so concurrently running test files
+  # cannot disturb each other, and gated on the host app opting in so a client can
+  # never slow its own attach in production.
+  defp maybe_delay_attach(initial_conn) do
+    if Application.get_env(:duskmoon_hologram, :__sse_test_seams_enabled__, false) do
+      conn = Plug.Conn.fetch_cookies(initial_conn)
+
+      with value when is_binary(value) <- conn.cookies[@attach_delay_cookie],
+           {delay_ms, ""} when delay_ms > 0 <- Integer.parse(value) do
+        Process.sleep(delay_ms)
+      end
+
+      conn
+    else
+      initial_conn
+    end
+  end
+
+  defp maybe_drop_identity_change_bindings(conn, _instance_id, user_id, user_id),
+    do: {:cont, conn}
+
+  defp maybe_drop_identity_change_bindings(conn, instance_id, _old_user_id, new_user_id) do
+    {dropped_keys, zero_crossing_channels} =
+      SubscriptionRegistry.drop_for_identity_change(instance_id, new_user_id)
+
+    Enum.each(zero_crossing_channels, fn channel ->
+      topic = Realtime.channel_topic(channel)
+      Phoenix.PubSub.unsubscribe(Hologram.PubSub, topic)
+    end)
+
+    case dropped_keys do
+      [] ->
+        {:cont, conn}
+
+      _keys ->
+        id = System.unique_integer([:positive, :monotonic])
+        chunk_data = encode_drop_sub_receipts_envelope(id, dropped_keys)
+
+        case Plug.Conn.chunk(conn, chunk_data) do
+          {:ok, conn} -> {:cont, conn}
+          {:error, _reason} -> {:halt, conn}
+        end
+    end
+  end
+
+  # Live reload runs in dev only, so nothing publishes on the topic elsewhere except a test,
+  # which is why test streams listen too: the feature tests reload tabs this way.
+  #
+  # The outcome of the last live reload is asked for once subscribed, since a broadcast reaches
+  # only the streams attached when it is sent: a tab reloaded while a live reload was still
+  # building, or one reconnecting, would otherwise miss the compilation error, or keep one a
+  # later live reload compiled past.
+  defp maybe_subscribe_to_live_reload(conn) do
+    if Hologram.env() in [:dev, :test] do
+      Phoenix.PubSub.subscribe(Hologram.PubSub, "hologram_live_reload")
+      LiveReload.replay_outcome(self())
+    end
+
+    conn
+  end
+
+  defp message_pump(conn, session_id, user_id, opts) do
+    case process_message(conn, session_id, user_id, opts) do
+      {:cont, conn} ->
+        message_pump(conn, session_id, user_id, opts)
+
+      {:cont, conn, new_session_id, new_user_id} ->
+        message_pump(conn, new_session_id, new_user_id, opts)
+
+      {:halt, conn} ->
+        conn
+    end
+  end
+
+  defp own_identities(instance_id, session_id, user_id) do
+    base = [{:instance, instance_id}, {:session, session_id}]
+
+    case user_id do
+      nil -> base
+      user_id -> [{:user, user_id} | base]
+    end
+  end
+
+  # sobelow_skip ["XSS.SendResp"]
+  defp reject_4xx(conn, message) do
+    conn
+    |> Plug.Conn.send_resp(400, message)
+    |> Plug.Conn.halt()
+  end
+
+  defp schedule_heartbeat(heartbeat_interval_ms) do
+    Process.send_after(self(), :heartbeat, heartbeat_interval_ms)
+  end
+
+  defp schedule_receipts_refresh(interval_ms) do
+    Process.send_after(self(), :refresh_receipts, interval_ms)
+  end
+
+  defp watch_client(conn, adapter) do
+    :ok = adapter.watch(conn)
+    conn
+  end
+end

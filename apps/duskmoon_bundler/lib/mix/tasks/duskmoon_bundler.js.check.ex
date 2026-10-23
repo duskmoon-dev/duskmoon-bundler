@@ -7,6 +7,7 @@ defmodule Mix.Tasks.DuskmoonBundler.Js.Check do
   Check formatting and lint DuskmoonBundler's JavaScript and TypeScript assets via NIF.
 
       mix duskmoon_bundler.js.check
+      mix duskmoon_bundler.js.check my_app_web
       mix duskmoon_bundler.js.check --type-aware --type-check
 
   Reads format options from `config :duskmoon_bundler, :format` (falls back to `.oxfmtrc.json`).
@@ -22,13 +23,13 @@ defmodule Mix.Tasks.DuskmoonBundler.Js.Check do
     Mix.Task.run("app.config")
 
     opts = parse_args!(args)
-    format_files = DuskmoonBundler.JS.Helpers.discover_format_files()
-    lint_files = DuskmoonBundler.JS.Helpers.discover_files()
+    format_files = DuskmoonBundler.JS.Helpers.discover_format_files(profile: opts[:profile])
+    lint_files = DuskmoonBundler.JS.Helpers.discover_files(profile: opts[:profile])
 
     if format_files == [] and lint_files == [] do
       Mix.shell().info("No files found")
     else
-      format_ok = check_formatting(format_files)
+      format_ok = check_formatting(format_files, opts[:profile])
       lint_ok = check_lint(lint_files, opts)
 
       unless format_ok and lint_ok do
@@ -37,10 +38,13 @@ defmodule Mix.Tasks.DuskmoonBundler.Js.Check do
     end
   end
 
-  defp check_formatting([]), do: true
+  defp check_formatting([], _profile), do: true
 
-  defp check_formatting(files) do
-    case DuskmoonBundler.JS.Check.check_formatting(files) do
+  defp check_formatting(files, profile) do
+    case DuskmoonBundler.JS.Check.check_formatting(
+           files,
+           DuskmoonBundler.JS.Format.load_config(profile)
+         ) do
       %{errors: [_ | _] = errors} ->
         Mix.shell().error("#{length(errors)} file(s) could not be formatted:")
 
@@ -80,7 +84,7 @@ defmodule Mix.Tasks.DuskmoonBundler.Js.Check do
   end
 
   defp parse_args!(args) do
-    {opts, _argv, invalid} =
+    {opts, argv, invalid} =
       OptionParser.parse(args,
         strict: [type_aware: :boolean, type_check: :boolean],
         aliases: [T: :type_aware]
@@ -90,7 +94,7 @@ defmodule Mix.Tasks.DuskmoonBundler.Js.Check do
       Mix.raise("Invalid options: #{Enum.map_join(invalid, ", ", &elem(&1, 0))}")
     end
 
-    opts
+    Keyword.put(opts, :profile, DuskmoonBundler.Config.Profile.from_args(argv))
   end
 
   defp print_lint_diags(diags) do

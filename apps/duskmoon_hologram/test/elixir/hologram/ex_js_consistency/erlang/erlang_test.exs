@@ -1,0 +1,7847 @@
+defmodule Hologram.ExJsConsistency.Erlang.ErlangTest do
+  @moduledoc """
+  IMPORTANT!
+  Each Elixir consistency test has a related JavaScript test in test/javascript/erlang/erlang_test.mjs
+  Always update both together.
+  """
+
+  use Hologram.Test.BasicCase, async: true
+
+  alias Hologram.Commons.SystemUtils
+  alias Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1
+  alias Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module2
+  alias Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module3
+
+  @moduletag :consistency
+
+  @erts_info [error_info: %{module: :erl_erts_errors}]
+
+  describe "*/2" do
+    test "float * float" do
+      assert :erlang.*(2.0, 3.0) === 6.0
+    end
+
+    test "float * integer" do
+      assert :erlang.*(3.0, 2) === 6.0
+    end
+
+    test "integer * float" do
+      assert :erlang.*(2, 3.0) === 6.0
+    end
+
+    test "integer * integer" do
+      assert :erlang.*(2, 3) === 6
+    end
+
+    test "raises ArithmeticError if the first argument is not a number" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: :a * 1",
+                   {:erlang, :*, [:a, 1]}
+    end
+
+    test "raises ArithmeticError if the second argument is not a number" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: 1 * :a",
+                   {:erlang, :*, [1, :a]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:a)
+
+      top_frame =
+        try do
+          :erlang.*(arg, 1)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :*, [:a, 1], @erts_info}
+    end
+  end
+
+  describe "+/1" do
+    test "positive float" do
+      assert :erlang.+(1.23) == 1.23
+    end
+
+    test "positive integer" do
+      assert :erlang.+(123) == 123
+    end
+
+    test "negative float" do
+      assert :erlang.+(-1.23) == -1.23
+    end
+
+    test "negative integer" do
+      assert :erlang.+(-123) == -123
+    end
+
+    test "0.0 (float)" do
+      assert :erlang.+(0.0) == 0.0
+    end
+
+    test "0 (integer)" do
+      assert :erlang.+(0) == 0
+    end
+
+    test "non-number" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: +(:abc)",
+                   {:erlang, :+, [:abc]}
+    end
+
+    test "error frame carries args and error_info" do
+      # The Elixir compiler can rewrite a direct unary call into its binary
+      # counterpart, which reports a different arity, so the BIF is applied
+      # here instead. The client always calls the ported function.
+      top_frame =
+        try do
+          apply(:erlang, :+, wrap_term([:abc]))
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :+, [:abc], @erts_info}
+    end
+  end
+
+  describe "+/2" do
+    test "float + float" do
+      assert :erlang.+(1.0, 2.0) === 3.0
+    end
+
+    test "float + integer" do
+      assert :erlang.+(1.0, 2) === 3.0
+    end
+
+    test "integer + float" do
+      assert :erlang.+(1, 2.0) === 3.0
+    end
+
+    test "integer + integer" do
+      assert :erlang.+(1, 2) === 3
+    end
+
+    test "raises ArithmeticError if the first argument is not a number" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: :a + 1",
+                   {:erlang, :+, [:a, 1]}
+    end
+
+    test "raises ArithmeticError if the second argument is not a number" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: 1 + :a",
+                   {:erlang, :+, [1, :a]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:a)
+
+      top_frame =
+        try do
+          :erlang.+(arg, 1)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :+, [:a, 1], @erts_info}
+    end
+  end
+
+  describe "++/2" do
+    test "concatenates a proper non-empty list and another proper non-empty list" do
+      assert :erlang.++([1, 2], [3, 4]) == [1, 2, 3, 4]
+    end
+
+    test "concatenates a proper non-empty list and an improper list" do
+      assert :erlang.++([1, 2], [3 | 4]) == [1, 2, 3 | 4]
+    end
+
+    test "concatenates a proper non-empty list and a term that is not a list" do
+      assert :erlang.++([1, 2], 3) == [1, 2 | 3]
+    end
+
+    test "first list is empty" do
+      assert :erlang.++([], [1, 2]) == [1, 2]
+    end
+
+    test "second list is empty" do
+      assert :erlang.++([1, 2], []) == [1, 2]
+    end
+
+    test "raises ArgumentError if the first argument is not a list" do
+      assert_error ArgumentError, "argument error", {:erlang, :++, [:abc, []]}
+    end
+
+    test "raises ArgumentError if the first argument is an improper list" do
+      assert_error ArgumentError, "argument error", {:erlang, :++, [[1 | 2], []]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.++(arg, [])
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :++, [:abc, []], @erts_info}
+    end
+  end
+
+  describe "-/1" do
+    test "positive float" do
+      assert :erlang.-(1.23) == -1.23
+    end
+
+    test "positive integer" do
+      assert :erlang.-(123) == -123
+    end
+
+    test "negative float" do
+      assert :erlang.-(-1.23) == 1.23
+    end
+
+    test "negative integer" do
+      assert :erlang.-(-123) == 123
+    end
+
+    test "0.0 (float)" do
+      assert :erlang.-(0.0) == 0.0
+    end
+
+    test "0 (integer)" do
+      assert :erlang.-(0) == 0
+    end
+
+    test "non-number" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: -(:abc)",
+                   {:erlang, :-, [:abc]}
+    end
+
+    test "error frame carries args and error_info" do
+      # The Elixir compiler can rewrite a direct unary call into its binary
+      # counterpart, which reports a different arity, so the BIF is applied
+      # here instead. The client always calls the ported function.
+      top_frame =
+        try do
+          apply(:erlang, :-, wrap_term([:abc]))
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :-, [:abc], @erts_info}
+    end
+  end
+
+  describe "-/2" do
+    test "float - float" do
+      assert :erlang.-(3.0, 2.0) === 1.0
+    end
+
+    test "float - integer" do
+      assert :erlang.-(3.0, 2) === 1.0
+    end
+
+    test "integer - float" do
+      assert :erlang.-(3, 2.0) === 1.0
+    end
+
+    test "integer - integer" do
+      assert :erlang.-(3, 2) === 1
+    end
+
+    test "raises ArithmeticError if the first argument is not a number" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: :a - 1",
+                   {:erlang, :-, [:a, 1]}
+    end
+
+    test "raises ArithmeticError if the second argument is not a number" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: 1 - :a",
+                   {:erlang, :-, [1, :a]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:a)
+
+      top_frame =
+        try do
+          :erlang.-(arg, 1)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :-, [:a, 1], @erts_info}
+    end
+  end
+
+  describe "--/2" do
+    test "there are no matching elems" do
+      assert :erlang.--([1, 2], [3, 4]) == [1, 2]
+    end
+
+    test "removes the first occurrence of an element in the left list for each element in the right list" do
+      assert :erlang.--([1, 2, 3, 1, 2, 3, 1], [1, 3, 3, 4]) == [2, 1, 2, 1]
+    end
+
+    test "first list is empty" do
+      assert :erlang.--([], [1, 2]) == []
+    end
+
+    test "second list is empty" do
+      assert :erlang.--([1, 2], []) == [1, 2]
+    end
+
+    test "first arg is not a list" do
+      assert_error ArgumentError,
+                   "argument error",
+                   {:erlang, :--, [:abc, [1, 2]]}
+    end
+
+    test "second arg is not a list" do
+      assert_error ArgumentError,
+                   "argument error",
+                   {:erlang, :--, [[1, 2], :abc]}
+    end
+
+    # Removing from a list means walking it to the end, and an improper one has
+    # no end to reach.
+    test "first arg is an improper list" do
+      assert_error ArgumentError,
+                   "argument error",
+                   {:erlang, :--, [[1 | 2], [1]]}
+    end
+
+    test "second arg is an improper list" do
+      assert_error ArgumentError,
+                   "argument error",
+                   {:erlang, :--, [[1], [1 | 2]]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.--(arg, [])
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :--, [:abc, []], @erts_info}
+    end
+  end
+
+  describe "//2" do
+    test "divides float by float" do
+      assert :erlang./(3.0, 2.0) == 1.5
+    end
+
+    test "divides integer by integer" do
+      assert :erlang./(3, 2) == 1.5
+    end
+
+    test "first arg is not a number" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: :abc / 3",
+                   {:erlang, :/, [:abc, 3]}
+    end
+
+    test "second arg is not a number" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: 3 / :abc",
+                   {:erlang, :/, [3, :abc]}
+    end
+
+    test "second arg is equal to (float) 0.0" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: 1 / 0.0",
+                   {:erlang, :/, [1, 0.0]}
+    end
+
+    test "second arg is equal to (integer) 0" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: 1 / 0",
+                   {:erlang, :/, [1, 0]}
+    end
+
+    test "error frame carries args and error_info" do
+      # The Elixir compiler inlines a direct :erlang./ call into the division
+      # operator, which raises without a frame of its own, so the BIF is
+      # applied here instead. The client always calls the ported function.
+      top_frame =
+        try do
+          apply(:erlang, :/, wrap_term([:abc, 3]))
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :/, [:abc, 3], @erts_info}
+    end
+  end
+
+  describe "/=/2" do
+    test "atom == atom" do
+      assert :erlang."/="(:a, :a) == false
+    end
+
+    test "float == float" do
+      assert :erlang."/="(1.0, 1.0) == false
+    end
+
+    test "float == integer" do
+      assert :erlang."/="(1.0, 1) == false
+    end
+
+    test "integer == float" do
+      assert :erlang."/="(1, 1.0) == false
+    end
+
+    test "integer == integer" do
+      assert :erlang."/="(1, 1) == false
+    end
+
+    test "pid == pid" do
+      left_pid = pid("0.11.222")
+      right_pid = pid("0.11.222")
+
+      assert :erlang."/="(left_pid, right_pid) == false
+    end
+
+    test "tuple == tuple" do
+      assert :erlang."/="({1, 2, 3}, {1, 2, 3}) == false
+    end
+
+    test "atom < atom" do
+      assert :erlang."/="(:a, :b) == true
+    end
+
+    test "float < atom (always)" do
+      assert :erlang."/="(1.0, :a) == true
+    end
+
+    test "float < float" do
+      assert :erlang."/="(1.0, 2.0) == true
+    end
+
+    test "float < integer" do
+      assert :erlang."/="(1.0, 2) == true
+    end
+
+    test "integer < atom (always)" do
+      assert :erlang."/="(1, :a) == true
+    end
+
+    test "integer < float" do
+      assert :erlang."/="(1, 2.0) == true
+    end
+
+    test "integer < integer" do
+      assert :erlang."/="(1, 2) == true
+    end
+
+    test "pid < pid" do
+      left_pid = pid("0.11.111")
+      right_pid = pid("0.11.112")
+
+      assert :erlang."/="(left_pid, right_pid) == true
+    end
+
+    test "pid < tuple (always)" do
+      pid = pid("0.11.111")
+      assert :erlang."/="(pid, {1, 2}) == true
+    end
+
+    test "tuple < tuple" do
+      assert :erlang."/="({1, 2}, {1, 2, 3}) == true
+    end
+
+    test "atom > atom" do
+      assert :erlang."/="(:b, :a) == true
+    end
+
+    test "float > float" do
+      assert :erlang."/="(2.0, 1.0) == true
+    end
+
+    test "float > integer" do
+      assert :erlang."/="(2.0, 1) == true
+    end
+
+    test "integer > float" do
+      assert :erlang."/="(2, 1.0) == true
+    end
+
+    test "integer > integer" do
+      assert :erlang."/="(2, 1) == true
+    end
+
+    test "pid > pid" do
+      left_pid = pid("0.11.112")
+      right_pid = pid("0.11.111")
+
+      assert :erlang."/="(left_pid, right_pid) == true
+    end
+
+    test "tuple > tuple" do
+      assert :erlang."/="({1, 2, 3}, {1, 2}) == true
+    end
+
+    test "map == map" do
+      assert :erlang."/="(%{a: 1, b: 2}, %{a: 1, b: 2}) == false
+    end
+
+    test "map is a subset of the other map" do
+      assert :erlang."/="(%{a: 1}, %{a: 1, b: 2}) == true
+    end
+
+    test "map is a superset of the other map" do
+      assert :erlang."/="(%{a: 1, b: 2}, %{a: 1}) == true
+    end
+
+    test "maps of the same size with different keys" do
+      assert :erlang."/="(%{a: 1}, %{b: 1}) == true
+    end
+
+    test "empty map == non-empty map" do
+      assert :erlang."/="(%{}, %{a: 1}) == true
+    end
+
+    test "list holding an integer == list holding a float of the same value" do
+      assert :erlang."/="([1], [1.0]) == false
+    end
+
+    test "list holding an integer == list holding a float of a different value" do
+      assert :erlang."/="([1], [2.0]) == true
+    end
+
+    test "nested lists holding an integer and a float of the same value" do
+      assert :erlang."/="([[1]], [[1.0]]) == false
+    end
+
+    test "tuple holding an integer == tuple holding a float of the same value" do
+      assert :erlang."/="({1}, {1.0}) == false
+    end
+
+    test "map value that is an integer == map value that is a float of the same value" do
+      assert :erlang."/="(%{a: 1}, %{a: 1.0}) == false
+    end
+
+    test "map keys that are an integer and a float of the same value" do
+      assert :erlang."/="(%{1 => :x}, %{1.0 => :x}) == true
+    end
+
+    # TODO: reference, function, port, bitstring
+  end
+
+  describe "</2" do
+    test "atom == atom" do
+      assert :erlang.<(:a, :a) == false
+    end
+
+    test "float == float" do
+      assert :erlang.<(1.0, 1.0) == false
+    end
+
+    test "float == integer" do
+      assert :erlang.<(1.0, 1) == false
+    end
+
+    test "integer == float" do
+      assert :erlang.<(1, 1.0) == false
+    end
+
+    test "integer == integer" do
+      assert :erlang.<(1, 1) == false
+    end
+
+    test "list == list" do
+      left = wrap_term([1, 2])
+      right = wrap_term([1, 2])
+
+      assert :erlang.<(left, right) == false
+    end
+
+    test "pid == pid" do
+      left_pid = pid("0.11.222")
+      right_pid = pid("0.11.222")
+
+      assert :erlang.<(left_pid, right_pid) == false
+    end
+
+    test "tuple == tuple" do
+      assert :erlang.<({1, 2, 3}, {1, 2, 3}) == false
+    end
+
+    test "atom < atom" do
+      left = wrap_term(:a)
+      right = wrap_term(:b)
+
+      assert :erlang.<(left, right) == true
+    end
+
+    test "float < atom (always)" do
+      left = wrap_term(1.0)
+      right = wrap_term(:a)
+
+      assert :erlang.<(left, right) == true
+    end
+
+    test "float < float" do
+      assert :erlang.<(1.0, 2.0) == true
+    end
+
+    test "float < integer" do
+      left = wrap_term(1.0)
+      right = wrap_term(2)
+
+      assert :erlang.<(left, right) == true
+    end
+
+    test "integer < atom (always)" do
+      left = wrap_term(1)
+      right = wrap_term(:a)
+
+      assert :erlang.<(left, right) == true
+    end
+
+    test "integer < float" do
+      assert :erlang.<(1, 2.0) == true
+    end
+
+    test "integer < integer" do
+      assert :erlang.<(1, 2) == true
+    end
+
+    test "list < list" do
+      left = wrap_term([1, 2])
+      right = wrap_term([1, 3])
+
+      assert :erlang.<(left, right) == true
+    end
+
+    test "pid < pid" do
+      left_pid = pid("0.11.111")
+      right_pid = pid("0.11.112")
+
+      assert :erlang.<(left_pid, right_pid) == true
+    end
+
+    test "pid < tuple (always)" do
+      pid = pid("0.11.111")
+      assert :erlang.<(pid, {1, 2}) == true
+    end
+
+    test "tuple < tuple" do
+      left = wrap_term({1, 2})
+      right = wrap_term({1, 2, 3})
+
+      assert :erlang.<(left, right) == true
+    end
+
+    test "atom > atom" do
+      left = wrap_term(:b)
+      right = wrap_term(:a)
+
+      assert :erlang.<(left, right) == false
+    end
+
+    test "float > float" do
+      assert :erlang.<(2.0, 1.0) == false
+    end
+
+    test "float > integer" do
+      assert :erlang.<(2.0, 1) == false
+    end
+
+    test "integer > float" do
+      assert :erlang.<(2, 1.0) == false
+    end
+
+    test "integer > integer" do
+      assert :erlang.<(2, 1) == false
+    end
+
+    test "list > list" do
+      left = wrap_term([1, 3])
+      right = wrap_term([1, 2])
+
+      assert :erlang.<(left, right) == false
+    end
+
+    test "pid > pid" do
+      left_pid = pid("0.11.112")
+      right_pid = pid("0.11.111")
+
+      assert :erlang.<(left_pid, right_pid) == false
+    end
+
+    test "tuple > tuple" do
+      arg_1 = prevent_term_typing_violation({1, 2, 3})
+      arg_2 = prevent_term_typing_violation({1, 2})
+
+      assert :erlang.<(arg_1, arg_2) == false
+    end
+
+    # TODO: reference, function, port, map, list, bitstring
+  end
+
+  describe "=/=/2" do
+    test "atom == atom" do
+      assert :erlang."=/="(:a, :a) == false
+    end
+
+    test "float == float" do
+      assert :erlang."=/="(1.0, 1.0) == false
+    end
+
+    test "float == integer" do
+      assert :erlang."=/="(1.0, 1) == true
+    end
+
+    test "integer == float" do
+      assert :erlang."=/="(1, 1.0) == true
+    end
+
+    test "integer == integer" do
+      assert :erlang."=/="(1, 1) == false
+    end
+
+    test "pid == pid" do
+      left_pid = pid("0.11.222")
+      right_pid = pid("0.11.222")
+
+      assert :erlang."=/="(left_pid, right_pid) == false
+    end
+
+    test "tuple == tuple" do
+      assert :erlang."=/="({1, 2, 3}, {1, 2, 3}) == false
+    end
+
+    test "atom < atom" do
+      assert :erlang."=/="(:a, :b) == true
+    end
+
+    test "float < atom (always)" do
+      assert :erlang."=/="(1.0, :a) == true
+    end
+
+    test "float < float" do
+      assert :erlang."=/="(1.0, 2.0) == true
+    end
+
+    test "float < integer" do
+      assert :erlang."=/="(1.0, 2) == true
+    end
+
+    test "integer < atom (always)" do
+      assert :erlang."=/="(1, :a) == true
+    end
+
+    test "integer < float" do
+      assert :erlang."=/="(1, 2.0) == true
+    end
+
+    test "integer < integer" do
+      assert :erlang."=/="(1, 2) == true
+    end
+
+    test "pid < pid" do
+      left_pid = pid("0.11.111")
+      right_pid = pid("0.11.112")
+
+      assert :erlang."=/="(left_pid, right_pid) == true
+    end
+
+    test "pid < tuple (always)" do
+      pid = pid("0.11.111")
+      assert :erlang."=/="(pid, {1, 2}) == true
+    end
+
+    test "tuple < tuple" do
+      assert :erlang."=/="({1, 2}, {1, 2, 3}) == true
+    end
+
+    test "atom > atom" do
+      assert :erlang."=/="(:b, :a) == true
+    end
+
+    test "float > float" do
+      assert :erlang."=/="(2.0, 1.0) == true
+    end
+
+    test "float > integer" do
+      assert :erlang."=/="(2.0, 1) == true
+    end
+
+    test "integer > float" do
+      assert :erlang."=/="(2, 1.0) == true
+    end
+
+    test "integer > integer" do
+      assert :erlang."=/="(2, 1) == true
+    end
+
+    test "pid > pid" do
+      left_pid = pid("0.11.112")
+      right_pid = pid("0.11.111")
+
+      assert :erlang."=/="(left_pid, right_pid) == true
+    end
+
+    test "tuple > tuple" do
+      assert :erlang."=/="({1, 2, 3}, {1, 2}) == true
+    end
+
+    test "map == map" do
+      assert :erlang."=/="(%{a: 1, b: 2}, %{a: 1, b: 2}) == false
+    end
+
+    test "map is a subset of the other map" do
+      assert :erlang."=/="(%{a: 1}, %{a: 1, b: 2}) == true
+    end
+
+    test "map is a superset of the other map" do
+      assert :erlang."=/="(%{a: 1, b: 2}, %{a: 1}) == true
+    end
+
+    test "maps of the same size with different keys" do
+      assert :erlang."=/="(%{a: 1}, %{b: 1}) == true
+    end
+
+    test "empty map == non-empty map" do
+      assert :erlang."=/="(%{}, %{a: 1}) == true
+    end
+
+    # TODO: reference, function, port, list, bitstring
+  end
+
+  describe "=:=/2" do
+    test "atom == atom" do
+      assert :erlang."=:="(:a, :a) == true
+    end
+
+    test "float == float" do
+      assert :erlang."=:="(1.0, 1.0) == true
+    end
+
+    test "float == integer" do
+      assert :erlang."=:="(1.0, 1) == false
+    end
+
+    test "integer == float" do
+      assert :erlang."=:="(1, 1.0) == false
+    end
+
+    test "integer == integer" do
+      assert :erlang."=:="(1, 1) == true
+    end
+
+    test "pid == pid" do
+      left_pid = pid("0.11.222")
+      right_pid = pid("0.11.222")
+
+      assert :erlang."=:="(left_pid, right_pid) == true
+    end
+
+    test "tuple == tuple" do
+      assert :erlang."=:="({1, 2, 3}, {1, 2, 3}) == true
+    end
+
+    test "atom < atom" do
+      assert :erlang."=:="(:a, :b) == false
+    end
+
+    test "float < atom (always)" do
+      assert :erlang."=:="(1.0, :a) == false
+    end
+
+    test "float < float" do
+      assert :erlang."=:="(1.0, 2.0) == false
+    end
+
+    test "float < integer" do
+      assert :erlang."=:="(1.0, 2) == false
+    end
+
+    test "integer < atom (always)" do
+      assert :erlang."=:="(1, :a) == false
+    end
+
+    test "integer < float" do
+      assert :erlang."=:="(1, 2.0) == false
+    end
+
+    test "integer < integer" do
+      assert :erlang."=:="(1, 2) == false
+    end
+
+    test "pid < pid" do
+      left_pid = pid("0.11.111")
+      right_pid = pid("0.11.112")
+
+      assert :erlang."=:="(left_pid, right_pid) == false
+    end
+
+    test "pid < tuple (always)" do
+      pid = pid("0.11.111")
+      assert :erlang."=:="(pid, {1, 2}) == false
+    end
+
+    test "tuple < tuple" do
+      assert :erlang."=:="({1, 2}, {1, 2, 3}) == false
+    end
+
+    test "atom > atom" do
+      assert :erlang."=:="(:b, :a) == false
+    end
+
+    test "float > float" do
+      assert :erlang."=:="(2.0, 1.0) == false
+    end
+
+    test "float > integer" do
+      assert :erlang."=:="(2.0, 1) == false
+    end
+
+    test "integer > float" do
+      assert :erlang."=:="(2, 1.0) == false
+    end
+
+    test "integer > integer" do
+      assert :erlang."=:="(2, 1) == false
+    end
+
+    test "pid > pid" do
+      left_pid = pid("0.11.112")
+      right_pid = pid("0.11.111")
+
+      assert :erlang."=:="(left_pid, right_pid) == false
+    end
+
+    test "tuple > tuple" do
+      assert :erlang."=:="({1, 2, 3}, {1, 2}) == false
+    end
+
+    test "map == map" do
+      assert :erlang."=:="(%{a: 1, b: 2}, %{a: 1, b: 2}) == true
+    end
+
+    test "map is a subset of the other map" do
+      assert :erlang."=:="(%{a: 1}, %{a: 1, b: 2}) == false
+    end
+
+    test "map is a superset of the other map" do
+      assert :erlang."=:="(%{a: 1, b: 2}, %{a: 1}) == false
+    end
+
+    test "maps of the same size with different keys" do
+      assert :erlang."=:="(%{a: 1}, %{b: 1}) == false
+    end
+
+    test "empty map == non-empty map" do
+      assert :erlang."=:="(%{}, %{a: 1}) == false
+    end
+
+    # TODO: reference, function, port, list, bitstring
+  end
+
+  describe "=</2" do
+    test "atom == atom" do
+      assert :erlang."=<"(:a, :a) == true
+    end
+
+    test "float == float" do
+      assert :erlang."=<"(1.0, 1.0) == true
+    end
+
+    test "float == integer" do
+      assert :erlang."=<"(1.0, 1) == true
+    end
+
+    test "integer == float" do
+      assert :erlang."=<"(1, 1.0) == true
+    end
+
+    test "integer == integer" do
+      assert :erlang."=<"(1, 1) == true
+    end
+
+    test "list == list" do
+      left = wrap_term([1, 2])
+      right = wrap_term([1, 2])
+
+      assert :erlang."=<"(left, right) == true
+    end
+
+    test "pid == pid" do
+      left_pid = pid("0.11.222")
+      right_pid = pid("0.11.222")
+
+      assert :erlang."=<"(left_pid, right_pid) == true
+    end
+
+    test "tuple == tuple" do
+      assert :erlang."=<"({1, 2, 3}, {1, 2, 3}) == true
+    end
+
+    test "atom < atom" do
+      left = wrap_term(:a)
+      right = wrap_term(:b)
+
+      assert :erlang."=<"(left, right) == true
+    end
+
+    test "float < atom (always)" do
+      left = wrap_term(1.0)
+      right = wrap_term(:a)
+
+      assert :erlang."=<"(left, right) == true
+    end
+
+    test "float < float" do
+      assert :erlang."=<"(1.0, 2.0) == true
+    end
+
+    test "float < integer" do
+      assert :erlang."=<"(1.0, 2) == true
+    end
+
+    test "integer < atom (always)" do
+      left = wrap_term(1)
+      right = wrap_term(:a)
+
+      assert :erlang."=<"(left, right) == true
+    end
+
+    test "integer < float" do
+      assert :erlang."=<"(1, 2.0) == true
+    end
+
+    test "integer < integer" do
+      assert :erlang."=<"(1, 2) == true
+    end
+
+    test "list < list" do
+      left = wrap_term([1, 2])
+      right = wrap_term([1, 3])
+
+      assert :erlang."=<"(left, right) == true
+    end
+
+    test "pid < pid" do
+      left_pid = pid("0.11.111")
+      right_pid = pid("0.11.112")
+
+      assert :erlang."=<"(left_pid, right_pid) == true
+    end
+
+    test "pid < tuple (always)" do
+      pid = pid("0.11.111")
+      assert :erlang."=<"(pid, {1, 2}) == true
+    end
+
+    test "tuple < tuple" do
+      arg_1 = prevent_term_typing_violation({1, 2})
+      arg_2 = prevent_term_typing_violation({1, 2, 3})
+
+      assert :erlang."=<"(arg_1, arg_2) == true
+    end
+
+    test "atom > atom" do
+      left = wrap_term(:b)
+      right = wrap_term(:a)
+
+      assert :erlang."=<"(left, right) == false
+    end
+
+    test "float > float" do
+      assert :erlang."=<"(2.0, 1.0) == false
+    end
+
+    test "float > integer" do
+      assert :erlang."=<"(2.0, 1) == false
+    end
+
+    test "integer > float" do
+      assert :erlang."=<"(2, 1.0) == false
+    end
+
+    test "integer > integer" do
+      assert :erlang."=<"(2, 1) == false
+    end
+
+    test "list > list" do
+      left = wrap_term([1, 3])
+      right = wrap_term([1, 2])
+
+      assert :erlang."=<"(left, right) == false
+    end
+
+    test "pid > pid" do
+      left_pid = pid("0.11.112")
+      right_pid = pid("0.11.111")
+
+      assert :erlang."=<"(left_pid, right_pid) == false
+    end
+
+    test "tuple > tuple" do
+      arg_1 = prevent_term_typing_violation({1, 2, 3})
+      arg_2 = prevent_term_typing_violation({1, 2})
+
+      assert :erlang."=<"(arg_1, arg_2) == false
+    end
+
+    test "list holding an integer =< list holding a float of the same value" do
+      left = wrap_term([1])
+      right = wrap_term([1.0])
+
+      assert :erlang."=<"(left, right) == true
+    end
+
+    # TODO: reference, function, port, map, bitstring
+  end
+
+  describe "==/2" do
+    test "atom == atom" do
+      assert :erlang.==(:a, :a) == true
+    end
+
+    test "float == float" do
+      assert :erlang.==(1.0, 1.0) == true
+    end
+
+    test "float == integer" do
+      assert :erlang.==(1.0, 1) == true
+    end
+
+    test "integer == float" do
+      assert :erlang.==(1, 1.0) == true
+    end
+
+    test "integer == integer" do
+      assert :erlang.==(1, 1) == true
+    end
+
+    test "pid == pid" do
+      left_pid = pid("0.11.222")
+      right_pid = pid("0.11.222")
+
+      assert :erlang.==(left_pid, right_pid) == true
+    end
+
+    test "tuple == tuple" do
+      assert :erlang.==({1, 2, 3}, {1, 2, 3}) == true
+    end
+
+    test "atom < atom" do
+      assert :erlang.==(:a, :b) == false
+    end
+
+    test "float < atom (always)" do
+      assert :erlang.==(1.0, :a) == false
+    end
+
+    test "float < float" do
+      assert :erlang.==(1.0, 2.0) == false
+    end
+
+    test "float < integer" do
+      assert :erlang.==(1.0, 2) == false
+    end
+
+    test "integer < atom (always)" do
+      assert :erlang.==(1, :a) == false
+    end
+
+    test "integer < float" do
+      assert :erlang.==(1, 2.0) == false
+    end
+
+    test "integer < integer" do
+      assert :erlang.==(1, 2) == false
+    end
+
+    test "pid < pid" do
+      left_pid = pid("0.11.111")
+      right_pid = pid("0.11.112")
+
+      assert :erlang.==(left_pid, right_pid) == false
+    end
+
+    test "pid < tuple (always)" do
+      pid = pid("0.11.111")
+      assert :erlang.==(pid, {1, 2}) == false
+    end
+
+    test "tuple < tuple" do
+      assert :erlang.==({1, 2}, {1, 2, 3}) == false
+    end
+
+    test "atom > atom" do
+      assert :erlang.==(:b, :a) == false
+    end
+
+    test "float > float" do
+      assert :erlang.==(2.0, 1.0) == false
+    end
+
+    test "float > integer" do
+      assert :erlang.==(2.0, 1) == false
+    end
+
+    test "integer > float" do
+      assert :erlang.==(2, 1.0) == false
+    end
+
+    test "integer > integer" do
+      assert :erlang.==(2, 1) == false
+    end
+
+    test "pid > pid" do
+      left_pid = pid("0.11.112")
+      right_pid = pid("0.11.111")
+
+      assert :erlang.==(left_pid, right_pid) == false
+    end
+
+    test "tuple > tuple" do
+      assert :erlang.==({1, 2, 3}, {1, 2}) == false
+    end
+
+    test "map == map" do
+      assert :erlang.==(%{a: 1, b: 2}, %{a: 1, b: 2}) == true
+    end
+
+    test "map is a subset of the other map" do
+      assert :erlang.==(%{a: 1}, %{a: 1, b: 2}) == false
+    end
+
+    test "map is a superset of the other map" do
+      assert :erlang.==(%{a: 1, b: 2}, %{a: 1}) == false
+    end
+
+    test "maps of the same size with different keys" do
+      assert :erlang.==(%{a: 1}, %{b: 1}) == false
+    end
+
+    test "empty map == non-empty map" do
+      assert :erlang.==(%{}, %{a: 1}) == false
+    end
+
+    test "list holding an integer == list holding a float of the same value" do
+      assert :erlang.==([1], [1.0]) == true
+    end
+
+    test "list holding an integer == list holding a float of a different value" do
+      assert :erlang.==([1], [2.0]) == false
+    end
+
+    test "nested lists holding an integer and a float of the same value" do
+      assert :erlang.==([[1]], [[1.0]]) == true
+    end
+
+    test "tuple holding an integer == tuple holding a float of the same value" do
+      assert :erlang.==({1}, {1.0}) == true
+    end
+
+    test "map value that is an integer == map value that is a float of the same value" do
+      assert :erlang.==(%{a: 1}, %{a: 1.0}) == true
+    end
+
+    test "map keys that are an integer and a float of the same value" do
+      assert :erlang.==(%{1 => :x}, %{1.0 => :x}) == false
+    end
+
+    # TODO: reference, function, port, bitstring
+  end
+
+  describe ">/2" do
+    test "atom == atom" do
+      assert :erlang.>(:a, :a) == false
+    end
+
+    test "float == float" do
+      assert :erlang.>(1.0, 1.0) == false
+    end
+
+    test "float == integer" do
+      assert :erlang.>(1.0, 1) == false
+    end
+
+    test "integer == float" do
+      assert :erlang.>(1, 1.0) == false
+    end
+
+    test "integer == integer" do
+      assert :erlang.>(1, 1) == false
+    end
+
+    test "list == list" do
+      left = wrap_term([1, 2])
+      right = wrap_term([1, 2])
+
+      assert :erlang.>(left, right) == false
+    end
+
+    test "pid == pid" do
+      left_pid = pid("0.11.222")
+      right_pid = pid("0.11.222")
+
+      assert :erlang.>(left_pid, right_pid) == false
+    end
+
+    test "tuple == tuple" do
+      assert :erlang.>({1, 2, 3}, {1, 2, 3}) == false
+    end
+
+    test "atom < atom" do
+      left = wrap_term(:a)
+      right = wrap_term(:b)
+
+      assert :erlang.>(left, right) == false
+    end
+
+    test "float < atom (always)" do
+      left = wrap_term(1.0)
+      right = wrap_term(:a)
+
+      assert :erlang.>(left, right) == false
+    end
+
+    test "float < float" do
+      assert :erlang.>(1.0, 2.0) == false
+    end
+
+    test "float < integer" do
+      assert :erlang.>(1.0, 2) == false
+    end
+
+    test "integer < atom (always)" do
+      left = wrap_term(1)
+      right = wrap_term(:a)
+
+      assert :erlang.>(left, right) == false
+    end
+
+    test "integer < float" do
+      assert :erlang.>(1, 2.0) == false
+    end
+
+    test "integer < integer" do
+      assert :erlang.>(1, 2) == false
+    end
+
+    test "list < list" do
+      left = wrap_term([1, 2])
+      right = wrap_term([1, 3])
+
+      assert :erlang.>(left, right) == false
+    end
+
+    test "pid < pid" do
+      left_pid = pid("0.11.111")
+      right_pid = pid("0.11.112")
+
+      assert :erlang.>(left_pid, right_pid) == false
+    end
+
+    test "pid < tuple (always)" do
+      pid = pid("0.11.111")
+      assert :erlang.>(pid, {1, 2}) == false
+    end
+
+    test "tuple < tuple" do
+      arg_1 = prevent_term_typing_violation({1, 2})
+      arg_2 = prevent_term_typing_violation({1, 2, 3})
+
+      assert :erlang.>(arg_1, arg_2) == false
+    end
+
+    test "atom > atom" do
+      left = wrap_term(:b)
+      right = wrap_term(:a)
+
+      assert :erlang.>(left, right) == true
+    end
+
+    test "float > float" do
+      assert :erlang.>(2.0, 1.0) == true
+    end
+
+    test "float > integer" do
+      assert :erlang.>(2.0, 1) == true
+    end
+
+    test "integer > float" do
+      assert :erlang.>(2, 1.0) == true
+    end
+
+    test "integer > integer" do
+      assert :erlang.>(2, 1) == true
+    end
+
+    test "list > list" do
+      left = wrap_term([1, 3])
+      right = wrap_term([1, 2])
+
+      assert :erlang.>(left, right) == true
+    end
+
+    test "pid > pid" do
+      left_pid = pid("0.11.112")
+      right_pid = pid("0.11.111")
+
+      assert :erlang.>(left_pid, right_pid) == true
+    end
+
+    test "tuple > tuple" do
+      arg_1 = prevent_term_typing_violation({1, 2, 3})
+      arg_2 = prevent_term_typing_violation({1, 2})
+
+      assert :erlang.>(arg_1, arg_2) == true
+    end
+
+    # TODO: reference, function, port, map, list, bitstring
+  end
+
+  describe ">=/2" do
+    test "atom == atom" do
+      assert :erlang.>=(:a, :a) == true
+    end
+
+    test "float == float" do
+      assert :erlang.>=(1.0, 1.0) == true
+    end
+
+    test "float == integer" do
+      assert :erlang.>=(1.0, 1) == true
+    end
+
+    test "integer == float" do
+      assert :erlang.>=(1, 1.0) == true
+    end
+
+    test "integer == integer" do
+      assert :erlang.>=(1, 1) == true
+    end
+
+    test "list == list" do
+      left = wrap_term([1, 2])
+      right = wrap_term([1, 2])
+
+      assert :erlang.>=(left, right) == true
+    end
+
+    test "pid == pid" do
+      left_pid = pid("0.11.222")
+      right_pid = pid("0.11.222")
+
+      assert :erlang.>=(left_pid, right_pid) == true
+    end
+
+    test "tuple == tuple" do
+      assert :erlang.>=({1, 2, 3}, {1, 2, 3}) == true
+    end
+
+    test "atom < atom" do
+      left = wrap_term(:a)
+      right = wrap_term(:b)
+
+      assert :erlang.>=(left, right) == false
+    end
+
+    test "float < atom (always)" do
+      left = wrap_term(1.0)
+      right = wrap_term(:a)
+
+      assert :erlang.>=(left, right) == false
+    end
+
+    test "float < float" do
+      assert :erlang.>=(1.0, 2.0) == false
+    end
+
+    test "float < integer" do
+      assert :erlang.>=(1.0, 2) == false
+    end
+
+    test "integer < atom (always)" do
+      left = wrap_term(1)
+      right = wrap_term(:a)
+
+      assert :erlang.>=(left, right) == false
+    end
+
+    test "integer < float" do
+      assert :erlang.>=(1, 2.0) == false
+    end
+
+    test "integer < integer" do
+      assert :erlang.>=(1, 2) == false
+    end
+
+    test "list < list" do
+      left = wrap_term([1, 2])
+      right = wrap_term([1, 3])
+
+      assert :erlang.>=(left, right) == false
+    end
+
+    test "pid < pid" do
+      left_pid = pid("0.11.111")
+      right_pid = pid("0.11.112")
+
+      assert :erlang.>=(left_pid, right_pid) == false
+    end
+
+    test "pid < tuple (always)" do
+      pid = pid("0.11.111")
+      assert :erlang.>=(pid, {1, 2}) == false
+    end
+
+    test "tuple < tuple" do
+      arg_1 = prevent_term_typing_violation({1, 2})
+      arg_2 = prevent_term_typing_violation({1, 2, 3})
+
+      assert :erlang.>=(arg_1, arg_2) == false
+    end
+
+    test "atom > atom" do
+      left = wrap_term(:b)
+      right = wrap_term(:a)
+
+      assert :erlang.>=(left, right) == true
+    end
+
+    test "float > float" do
+      assert :erlang.>=(2.0, 1.0) == true
+    end
+
+    test "float > integer" do
+      assert :erlang.>=(2.0, 1) == true
+    end
+
+    test "integer > float" do
+      assert :erlang.>=(2, 1.0) == true
+    end
+
+    test "integer > integer" do
+      assert :erlang.>=(2, 1) == true
+    end
+
+    test "list > list" do
+      left = wrap_term([1, 3])
+      right = wrap_term([1, 2])
+
+      assert :erlang.>=(left, right) == true
+    end
+
+    test "pid > pid" do
+      left_pid = pid("0.11.112")
+      right_pid = pid("0.11.111")
+
+      assert :erlang.>=(left_pid, right_pid) == true
+    end
+
+    test "tuple > tuple" do
+      arg_1 = prevent_term_typing_violation({1, 2, 3})
+      arg_2 = prevent_term_typing_violation({1, 2})
+
+      assert :erlang.>=(arg_1, arg_2) == true
+    end
+
+    test "list holding an integer >= list holding a float of the same value" do
+      left = wrap_term([1])
+      right = wrap_term([1.0])
+
+      assert :erlang.>=(left, right) == true
+    end
+
+    # TODO: reference, function, port, map, bitstring
+  end
+
+  describe "abs/1" do
+    test "positive float" do
+      assert :erlang.abs(1.23) == 1.23
+    end
+
+    test "negative float" do
+      assert :erlang.abs(-1.23) == 1.23
+    end
+
+    test "zero float" do
+      assert :erlang.abs(0.0) == 0.0
+    end
+
+    test "positive integer" do
+      assert :erlang.abs(123) == 123
+    end
+
+    test "negative integer" do
+      assert :erlang.abs(-123) == 123
+    end
+
+    test "zero integer" do
+      assert :erlang.abs(0) == 0
+    end
+
+    test "large positive integer" do
+      assert :erlang.abs(123_456_789_012_345_678_901_234_567_890) ==
+               123_456_789_012_345_678_901_234_567_890
+    end
+
+    test "large negative integer" do
+      assert :erlang.abs(-123_456_789_012_345_678_901_234_567_890) ==
+               123_456_789_012_345_678_901_234_567_890
+    end
+
+    test "raises ArgumentError if the argument is not a number" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a number"),
+                   {:erlang, :abs, [:abc]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.abs(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :abs, [:abc], @erts_info}
+    end
+  end
+
+  describe "append_element/2" do
+    test "appends an element to an empty tuple" do
+      assert :erlang.append_element({}, 1) == {1}
+    end
+
+    test "appends an element to a single-element tuple" do
+      assert :erlang.append_element({1}, 2) == {1, 2}
+    end
+
+    test "appends an element to a tuple with multiple elements" do
+      assert :erlang.append_element({:one, :two}, :three) == {:one, :two, :three}
+    end
+
+    test "raises ArgumentError if the first argument is not a tuple" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a tuple"),
+                   {:erlang, :append_element, [:abc, 1]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.append_element(arg, :x)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :append_element, [:abc, :x], @erts_info}
+    end
+  end
+
+  describe "apply/2" do
+    setup do
+      [
+        fun_no_args: fn -> 42 end,
+        fun_single_arg: fn x -> x + 10 end,
+        fun_multiple_args: fn a, b -> a + b end
+      ]
+    end
+
+    test "calls anonymous function with no arguments", %{fun_no_args: fun} do
+      assert :erlang.apply(fun, []) == 42
+    end
+
+    test "calls anonymous function with a single argument", %{fun_single_arg: fun} do
+      assert :erlang.apply(fun, [5]) == 15
+    end
+
+    test "calls anonymous function with multiple arguments", %{fun_multiple_args: fun} do
+      assert :erlang.apply(fun, [1, 2]) == 3
+    end
+
+    test "raises BadFunctionError if the first argument is not a function" do
+      fun = prevent_term_typing_violation(:not_a_function)
+
+      assert_error BadFunctionError,
+                   build_bad_function_error_msg(:not_a_function),
+                   fn -> :erlang.apply(fun, []) end
+    end
+
+    test "raises ArgumentError if the second argument is not a list", %{fun_no_args: fun} do
+      args = prevent_term_typing_violation(:not_a_list)
+
+      assert_error ArgumentError,
+                   "argument error",
+                   fn -> :erlang.apply(fun, args) end
+    end
+
+    test "raises ArgumentError if the second argument is not a proper list", %{
+      fun_multiple_args: fun
+    } do
+      args = prevent_term_typing_violation([1 | 2])
+
+      assert_error ArgumentError,
+                   "argument error",
+                   fn -> :erlang.apply(fun, args) end
+    end
+
+    test "raises BadArityError if arity doesn't match", %{fun_multiple_args: fun} do
+      expected_msg = build_bad_arity_error_msg(fun, [1])
+
+      assert_error BadArityError, expected_msg, fn -> :erlang.apply(fun, [1]) end
+    end
+  end
+
+  describe "apply/3" do
+    test "invokes a function with no params" do
+      assert :erlang.apply(Module1, :fun_0, []) == 123
+    end
+
+    test "invokes a function with a single param" do
+      assert :erlang.apply(Module1, :fun_1, [9]) == 109
+    end
+
+    test "invokes a function with multiple params" do
+      assert :erlang.apply(Module1, :fun_2, [3, 4]) == 7
+    end
+
+    test "raises ArgumentError if the first argument is not an atom" do
+      expected_msg =
+        "you attempted to apply a function named :fun_0 on 123. If you are using Kernel.apply/3, make sure the module is an atom. If you are using the dot syntax, such as module.function(), make sure the left-hand side of the dot is an atom representing a module"
+
+      assert_error ArgumentError, expected_msg, fn ->
+        123
+        |> wrap_term()
+        |> :erlang.apply(:fun_0, [])
+      end
+    end
+
+    test "raises ArgumentError if the first argument is not an atom and the args list is not empty" do
+      expected_msg =
+        "you attempted to apply a function on 123. Modules (the first argument of apply) must always be an atom"
+
+      assert_error ArgumentError, expected_msg, fn ->
+        123
+        |> wrap_term()
+        |> :erlang.apply(:fun_0, [1, 2])
+      end
+    end
+
+    test "raises ArgumentError if the first argument is a map with an anonymous function under the function name" do
+      expected_msg =
+        "you attempted to apply a function named :my_fun on a map/struct. If you are using Kernel.apply/3, make sure the module is an atom. If you are trying to invoke an anonymous function in a map/struct, add a dot between the function name and the parenthesis: map.my_fun.()"
+
+      assert_error ArgumentError, expected_msg, fn ->
+        %{my_fun: fn -> 123 end}
+        |> wrap_term()
+        |> :erlang.apply(:my_fun, [])
+      end
+    end
+
+    test "raises ArgumentError if the first argument is a map with a non-function value under the function name" do
+      expected_msg =
+        "you attempted to apply a function named :my_fun on a map/struct. If you are using Kernel.apply/3, make sure the module is an atom. If you are using the dot syntax, ensure there are no parentheses after the field name, such as map.my_fun"
+
+      assert_error ArgumentError, expected_msg, fn ->
+        %{my_fun: 123}
+        |> wrap_term()
+        |> :erlang.apply(:my_fun, [])
+      end
+    end
+
+    test "raises ArgumentError if the second argument is not an atom" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an atom"),
+                   {:erlang, :apply, [Module1, 123, []]}
+    end
+
+    test "raises ArgumentError if the third argument is not a list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "not a list"),
+                   {:erlang, :apply, [Module1, :fun_0, 123]}
+    end
+
+    test "raises ArgumentError if the third argument is not a proper list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "not a proper list"),
+                   {:erlang, :apply, [Module1, :fun_2, [1 | 2]]}
+    end
+
+    test "raises UndefinedFunctionError if the module doesn't exist" do
+      expected_msg =
+        build_undefined_function_error_msg({NonexistentModule, :fun_2, 2}, [], false)
+
+      assert_error UndefinedFunctionError, expected_msg, fn ->
+        :erlang.apply(NonexistentModule, :fun_2, [1, 2])
+      end
+    end
+
+    test "raises UndefinedFunctionError if the function doesn't exist" do
+      expected_msg = build_undefined_function_error_msg({Module1, :nonexistent_fun, 2})
+
+      assert_error UndefinedFunctionError, expected_msg, fn ->
+        :erlang.apply(Module1, :nonexistent_fun, [1, 2])
+      end
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:bad)
+
+      top_frame =
+        try do
+          :erlang.apply(:m, :f, arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :apply, [:m, :f, :bad], @erts_info}
+    end
+  end
+
+  if SystemUtils.otp_version() >= 23 do
+    describe "atom_to_binary/1" do
+      test "delegates to atom_to_binary/2" do
+        assert :erlang.atom_to_binary(:全息图) == :erlang.atom_to_binary(:全息图, :utf8)
+      end
+
+      test "error frame carries args and error_info" do
+        arg = wrap_term(1)
+
+        top_frame =
+          try do
+            :erlang.atom_to_binary(arg)
+          rescue
+            _error -> hd(wrap_term(__STACKTRACE__))
+          end
+
+        assert top_frame == {:erlang, :atom_to_binary, [1], @erts_info}
+      end
+    end
+  end
+
+  describe "atom_to_binary/2" do
+    test "utf8 encoding" do
+      assert :erlang.atom_to_binary(:全息图, :utf8) == "全息图"
+    end
+
+    test "raises ArgumentError if the first arg is not an atom" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an atom"),
+                   {:erlang, :atom_to_binary, [123, :utf8]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(1)
+
+      top_frame =
+        try do
+          :erlang.atom_to_binary(arg, :utf8)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :atom_to_binary, [1, :utf8], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "atom_to_list/1" do
+    test "empty atom" do
+      assert :erlang.atom_to_list(:"") == []
+    end
+
+    test "ASCII atom" do
+      assert :erlang.atom_to_list(:abc) == [97, 98, 99]
+    end
+
+    test "Unicode atom" do
+      assert :erlang.atom_to_list(:全息图) == [20_840, 24_687, 22_270]
+    end
+
+    test "not an atom" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an atom"),
+                   {:erlang, :atom_to_list, [123]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(1)
+
+      top_frame =
+        try do
+          :erlang.atom_to_list(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :atom_to_list, [1], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "band/2" do
+    test "valid arguments" do
+      # 5 = 0b00000101, 3 = 0b00000011, 1 = 0b00000001
+      assert :erlang.band(5, 3) == 1
+    end
+
+    test "both arguments are zero" do
+      # 0 = 0b00000000
+      assert :erlang.band(0, 0) == 0
+    end
+
+    test "left argument is zero" do
+      # 0 = 0b00000000, 5 = 0b00000101
+      assert :erlang.band(0, 5) == 0
+    end
+
+    test "right argument is zero" do
+      # 5 = 0b00000101, 0 = 0b00000000
+      assert :erlang.band(5, 0) == 0
+    end
+
+    test "left argument is negative" do
+      # -5 = 0b11111011, 15 = 0b00001111, 11 = 0b00001011
+      assert :erlang.band(-5, 15) == 11
+    end
+
+    test "right argument is negative" do
+      # 15 = 0b00001111, -5 = 0b11111011, 11 = 0b00001011
+      assert :erlang.band(15, -5) == 11
+    end
+
+    test "arguments above JS Number.MAX_SAFE_INTEGER" do
+      # Number.MAX_SAFE_INTEGER == 9_007_199_254_740_991
+      # 805_215_019_090_496_300 = 0b101100101100101100101100101100101100101100101100101100101100
+      # 457_508_533_574_145_625 = 0b011001011001011001011001011001011001011001011001011001011001
+      # 146_402_730_743_726_600 = 0b001000001000001000001000001000001000001000001000001000001000
+      assert :erlang.band(805_215_019_090_496_300, 457_508_533_574_145_625) ==
+               146_402_730_743_726_600
+    end
+
+    test "arguments below JS Number.MIN_SAFE_INTEGER" do
+      # Number.MIN_SAFE_INTEGER == -9_007_199_254_740_991
+      #   -347_706_485_516_350_676 = 0b1111101100101100101100101100101100101100101100101100101100101100
+      #   -695_412_971_032_701_351 = 0b1111011001011001011001011001011001011001011001011001011001011001
+      # -1_006_518_773_863_120_376 = 0b1111001000001000001000001000001000001000001000001000001000001000
+      assert :erlang.band(-347_706_485_516_350_676, -695_412_971_032_701_351) ==
+               -1_006_518_773_863_120_376
+    end
+
+    test "raises ArithmeticError if the first argument is not an integer" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: Bitwise.band(5.0, 3)",
+                   {:erlang, :band, [5.0, 3]}
+    end
+
+    test "raises ArithmeticError if the second argument is not an integer" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: Bitwise.band(5, 3.0)",
+                   {:erlang, :band, [5, 3.0]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(5.0)
+
+      top_frame =
+        try do
+          :erlang.band(arg, 3)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :band, [5.0, 3], @erts_info}
+    end
+  end
+
+  describe "binary_part/3" do
+    test "subject is a text binary" do
+      assert :erlang.binary_part("mygoldfish", 6, 4) == "fish"
+    end
+
+    test "subject is a byte binary" do
+      assert :erlang.binary_part(<<1, 2, 3, 4, 5, 6, 7, 8, 9, 10>>, 4, 2) == <<5, 6>>
+    end
+
+    test "subject is empty" do
+      assert :erlang.binary_part("", 0, 0) == ""
+    end
+
+    test "subject contains multi-byte unicode characters" do
+      # The character "á" is represented in UTF-8 as two bytes: <<195, 161>>
+      assert :erlang.binary_part("á", 0, 1) == <<195>>
+    end
+
+    test "start is zero" do
+      assert :erlang.binary_part("goldfish", 0, 4) == "gold"
+    end
+
+    test "start is at the end of the binary" do
+      assert :erlang.binary_part("goldfish", 8, -4) == "fish"
+    end
+
+    test "length is negative" do
+      assert :erlang.binary_part("golden retriever", 16, -9) == "retriever"
+    end
+
+    test "length is zero" do
+      assert :erlang.binary_part("goldfish", 2, 0) == ""
+    end
+
+    test "from the middle of the binary" do
+      assert :erlang.binary_part("golden retriever", 7, 9) == "retriever"
+    end
+
+    test "takes whole binary" do
+      assert :erlang.binary_part("goldfish", 0, 8) == "goldfish"
+    end
+
+    test "takes whole binary reversed" do
+      assert :erlang.binary_part("goldfish", 8, -8) == "goldfish"
+    end
+
+    test "raises ArgumentError if the first argument is not a bitstring" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a binary"),
+                   {:erlang, :binary_part, [:abc, 1, 2]}
+    end
+
+    test "raises ArgumentError if the first argument is a non-binary bitstring" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a binary"),
+                   {:erlang, :binary_part, [<<1::1, 0::1, 1::1>>, 1, 2]}
+    end
+
+    test "raises ArgumentError if the second argument is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an integer"),
+                   {:erlang, :binary_part, ["goldfish", 1.0, 2]}
+    end
+
+    test "raises ArgumentError if the second argument is negative" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "out of range"),
+                   {:erlang, :binary_part, ["goldfish", -1, 2]}
+    end
+
+    test "raises ArgumentError if the second argument is larger than the size of the first argument" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "out of range"),
+                   {:erlang, :binary_part, ["goldfish", 9, 2]}
+    end
+
+    test "raises ArgumentError if the second argument is zero and third argument is larger than the size of the first argument" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "out of range"),
+                   {:erlang, :binary_part, ["goldfish", 0, 9]}
+    end
+
+    test "raises ArgumentError if the third argument is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "not an integer"),
+                   {:erlang, :binary_part, ["goldfish", 1, 2.0]}
+    end
+
+    test "raises ArgumentError if the third argument is positive and the second and third arguments summed is larger than the size of the first argument" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "out of range"),
+                   {:erlang, :binary_part, ["goldfish", 1, 8]}
+    end
+
+    test "raises ArgumentError if the third argument is negative and the second and third arguments summed is smaller than zero" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "out of range"),
+                   {:erlang, :binary_part, ["goldfish", 4, -5]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:a)
+
+      top_frame =
+        try do
+          :erlang.binary_part("abc", arg, 1)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :binary_part, ["abc", :a, 1], @erts_info}
+    end
+  end
+
+  if SystemUtils.otp_version() >= 23 do
+    test "binary_to_atom/1" do
+      # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+      assert :erlang.binary_to_atom("全息图") == :erlang.binary_to_atom("全息图", :utf8)
+    end
+  end
+
+  describe "binary_to_atom/2" do
+    test "converts a binary bitstring to an already existing atom" do
+      # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+      assert :erlang.binary_to_atom("Elixir.Kernel", :utf8) == Kernel
+    end
+
+    test "converts a binary bitstring to a not existing yet atom" do
+      random_str = inspect(make_ref())
+
+      # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+      result = :erlang.binary_to_atom(random_str, :utf8)
+
+      assert to_string(result) == random_str
+    end
+
+    test "raises ArgumentError if the first argument is a non-binary bitstring" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a binary"),
+                   {:erlang, :binary_to_atom, [<<1::1, 0::1, 1::1>>, :utf8]}
+    end
+
+    test "raises ArgumentErorr if the first argument is not a bitstring" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a binary"),
+                   {:erlang, :binary_to_atom, [:abc, :utf8]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(1)
+
+      top_frame =
+        try do
+          # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+          :erlang.binary_to_atom(arg, :utf8)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :binary_to_atom, [1, :utf8], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  # Note: due to practical reasons the behaviour of the client version is inconsistent with the server version.
+  # The client version works exactly the same as binary_to_atom/1.
+  # test "binary_to_existing_atoms/1"
+
+  # Note: due to practical reasons the behaviour of the client version is inconsistent with the server version.
+  # The client version works exactly the same as binary_to_atom/2.
+  # test "binary_to_existing_atom/2"
+
+  describe "binary_to_float/1" do
+    test "positive float without sign in decimal notation" do
+      assert :erlang.binary_to_float("1.23") == 1.23
+    end
+
+    test "positive float with sign in decimal notation" do
+      assert :erlang.binary_to_float("+1.23") == 1.23
+    end
+
+    test "negative float in decimal notation" do
+      assert :erlang.binary_to_float("-1.23") == -1.23
+    end
+
+    test "unsigned zero float in decimal notation" do
+      assert :erlang.binary_to_float("0.0") === 0.0
+    end
+
+    test "signed positive zero float in decimal notation" do
+      assert :erlang.binary_to_float("+0.0") === +0.0
+    end
+
+    test "signed negative zero float in decimal notation" do
+      assert :erlang.binary_to_float("-0.0") === -0.0
+    end
+
+    test "positive float in scientific notation" do
+      assert :erlang.binary_to_float("1.23456e+3") == 1234.56
+    end
+
+    test "negative float in scientific notation" do
+      assert :erlang.binary_to_float("-1.23456e+3") == -1234.56
+    end
+
+    test "unsigned zero float in scientific notation" do
+      assert :erlang.binary_to_float("0.0e+1") === 0.0
+    end
+
+    test "signed positive zero float in scientific notation" do
+      assert :erlang.binary_to_float("+0.0e+1") === +0.0
+    end
+
+    test "signed negative zero float in scientific notation" do
+      assert :erlang.binary_to_float("-0.0e+1") === -0.0
+    end
+
+    test "positive integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :binary_to_float, ["123"]}
+    end
+
+    test "negative integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :binary_to_float, ["-123"]}
+    end
+
+    test "zero integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :binary_to_float, ["0"]}
+    end
+
+    test "with leading zeros" do
+      assert :erlang.binary_to_float("00012.34") == 12.34
+    end
+
+    test "uppercase scientific notation" do
+      assert :erlang.binary_to_float("1.23456E3") == 1234.56
+    end
+
+    test "negative exponent" do
+      assert :erlang.binary_to_float("1.23e-3") == 0.00123
+    end
+
+    test "non-binary bitstring input" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a binary"),
+                   {:erlang, :binary_to_float, [<<1::1, 0::1, 1::1>>]}
+    end
+
+    test "non-bitstring input" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a binary"),
+                   {:erlang, :binary_to_float, [:abc]}
+    end
+
+    test "with underscore" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :binary_to_float, ["1_000.5"]}
+    end
+
+    test "invalid float format" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :binary_to_float, ["12.3.4"]}
+    end
+
+    test "non-numeric text" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :binary_to_float, ["abc"]}
+    end
+
+    test "empty input" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :binary_to_float, [""]}
+    end
+
+    test "decimal point only" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :binary_to_float, ["."]}
+    end
+
+    test "with leading dot" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :binary_to_float, [".5"]}
+    end
+
+    test "with trailing dot" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :binary_to_float, ["5."]}
+    end
+
+    test "scientific notation without the fractional part" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :binary_to_float, ["3e10"]}
+    end
+
+    test "with trailing exponent marker" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :binary_to_float, ["2e"]}
+    end
+
+    test "with leading whitespace" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :binary_to_float, [" 12.3"]}
+    end
+
+    test "with trailing whitespace" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :binary_to_float, ["12.3 "]}
+    end
+
+    test "with multiple exponent markers" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :binary_to_float, ["1e2e3"]}
+    end
+
+    test "Infinity text" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :binary_to_float, ["Infinity"]}
+    end
+
+    test "hex-style JS float" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :binary_to_float, ["0x1.fp2"]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.binary_to_float(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :binary_to_float, [:abc], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "binary_to_integer/1" do
+    test "delegates to binary_to_integer/2 with base 10" do
+      assert :erlang.binary_to_integer("123") == :erlang.binary_to_integer("123", 10)
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term("abc")
+
+      top_frame =
+        try do
+          :erlang.binary_to_integer(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :binary_to_integer, ["abc"], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "binary_to_integer/2" do
+    test "base 2" do
+      assert :erlang.binary_to_integer("1111", 2) == 15
+    end
+
+    test "base 8" do
+      assert :erlang.binary_to_integer("177", 8) == 127
+    end
+
+    test "base 10" do
+      assert :erlang.binary_to_integer("123", 10) == 123
+    end
+
+    test "base 16" do
+      assert :erlang.binary_to_integer("3FF", 16) == 1023
+    end
+
+    test "base 36" do
+      assert :erlang.binary_to_integer("ZZ", 36) == 1295
+    end
+
+    test "positive integer without sign" do
+      assert :erlang.binary_to_integer("123", 10) == 123
+    end
+
+    test "positive integer with plus sign" do
+      assert :erlang.binary_to_integer("+123", 10) == 123
+    end
+
+    test "negative integer" do
+      assert :erlang.binary_to_integer("-123", 10) == -123
+    end
+
+    test "zero" do
+      assert :erlang.binary_to_integer("0", 10) == 0
+    end
+
+    test "positive zero" do
+      assert :erlang.binary_to_integer("+0", 10) == 0
+    end
+
+    test "negative zero" do
+      assert :erlang.binary_to_integer("-0", 10) == 0
+    end
+
+    test "lowercase letters" do
+      assert :erlang.binary_to_integer("abcd", 16) == 43_981
+    end
+
+    test "uppercase letters" do
+      assert :erlang.binary_to_integer("ABCD", 16) == 43_981
+    end
+
+    test "mixed case letters" do
+      assert :erlang.binary_to_integer("aBcD", 16) == 43_981
+    end
+
+    test "raises ArgumentError if the first argument is not a binary" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a binary"),
+                   {:erlang, :binary_to_integer, [:abc, 10]}
+    end
+
+    test "raises ArgumentError if the first argument is a non-binary bitstring" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a binary"),
+                   {:erlang, :binary_to_integer, [<<5::size(3)>>, 10]}
+    end
+
+    test "raises ArgumentError if binary is empty" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of an integer"),
+                   {:erlang, :binary_to_integer, ["", 10]}
+    end
+
+    test "raises ArgumentError if binary contains characters outside of the alphabet" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of an integer"),
+                   {:erlang, :binary_to_integer, ["123", 2]}
+    end
+
+    test "raises ArgumentError if the second argument is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an integer in the range 2 through 36"),
+                   {:erlang, :binary_to_integer, ["123", :abc]}
+    end
+
+    test "raises ArgumentError if base is less than 2" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an integer in the range 2 through 36"),
+                   {:erlang, :binary_to_integer, ["123", 1]}
+    end
+
+    test "raises ArgumentError if base is greater than 36" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an integer in the range 2 through 36"),
+                   {:erlang, :binary_to_integer, ["123", 37]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term("abc")
+
+      top_frame =
+        try do
+          :erlang.binary_to_integer(arg, 50)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :binary_to_integer, ["abc", 50],
+                [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "binary_to_list/1" do
+    test "converts a bytes-based binary to a list of integers" do
+      assert :erlang.binary_to_list(<<1, 2, 3>>) == [1, 2, 3]
+    end
+
+    test "converts a text-based binary to a list of integers" do
+      assert :erlang.binary_to_list("abc") == [97, 98, 99]
+    end
+
+    test "converts an empty bytes-based binary to an empty list" do
+      assert :erlang.binary_to_list(<<>>) == []
+    end
+
+    test "converts an empty text-based binary to an empty list" do
+      assert :erlang.binary_to_list("") == []
+    end
+
+    test "raises ArgumentError if the argument is not a bitstring" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a binary"),
+                   {:erlang, :binary_to_list, [123]}
+    end
+
+    test "raises ArgumentError if the argument is a non-binary bitstring" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a binary"),
+                   {:erlang, :binary_to_list, [<<5::size(3)>>]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.binary_to_list(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :binary_to_list, [:abc], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "binary_to_term/1" do
+    # Tests are organised into the same groups as the JS test file
+    # (test/javascript/erlang/erlang_test.mjs binary_to_term/1 describe block).
+    # ExUnit does not support nested describe blocks, so groups are marked with
+    # comment headers. Within each group: happy-paths, then parameterised tests,
+    # then group-specific errors.
+
+    # === integers ===
+
+    test "decodes small positive integer (SMALL_INTEGER_EXT)" do
+      binary = :erlang.term_to_binary(42)
+
+      assert :erlang.binary_to_term(binary) == 42
+    end
+
+    test "decodes small positive integer (max value 255)" do
+      binary = :erlang.term_to_binary(255)
+
+      assert :erlang.binary_to_term(binary) == 255
+    end
+
+    test "decodes positive integer (INTEGER_EXT)" do
+      binary = :erlang.term_to_binary(1000)
+
+      assert :erlang.binary_to_term(binary) == 1000
+    end
+
+    test "decodes negative integer (INTEGER_EXT)" do
+      binary = :erlang.term_to_binary(-100)
+
+      assert :erlang.binary_to_term(binary) == -100
+    end
+
+    test "decodes INTEGER_EXT at int32 max boundary (2^31 - 1)" do
+      binary = <<131, 98, 127, 255, 255, 255>>
+
+      assert :erlang.binary_to_term(binary) == 2_147_483_647
+    end
+
+    test "decodes INTEGER_EXT at int32 min boundary (-2^31)" do
+      binary = <<131, 98, 128, 0, 0, 0>>
+
+      assert :erlang.binary_to_term(binary) == -2_147_483_648
+    end
+
+    test "decodes large positive integer (SMALL_BIG_EXT)" do
+      binary = :erlang.term_to_binary(1_000_000_000_000)
+
+      assert :erlang.binary_to_term(binary) == 1_000_000_000_000
+    end
+
+    test "decodes large negative integer (SMALL_BIG_EXT)" do
+      binary = :erlang.term_to_binary(-1_000_000_000_000)
+
+      assert :erlang.binary_to_term(binary) == -1_000_000_000_000
+    end
+
+    test "decodes large positive integer (LARGE_BIG_EXT)" do
+      # LARGE_BIG_EXT requires integers with >255 bytes +
+      # 2^2048 requires 257 bytes, triggering LARGE_BIG_EXT encoding
+      large_int = trunc(Integer.pow(2, 2048))
+      binary = :erlang.term_to_binary(large_int)
+
+      assert :erlang.binary_to_term(binary) == large_int
+    end
+
+    test "raises ArgumentError for INTEGER_EXT boundary - value truncated" do
+      # INTEGER_EXT (98) but only 2 bytes instead of 4
+      binary = <<131, 98, 0, 0>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for malformed SMALL_BIG_EXT with n exceeding data" do
+      # SMALL_BIG_EXT (110) with n=100 but insufficient bytes
+      binary = <<131, 110, 100, 0, 1, 2, 3>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for malformed LARGE_BIG_EXT with n exceeding data" do
+      # LARGE_BIG_EXT (111) with large n but insufficient bytes
+      binary = <<131, 111, 0, 0, 1, 0, 0, 1, 2, 3>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "decodes SMALL_BIG_EXT with non-{0,1} sign byte as negative" do
+      # OTP treats any non-zero Sign byte as negative, not only 1.
+      binary = <<131, 110, 1, 2, 42>>
+
+      assert :erlang.binary_to_term(binary) == -42
+    end
+
+    test "decodes LARGE_BIG_EXT with non-{0,1} sign byte as negative" do
+      # OTP treats any non-zero Sign byte as negative.
+      binary = <<131, 111, 0, 0, 0, 1, 255, 42>>
+
+      assert :erlang.binary_to_term(binary) == -42
+    end
+
+    # === atoms ===
+
+    test "decodes UTF-8 atom (ATOM_UTF8_EXT)" do
+      name = "élixir"
+      binary = <<131, 118, byte_size(name)::16, name::binary>>
+
+      assert :erlang.binary_to_term(binary) == :élixir
+    end
+
+    test "decodes UTF-8 atom (SMALL_ATOM_UTF8_EXT)" do
+      binary = :erlang.term_to_binary(:test)
+
+      assert :erlang.binary_to_term(binary) == :test
+    end
+
+    test "decodes atom (ATOM_EXT)" do
+      name = "elixir"
+      binary = <<131, 100, byte_size(name)::16, name::binary>>
+
+      assert :erlang.binary_to_term(binary) == :elixir
+    end
+
+    test "decodes small atom (SMALL_ATOM_EXT)" do
+      name = "elixir"
+      binary = <<131, 115, byte_size(name)::8, name::binary>>
+
+      assert :erlang.binary_to_term(binary) == :elixir
+    end
+
+    test "decodes longer atom" do
+      binary = :erlang.term_to_binary(:test_atom)
+
+      assert :erlang.binary_to_term(binary) == :test_atom
+    end
+
+    test "decodes true atom" do
+      binary = :erlang.term_to_binary(true)
+
+      assert :erlang.binary_to_term(binary) == true
+    end
+
+    test "decodes false atom" do
+      binary = :erlang.term_to_binary(false)
+
+      assert :erlang.binary_to_term(binary) == false
+    end
+
+    test "ATOM_EXT format with Latin-1 atoms" do
+      # Test ATOM_EXT (tag 100) with various atom names
+      test_atoms = [
+        :test,
+        :hello_world,
+        :a,
+        # empty atom
+        :"",
+        :"special-atom!@#",
+        :atom_with_underscores_123
+      ]
+
+      for atom <- test_atoms do
+        # Manually construct ATOM_EXT binary
+        name = Atom.to_string(atom)
+        binary = <<131, 100, byte_size(name)::16, name::binary>>
+
+        assert :erlang.binary_to_term(binary) == atom
+      end
+    end
+
+    test "SMALL_ATOM_UTF8_EXT format with UTF-8 atoms" do
+      # SMALL_ATOM_UTF8_EXT (tag 119) with multi-byte UTF-8 characters.
+      test_atoms = [
+        # 2-byte UTF-8 chars
+        :élixir,
+        :café,
+        # 3-byte UTF-8 chars
+        :测试,
+        # 4-byte UTF-8 char
+        :"🚀",
+        :ñoño
+      ]
+
+      for atom <- test_atoms do
+        binary = :erlang.term_to_binary(atom)
+
+        assert :erlang.binary_to_term(binary) == atom
+      end
+    end
+
+    test "raises ArgumentError for malformed ATOM_EXT with length exceeding data" do
+      # ATOM_EXT (100) with length 100 but only 2 bytes
+      binary = <<131, 100, 0, 100, 65, 66>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for malformed SMALL_ATOM_UTF8_EXT with length exceeding data" do
+      # SMALL_ATOM_UTF8_EXT (119) with length 50 but only 2 bytes
+      binary = <<131, 119, 50, 65, 66>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for ATOM_UTF8_EXT with invalid UTF-8 bytes" do
+      # ATOM_UTF8_EXT (118) with length 2 and invalid UTF-8 sequence (0xC3 0x28)
+      binary = <<131, 118, 0, 2, 0xC3, 0x28>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for SMALL_ATOM_UTF8_EXT with invalid UTF-8 bytes" do
+      # SMALL_ATOM_UTF8_EXT (119) with length 2 and invalid UTF-8 sequence (0xC3 0x28)
+      binary = <<131, 119, 2, 0xC3, 0x28>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for ATOM_EXT with byte length exceeding 255" do
+      # ATOM_EXT (100) with 256 Latin-1 bytes. OTP caps atom names at 255 chars.
+      name = String.duplicate("a", 256)
+      binary = <<131, 100, byte_size(name)::16, name::binary>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for ATOM_UTF8_EXT with codepoint count exceeding 255" do
+      # ATOM_UTF8_EXT (118) with 256 ASCII bytes (256 codepoints). OTP caps
+      # UTF-8 atom names at 255 codepoints, not at byte length.
+      name = String.duplicate("a", 256)
+      binary = <<131, 118, byte_size(name)::16, name::binary>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "decodes ATOM_UTF8_EXT with 255 multibyte codepoints (>255 bytes)" do
+      # 255 rocket emoji (4 bytes each = 1020 bytes). Codepoint count <= 255
+      # is allowed even when byte length > 255.
+      name = String.duplicate("🚀", 255)
+      binary = <<131, 118, byte_size(name)::16, name::binary>>
+
+      # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+      assert :erlang.binary_to_term(binary) == String.to_atom(name)
+    end
+
+    # === binaries ===
+
+    test "decodes binary string (BINARY_EXT)" do
+      binary = :erlang.term_to_binary("hello")
+
+      assert :erlang.binary_to_term(binary) == "hello"
+    end
+
+    test "decodes empty binary" do
+      binary = :erlang.term_to_binary("")
+
+      assert :erlang.binary_to_term(binary) == ""
+    end
+
+    test "BINARY_EXT format with various binary data" do
+      # Test BINARY_EXT (tag 109) with different binary content
+      test_binaries = [
+        "",
+        "hello",
+        "world with spaces",
+        "binary\0with\0nulls",
+        "UTF-8: élixir café 测试 🚀",
+        <<0, 1, 2, 255, 254, 253>>,
+        # larger binary
+        String.duplicate("x", 1000)
+      ]
+
+      for bin <- test_binaries do
+        binary = :erlang.term_to_binary(bin)
+
+        assert :erlang.binary_to_term(binary) == bin
+      end
+    end
+
+    test "raises ArgumentError for malformed BINARY_EXT with length exceeding data" do
+      # BINARY_EXT (109) with length 10 but only 2 bytes of data
+      binary = <<131, 109, 0, 0, 0, 10, 65, 66>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    # === tuples ===
+
+    test "decodes small tuple (SMALL_TUPLE_EXT)" do
+      binary = :erlang.term_to_binary({1, 2, 3})
+
+      assert :erlang.binary_to_term(binary) == {1, 2, 3}
+    end
+
+    test "decodes large tuple (LARGE_TUPLE_EXT)" do
+      arity = 300
+
+      tuple =
+        1..arity
+        |> Enum.to_list()
+        |> List.to_tuple()
+
+      binary = :erlang.term_to_binary(tuple)
+      result = :erlang.binary_to_term(binary)
+
+      assert is_tuple(result)
+      assert tuple_size(result) == arity
+      assert elem(result, 0) == 1
+    end
+
+    test "decodes empty tuple" do
+      binary = :erlang.term_to_binary({})
+
+      assert :erlang.binary_to_term(binary) == {}
+    end
+
+    test "decodes nested tuple" do
+      binary = :erlang.term_to_binary({1, {2, 3}})
+
+      assert :erlang.binary_to_term(binary) == {1, {2, 3}}
+    end
+
+    test "raises ArgumentError for malformed SMALL_TUPLE_EXT with arity exceeding available data" do
+      # SMALL_TUPLE_EXT (104) with arity 5 but only 1 element
+      binary = <<131, 104, 5, 97, 1>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for nested term truncation" do
+      # SMALL_TUPLE_EXT with 2 elements, but second element is truncated
+      # [131, 104, 2, 97, 1, 97] - missing last byte
+      binary = <<131, 104, 2, 97, 1, 97>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for LARGE_TUPLE_EXT with zero arity but missing NIL_EXT" do
+      # LARGE_TUPLE_EXT (105) with arity 0 - should work, but let's test malformed version
+      binary = <<131, 105, 0, 0, 0, 1>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    # === lists ===
+
+    test "decodes empty list (NIL_EXT)" do
+      binary = :erlang.term_to_binary([])
+
+      assert :erlang.binary_to_term(binary) == []
+    end
+
+    test "decodes string list (STRING_EXT)" do
+      binary = :erlang.term_to_binary([1, 2, 3])
+
+      assert :erlang.binary_to_term(binary) == [1, 2, 3]
+    end
+
+    test "decodes proper list (LIST_EXT)" do
+      binary = :erlang.term_to_binary([100, 200, 300])
+
+      assert :erlang.binary_to_term(binary) == [100, 200, 300]
+    end
+
+    test "decodes improper list (LIST_EXT)" do
+      binary = :erlang.term_to_binary([1 | [2 | [3 | 4]]])
+
+      assert :erlang.binary_to_term(binary) == [1 | [2 | [3 | 4]]]
+    end
+
+    test "decodes LIST_EXT with length 0 and non-list tail to the tail term" do
+      # LIST_EXT (108) with length 0 and SMALL_INTEGER_EXT (97) 1 as tail
+      binary = <<131, 108, 0, 0, 0, 0, 97, 1>>
+
+      assert :erlang.binary_to_term(binary) == 1
+    end
+
+    test "decodes LIST_EXT with length 0 and NIL_EXT tail to empty list" do
+      binary = <<131, 108, 0, 0, 0, 0, 106>>
+
+      assert :erlang.binary_to_term(binary) == []
+    end
+
+    test "decodes LIST_EXT with length 0 and improper-list tail to the tail term" do
+      # LIST_EXT (108) with length 0 and tail = LIST_EXT [1 | 2]
+      binary = <<131, 108, 0, 0, 0, 0, 108, 0, 0, 0, 1, 97, 1, 97, 2>>
+
+      assert :erlang.binary_to_term(binary) == [1 | 2]
+    end
+
+    test "raises ArgumentError for malformed STRING_EXT with length exceeding data" do
+      # STRING_EXT (107) with length 100 but only 2 bytes of data
+      binary = <<131, 107, 0, 100, 65, 66>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for malformed LIST_EXT with length exceeding data" do
+      # LIST_EXT (108) with length 10 but no elements
+      binary = <<131, 108, 0, 0, 0, 10>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    # === maps ===
+
+    test "decodes empty map" do
+      binary = :erlang.term_to_binary(%{})
+
+      assert :erlang.binary_to_term(binary) == %{}
+    end
+
+    test "decodes map with atom keys" do
+      binary = :erlang.term_to_binary(%{a: 1, b: 2})
+
+      assert :erlang.binary_to_term(binary) == %{a: 1, b: 2}
+    end
+
+    test "raises ArgumentError for malformed MAP_EXT with arity exceeding data" do
+      # MAP_EXT (116) with arity 10 but no key-value pairs
+      binary = <<131, 116, 0, 0, 0, 10>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for MAP_EXT with duplicate keys" do
+      # MAP_EXT (116) arity=2, key1=:a value=1, key2=:a value=2 (duplicate).
+      binary = <<131, 116, 0, 0, 0, 2, 100, 0, 1, ?a, 97, 1, 100, 0, 1, ?a, 97, 2>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    # === floats ===
+
+    test "decodes NEW_FLOAT_EXT (IEEE 754 double)" do
+      binary = :erlang.term_to_binary(3.14159)
+
+      assert :erlang.binary_to_term(binary) == 3.14159
+    end
+
+    test "decodes NEW_FLOAT_EXT for negative float" do
+      binary = :erlang.term_to_binary(-2.5)
+
+      assert :erlang.binary_to_term(binary) == -2.5
+    end
+
+    test "decodes NEW_FLOAT_EXT for zero" do
+      binary = :erlang.term_to_binary(0.0)
+
+      assert :erlang.binary_to_term(binary) == 0.0
+    end
+
+    test "decodes FLOAT_EXT (deprecated string format)" do
+      # Manually construct FLOAT_EXT binary
+      iodata = :io_lib.format("~.20e", [1.5])
+      float_str = IO.iodata_to_binary(iodata)
+      padded = String.pad_trailing(float_str, 31, <<0>>)
+      binary = <<131, 99, padded::binary>>
+
+      assert :erlang.binary_to_term(binary) == 1.5
+    end
+
+    test "raises ArgumentError for FLOAT_EXT with truncated data" do
+      # FLOAT_EXT (tag 99) with only 10 bytes instead of required 31
+      binary = <<131, 99, "1.23", 0, 0, 0, 0, 0, 0>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for NEW_FLOAT_EXT truncated" do
+      # NEW_FLOAT_EXT (70) but only 4 bytes instead of 8
+      binary = <<131, 70, 0, 0, 0, 0>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for NEW_FLOAT_EXT with NaN bit pattern" do
+      # NEW_FLOAT_EXT (70) followed by IEEE 754 quiet NaN bytes.
+      binary = <<131, 70, 127, 248, 0, 0, 0, 0, 0, 0>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for NEW_FLOAT_EXT with +Infinity bit pattern" do
+      # NEW_FLOAT_EXT (70) followed by IEEE 754 +Infinity bytes.
+      binary = <<131, 70, 127, 240, 0, 0, 0, 0, 0, 0>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for NEW_FLOAT_EXT with -Infinity bit pattern" do
+      # NEW_FLOAT_EXT (70) followed by IEEE 754 -Infinity bytes.
+      binary = <<131, 70, 255, 240, 0, 0, 0, 0, 0, 0>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for FLOAT_EXT with Infinity string" do
+      # FLOAT_EXT (99) with the string "Infinity" - OTP rejects non-finite floats.
+      padded = String.pad_trailing("Infinity", 31, <<0>>)
+      binary = <<131, 99, padded::binary>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    # === bitstrings ===
+
+    test "decodes BIT_BINARY_EXT with partial byte" do
+      # Bitstring with 5 bits
+      bitstring = <<1::5>>
+      binary = :erlang.term_to_binary(bitstring)
+
+      assert :erlang.binary_to_term(binary) == bitstring
+    end
+
+    test "decodes BIT_BINARY_EXT with full bytes (Bits=8)" do
+      bitstring = <<255, 0>>
+      binary = :erlang.term_to_binary(bitstring)
+
+      assert :erlang.binary_to_term(binary) == bitstring
+    end
+
+    test "raises ArgumentError for malformed BIT_BINARY_EXT with length exceeding data" do
+      # BIT_BINARY_EXT (77) with length 100 but only 2 bytes
+      binary = <<131, 77, 0, 0, 0, 100, 5, 65, 66>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for BIT_BINARY_EXT with Bits=0" do
+      # BIT_BINARY_EXT (77) with length 1, bits 0 (invalid - spec says 1-8).
+      binary = <<131, 77, 0, 0, 0, 1, 0, 0>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for BIT_BINARY_EXT with Length=0" do
+      # BIT_BINARY_EXT (77) with length 0, bits 8. OTP rejects: trailing-bits
+      # count is meaningless without any data byte.
+      binary = <<131, 77, 0, 0, 0, 0, 8>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    # === references ===
+
+    test "decodes REFERENCE_EXT" do
+      binary = <<131, 101, 119, 13, "nonode@nohost", 0, 0, 0, 42, 1>>
+      result = :erlang.binary_to_term(binary)
+
+      assert is_reference(result)
+    end
+
+    test "decodes REFERENCE_EXT with SMALL_ATOM_EXT" do
+      # Integration test: SMALL_ATOM_EXT (115) used as the node sub-term.
+      # 131 - VERSION_NUMBER
+      # 101 - REFERENCE_EXT
+      # 115 - SMALL_ATOM_EXT
+      # 13 - node name length (8-bit)
+      # "nonode@nohost" - node name
+      # 0, 0, 1, 200 - single ID word (32-bit)
+      # 3 - creation (8-bit)
+      binary = <<131, 101, 115, 13, "nonode@nohost", 0, 0, 1, 200, 3>>
+      result = :erlang.binary_to_term(binary)
+
+      assert is_reference(result)
+    end
+
+    test "decodes NEW_REFERENCE_EXT" do
+      # Create a reference and encode/decode it
+      ref = make_ref()
+      binary = :erlang.term_to_binary(ref)
+      result = :erlang.binary_to_term(binary)
+
+      assert is_reference(result)
+    end
+
+    test "decodes NEW_REFERENCE_EXT with ATOM_EXT" do
+      binary =
+        <<131, 114, 0, 3, 100, 0, 13, "nonode@nohost", 1, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3>>
+
+      result = :erlang.binary_to_term(binary)
+
+      assert is_reference(result)
+    end
+
+    test "decodes NEWER_REFERENCE_EXT with SMALL_ATOM_UTF8_EXT" do
+      # Manually construct NEWER_REFERENCE_EXT binary
+      binary =
+        <<131, 90, 0, 3, 119, 13, "nonode@nohost", 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0,
+          3>>
+
+      result = :erlang.binary_to_term(binary)
+
+      assert is_reference(result)
+    end
+
+    test "decodes NEWER_REFERENCE_EXT with ATOM_EXT" do
+      # Manually construct NEWER_REFERENCE_EXT binary with ATOM_EXT node
+      binary =
+        <<131, 90, 0, 3, 100, 0, 13, "nonode@nohost", 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0,
+          3>>
+
+      result = :erlang.binary_to_term(binary)
+
+      assert is_reference(result)
+    end
+
+    test "raises ArgumentError for malformed NEW_REFERENCE_EXT with len exceeding data" do
+      # NEW_REFERENCE_EXT (114) with len=10 but insufficient id bytes
+      binary = <<131, 114, 0, 10, 119, 4, 110, 111, 100, 101, 0, 0, 0, 1>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for NEW_REFERENCE_EXT with len exceeding OTP cap of 5" do
+      # NEW_REFERENCE_EXT (114), Len=6, Node=ATOM "n", Creation=0,
+      # ID=6*4 zero bytes (OTP rejects Len > 5).
+      binary = <<131, 114, 0, 6, 100, 0, 1, ?n, 0>> <> :binary.copy(<<0>>, 6 * 4)
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for NEWER_REFERENCE_EXT with len exceeding OTP cap of 5" do
+      # NEWER_REFERENCE_EXT (90), Len=6, Node=ATOM "n", Creation=0 (4 bytes),
+      # ID=6*4 zero bytes (OTP rejects Len > 5).
+      binary = <<131, 90, 0, 6, 100, 0, 1, ?n, 0, 0, 0, 0>> <> :binary.copy(<<0>>, 6 * 4)
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    # === PIDs ===
+
+    test "decodes PID_EXT" do
+      # Manually construct PID_EXT binary
+      # 131 - VERSION, 103 - PID_EXT, then node atom, ID, Serial, Creation
+      binary =
+        <<131, 103, 119, 13, "nonode@nohost", 0, 0, 0, 100, 0, 0, 0, 50, 0>>
+
+      result = :erlang.binary_to_term(binary)
+
+      assert is_pid(result)
+    end
+
+    test "decodes NEW_PID_EXT" do
+      # Create a PID and encode/decode it
+      pid = self()
+      binary = :erlang.term_to_binary(pid)
+      result = :erlang.binary_to_term(binary)
+
+      assert is_pid(result)
+    end
+
+    # === ports ===
+
+    test "decodes PORT_EXT" do
+      # Manually construct PORT_EXT binary
+      # 131 - VERSION, 102 - PORT_EXT, then node atom, ID, Creation
+      binary = <<131, 102, 119, 13, "nonode@nohost", 0, 0, 0, 5, 0>>
+      result = :erlang.binary_to_term(binary)
+
+      assert is_port(result)
+    end
+
+    test "decodes NEW_PORT_EXT" do
+      # Manually construct NEW_PORT_EXT binary
+      # 131 - VERSION, 89 - NEW_PORT_EXT, then node atom, ID (4 bytes), Creation (4 bytes)
+      binary = <<131, 89, 119, 13, "nonode@nohost", 0, 0, 0, 5, 0, 0, 0, 0>>
+      result = :erlang.binary_to_term(binary)
+
+      assert is_port(result)
+    end
+
+    test "decodes V4_PORT_EXT" do
+      # Create a port and encode/decode it (modern Erlang uses V4_PORT_EXT)
+      port = hd(Port.list())
+      binary = :erlang.term_to_binary(port)
+      result = :erlang.binary_to_term(binary)
+
+      assert is_port(result)
+    end
+
+    # === exports (function captures) ===
+
+    test "decodes EXPORT_EXT (function capture)" do
+      # Create a function capture and encode/decode it
+      fun = &Enum.map/2
+      binary = :erlang.term_to_binary(fun)
+      result = :erlang.binary_to_term(binary)
+
+      assert is_function(result, 2)
+    end
+
+    test "raises ArgumentError for EXPORT_EXT with non-atom module" do
+      # EXPORT_EXT (113), Module = SMALL_INTEGER_EXT 5 (not an atom),
+      # Function = ATOM_EXT "f", Arity = SMALL_INTEGER_EXT 2
+      binary = <<131, 113, 97, 5, 100, 0, 1, ?f, 97, 2>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for EXPORT_EXT with non-atom function" do
+      # EXPORT_EXT (113), Module = ATOM_EXT "m", Function = SMALL_INTEGER_EXT 5,
+      # Arity = SMALL_INTEGER_EXT 2
+      binary = <<131, 113, 100, 0, 1, ?m, 97, 5, 97, 2>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for EXPORT_EXT with non-integer arity" do
+      # EXPORT_EXT (113), Module = ATOM_EXT "m", Function = ATOM_EXT "f",
+      # Arity = ATOM_EXT "a" (not an integer)
+      binary = <<131, 113, 100, 0, 1, ?m, 100, 0, 1, ?f, 100, 0, 1, ?a>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    # === complex nested structures ===
+
+    test "decodes Code.fetch_docs/1 style tuple" do
+      term = {:docs_v1, 1, :elixir, "text/markdown", %{}, %{}, []}
+      binary = :erlang.term_to_binary(term)
+
+      assert :erlang.binary_to_term(binary) == term
+    end
+
+    test "decodes complex nested structure" do
+      term =
+        {:docs_v1, 1, :elixir, "text/markdown", %{"en" => "Module docs"}, %{since: "1.0.0"},
+         [{{:function, :my_func, 2}, 10, ["signature"], %{}, %{}}]}
+
+      binary = :erlang.term_to_binary(term)
+
+      assert :erlang.binary_to_term(binary) == term
+    end
+
+    # === compressed terms ===
+
+    test "decodes compressed term (COMPRESSED tag 80) with repeated string" do
+      # Real Erlang-generated compressed term for String.duplicate("hello", 100)
+      # Generated with: :erlang.term_to_binary(String.duplicate("hello", 100), [compressed: 9])
+      binary =
+        <<131, 80, 0, 0, 1, 249, 120, 218, 203, 101, 96, 96, 252, 146, 145, 154, 147, 147, 63, 74,
+          140, 40, 2, 0, 21, 94, 209, 51>>
+
+      expected = String.duplicate("hello", 100)
+
+      assert :erlang.binary_to_term(binary) == expected
+    end
+
+    test "decodes compressed term with list of tuples" do
+      # Real Erlang-generated compressed term for a list of 50 identical tuples
+      # Generated with: :erlang.term_to_binary(List.duplicate({:ok, 42}, 50), [compressed: 9])
+      binary =
+        <<131, 80, 0, 0, 1, 150, 120, 218, 203, 97, 96, 96, 48, 202, 96, 42, 103, 202, 207, 78,
+          212, 26, 165, 7, 7, 157, 5, 0, 189, 136, 115, 25>>
+
+      expected = List.duplicate({:ok, 42}, 50)
+
+      assert :erlang.binary_to_term(binary) == expected
+    end
+
+    test "raises ArgumentError for compressed term with truncated uncompressed size" do
+      # COMPRESSED tag but missing uncompressed size bytes
+      binary = <<131, 80, 0, 0>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for compressed term with invalid zlib data" do
+      # COMPRESSED tag with invalid compressed data
+      binary = <<131, 80, 0, 0, 0, 2, 255, 255, 255>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for compressed term with size mismatch" do
+      # COMPRESSED tag where decompressed size doesn't match declared size
+      binary = <<131, 80, 0, 0, 0, 10, 120, 156, 74, 180, 2, 0, 0, 121, 0, 121>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for nested COMPRESSED tag" do
+      # SMALL_TUPLE_EXT (104) of arity 1 wrapping a COMPRESSED-prefixed payload.
+      # OTP accepts COMPRESSED only at the top level.
+      binary =
+        <<131, 104, 1, 80, 0, 0, 1, 249, 120, 218, 203, 101, 96, 96, 252, 146, 145, 154, 147, 147,
+          63, 74, 140, 40, 2, 0, 21, 94, 209, 51>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    # === error handling ===
+
+    test "raises ArgumentError if argument is not a binary" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a binary"),
+                   {:erlang, :binary_to_term, [:test]}
+    end
+
+    test "raises ArgumentError if argument is a non-binary bitstring" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a binary"),
+                   {:erlang, :binary_to_term, [<<1::1, 0::1, 1::1>>]}
+    end
+
+    test "raises ArgumentError if binary has invalid version byte" do
+      # Wrong version byte (130 instead of 131)
+      binary = <<130, 97, 42>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError if binary is truncated" do
+      # Only version byte, no data
+      binary = <<131>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "ignores trailing bytes after a valid term" do
+      # OTP decodes the prefix and silently discards any tail.
+      binary = <<131, 97, 42, 99, 99, 99>>
+
+      assert :erlang.binary_to_term(binary) == 42
+    end
+
+    test "raises ArgumentError for unsupported ETF tag (tag 50)" do
+      # Tag 50 is not a valid ETF tag
+      binary = <<131, 50>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+
+    test "raises ArgumentError for FUN_EXT (legacy anonymous fun, tag 117)" do
+      # Well-formed FUN_EXT: NumFree=0, Pid + Module + Index + Uniq.
+      # OTP stopped decoding FUN_EXT in OTP 23; both runtimes reject it.
+      binary =
+        <<131, 117, 0, 0, 0, 0, 103, 119, 13, "nonode@nohost", 0, 0, 0, 1, 0, 0, 0, 1, 0, 119, 1,
+          ?m, 97, 0, 97, 0>>
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid external representation of a term"),
+                   {:erlang, :binary_to_term, [binary]}
+    end
+  end
+
+  describe "bit_size/1" do
+    test "bitstring" do
+      assert :erlang.bit_size(<<2::7>>) == 7
+    end
+
+    test "not bitstring" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a bitstring"),
+                   {:erlang, :bit_size, [:abc]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.bit_size(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :bit_size, [:abc], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "bnot/1" do
+    test "positive integer" do
+      # 2 = 0b00000010, -3 = 0b11111101
+      assert :erlang.bnot(2) == -3
+    end
+
+    test "zero" do
+      # 0 = 0b00000000, -1 = 0b11111111
+      assert :erlang.bnot(0) == -1
+    end
+
+    test "negative integer" do
+      # -3 = 0b11111101, 2 = 0b00000010
+      assert :erlang.bnot(-3) == 2
+    end
+
+    test "argument above JS Number.MAX_SAFE_INTEGER" do
+      # Number.MAX_SAFE_INTEGER == 9_007_199_254_740_991
+      assert :erlang.bnot(9_007_199_254_740_992) == -9_007_199_254_740_993
+    end
+
+    test "argument below JS Number.MIN_SAFE_INTEGER" do
+      # Number.MIN_SAFE_INTEGER == -9_007_199_254_740_991
+      assert :erlang.bnot(-9_007_199_254_740_992) == 9_007_199_254_740_991
+    end
+
+    test "raises ArithmeticError if the argument is not an integer" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: Bitwise.bnot(2.0)",
+                   {:erlang, :bnot, [2.0]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(2.0)
+
+      top_frame =
+        try do
+          :erlang.bnot(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :bnot, [2.0], @erts_info}
+    end
+  end
+
+  describe "bor/2" do
+    test "both arguments are positive" do
+      # 4 = 0b00000100, 3 = 0b00000011, 7 = 0b00000111
+      assert :erlang.bor(4, 3) == 7
+    end
+
+    test "both arguments are zero" do
+      # 0 = 0b00000000
+      assert :erlang.bor(0, 0) == 0
+    end
+
+    test "left argument is zero" do
+      # 0 = 0b00000000, 8 = 0b00001000
+      assert :erlang.bor(0, 8) == 8
+    end
+
+    test "right argument is zero" do
+      # 4 = 0b00000100, 0 = 0b00000000
+      assert :erlang.bor(4, 0) == 4
+    end
+
+    test "left argument is negative" do
+      # -4 = 0b11111100, 3 = 0b00000011, -1 = 0b11111111
+      assert :erlang.bor(-4, 3) == -1
+    end
+
+    test "right argument is negative" do
+      # 4 = 0b00000100, -3 = 0b11111101
+      assert :erlang.bor(4, -3) == -3
+    end
+
+    test "both arguments are negative" do
+      # -4 = 0b11111100, -3 = 0b11111101
+      assert :erlang.bor(-4, -3) == -3
+    end
+
+    test "arguments above JS Number.MAX_SAFE_INTEGER" do
+      # Number.MAX_SAFE_INTEGER == 9_007_199_254_740_991
+      #   805_215_019_090_496_300 = 0b101100101100101100101100101100101100101100101100101100101100
+      #   457_508_533_574_145_625 = 0b011001011001011001011001011001011001011001011001011001011001
+      # 1_116_320_821_920_915_325 = 0b111101111101111101111101111101111101111101111101111101111101
+      assert :erlang.bor(805_215_019_090_496_300, 457_508_533_574_145_625) ==
+               1_116_320_821_920_915_325
+    end
+
+    test "arguments below JS Number.MIN_SAFE_INTEGER" do
+      # Number.MIN_SAFE_INTEGER == -9_007_199_254_740_991
+      # -347_706_485_516_350_676 = 0b1111101100101100101100101100101100101100101100101100101100101100
+      # -695_412_971_032_701_351 = 0b1111011001011001011001011001011001011001011001011001011001011001
+      #  -36_600_682_685_931_651 = 0b1111111101111101111101111101111101111101111101111101111101111101
+      assert :erlang.bor(-347_706_485_516_350_676, -695_412_971_032_701_351) ==
+               -36_600_682_685_931_651
+    end
+
+    test "raises ArithmeticError if the first argument is not an integer" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: Bitwise.bor(1.0, 2)",
+                   {:erlang, :bor, [1.0, 2]}
+    end
+
+    test "raises ArithmeticError if the second argument is not an integer" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: Bitwise.bor(1, 2.0)",
+                   {:erlang, :bor, [1, 2.0]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(1.0)
+
+      top_frame =
+        try do
+          :erlang.bor(arg, 2)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :bor, [1.0, 2], @erts_info}
+    end
+  end
+
+  describe "bsl/2" do
+    test "common usage" do
+      # 1 = 0b00000001, 16 = 0b00010000
+      assert :erlang.bsl(1, 4) == 16
+    end
+
+    test "zero shift" do
+      # 247 = 0b11110111
+      assert :erlang.bsl(247, 0) == 247
+    end
+
+    test "shift right via negative shift" do
+      # 16 = 0b00010000, 8 = 0b00001000
+      assert :erlang.bsl(16, -1) == 8
+    end
+
+    test "negative integer left shift" do
+      # -2 = 0b11111110, -4 = 0b11111100
+      assert :erlang.bsl(-2, 1) == -4
+    end
+
+    test "large shift for positive integer" do
+      # 1 << 64 = 18_446_744_073_709_551_616
+      assert :erlang.bsl(1, 64) == 18_446_744_073_709_551_616
+    end
+
+    test "large shift for negative integer" do
+      # -1 << 64 = -18_446_744_073_709_551_616
+      assert :erlang.bsl(-1, 64) == -18_446_744_073_709_551_616
+    end
+
+    test "above JS Number.MAX_SAFE_INTEGER" do
+      # Number.MAX_SAFE_INTEGER == 9_007_199_254_740_991
+      #  9_007_199_254_740_992 = 0b100000000000000000000000000000000000000000000000000000
+      # 18_014_398_509_481_984 = 0b1000000000000000000000000000000000000000000000000000000
+      assert :erlang.bsl(9_007_199_254_740_992, 1) == 18_014_398_509_481_984
+    end
+
+    test "below JS Number.MIN_SAFE_INTEGER" do
+      # Number.MIN_SAFE_INTEGER == -9_007_199_254_740_991
+      #  -9_007_199_254_740_992 = 0b1111111111100000000000000000000000000000000000000000000000000000
+      # -18_014_398_509_481_984 = 0b1111111111000000000000000000000000000000000000000000000000000000
+      assert :erlang.bsl(-9_007_199_254_740_992, 1) == -18_014_398_509_481_984
+    end
+
+    test "raises ArithmeticError if the first argument is not an integer" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: Bitwise.bsl(1.0, 2)",
+                   {:erlang, :bsl, [1.0, 2]}
+    end
+
+    test "raises ArithmeticError if the second argument is not an integer" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: Bitwise.bsl(1, 2.0)",
+                   {:erlang, :bsl, [1, 2.0]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(1.0)
+
+      top_frame =
+        try do
+          :erlang.bsl(arg, 2)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :bsl, [1.0, 2], @erts_info}
+    end
+  end
+
+  describe "bsr/2" do
+    test "common usage" do
+      # 16 = 0b00010000, 8 = 0b00001000
+      assert :erlang.bsr(16, 1) == 8
+    end
+
+    test "zero shift" do
+      # 247 = 0b11110111
+      assert :erlang.bsr(247, 0) == 247
+    end
+
+    test "shift left via negative shift" do
+      # 1 = 0b00000001, 16 = 0b00010000
+      assert :erlang.bsr(1, -4) == 16
+    end
+
+    test "negative keeps sign bit" do
+      # -16 = 0b11110000, -8 = 0b11111000
+      assert :erlang.bsr(-16, 1) == -8
+    end
+
+    test "shift beyond size for positive integer" do
+      # 255 = 0b1111111, 0 = 0b00000000
+      assert :erlang.bsr(255, 9) == 0
+    end
+
+    test "shift beyond size for negative integer" do
+      # -127 = 0b10000001, -1 = 0b11111111
+      assert :erlang.bsr(-127, 8) == -1
+    end
+
+    test "above JS Number.MAX_SAFE_INTEGER" do
+      # Number.MAX_SAFE_INTEGER == 9_007_199_254_740_991
+      # 18_014_398_509_481_984 = 0b1000000000000000000000000000000000000000000000000000000
+      #  9_007_199_254_740_992 = 0b0100000000000000000000000000000000000000000000000000000
+      assert :erlang.bsr(18_014_398_509_481_984, 1) == 9_007_199_254_740_992
+    end
+
+    test "below JS Number.MIN_SAFE_INTEGER" do
+      # Number.MIN_SAFE_INTEGER == -9_007_199_254_740_991
+      # -18_014_398_509_481_984 = 0b1111111111000000000000000000000000000000000000000000000000000000
+      #  -9_007_199_254_740_992 = 0b1111111111100000000000000000000000000000000000000000000000000000
+      assert :erlang.bsr(-18_014_398_509_481_984, 1) == -9_007_199_254_740_992
+    end
+
+    test "raises ArithmeticError if the first argument is not an integer" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: Bitwise.bsr(1.0, 2)",
+                   {:erlang, :bsr, [1.0, 2]}
+    end
+
+    test "raises ArithmeticError if the second argument is not an integer" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: Bitwise.bsr(1, 2.0)",
+                   {:erlang, :bsr, [1, 2.0]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(1.0)
+
+      top_frame =
+        try do
+          :erlang.bsr(arg, 2)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :bsr, [1.0, 2], @erts_info}
+    end
+  end
+
+  describe "bxor/2" do
+    test "valid arguments" do
+      # 5 = 0b00000101, 3 = 0b00000011, 6 = 0b00000110
+      assert :erlang.bxor(5, 3) == 6
+    end
+
+    test "both arguments are zero" do
+      # 0 = 0b00000000
+      assert :erlang.bxor(0, 0) == 0
+    end
+
+    test "left argument is zero" do
+      # 0 = 0b00000000, 5 = 0b00000101
+      assert :erlang.bxor(0, 5) == 5
+    end
+
+    test "right argument is zero" do
+      # 5 = 0b00000101, 0 = 0b00000000
+      assert :erlang.bxor(5, 0) == 5
+    end
+
+    test "same values result in zero" do
+      # 5 = 0b00000101, 0 = 0b00000000
+      assert :erlang.bxor(5, 5) == 0
+    end
+
+    test "left argument is negative" do
+      # -5 = 0b11111011, 5 = 0b00000101, -2 = 0b11111110
+      assert :erlang.bxor(-5, 5) == -2
+    end
+
+    test "right argument is negative" do
+      # 5 = 0b00000101, -5 = 0b11111011, -2 = 0b11111110
+      assert :erlang.bxor(5, -5) == -2
+    end
+
+    test "both arguments are negative" do
+      # -5 = 0b11111011, -3 = 0b11111101, 6 = 0b00000110
+      assert :erlang.bxor(-5, -3) == 6
+    end
+
+    test "arguments above JS Number.MAX_SAFE_INTEGER" do
+      # Number.MAX_SAFE_INTEGER == 9_007_199_254_740_991
+      # 805_215_019_090_496_300 = 0b101100101100101100101100101100101100101100101100101100101100
+      # 457_508_533_574_145_625 = 0b011001011001011001011001011001011001011001011001011001011001
+      # 969_918_091_177_188_725 = 0b110101110101110101110101110101110101110101110101110101110101
+      assert :erlang.bxor(805_215_019_090_496_300, 457_508_533_574_145_625) ==
+               969_918_091_177_188_725
+    end
+
+    test "arguments below JS Number.MIN_SAFE_INTEGER" do
+      # Number.MIN_SAFE_INTEGER == -9_007_199_254_740_991
+      # -347_706_485_516_350_676 = 0b1111101100101100101100101100101100101100101100101100101100101100
+      # -695_412_971_032_701_351 = 0b1111011001011001011001011001011001011001011001011001011001011001
+      #  969_918_091_177_188_725 = 0b0000110101110101110101110101110101110101110101110101110101110101
+      assert :erlang.bxor(-347_706_485_516_350_676, -695_412_971_032_701_351) ==
+               969_918_091_177_188_725
+    end
+
+    test "raises ArithmeticError if the first argument is not an integer" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: Bitwise.bxor(5.0, 3)",
+                   {:erlang, :bxor, [5.0, 3]}
+    end
+
+    test "raises ArithmeticError if the second argument is not an integer" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: Bitwise.bxor(5, 3.0)",
+                   {:erlang, :bxor, [5, 3.0]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(5.0)
+
+      top_frame =
+        try do
+          :erlang.bxor(arg, 3)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :bxor, [5.0, 3], @erts_info}
+    end
+  end
+
+  describe "byte_size/1" do
+    test "empty bitstring" do
+      assert :erlang.byte_size("") == 0
+    end
+
+    test "binary bitstring" do
+      assert :erlang.byte_size("abc") == 3
+    end
+
+    test "non-binary bitstring" do
+      bitstring = <<1::1, 0::1, 1::1, 0::1, 1::1, 0::1, 1::1, 0::1, 1::1, 0::1, 1::1, 0::1>>
+      assert :erlang.byte_size(bitstring) == 2
+    end
+
+    test "not bitstring" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a bitstring"),
+                   {:erlang, :byte_size, [:abc]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.byte_size(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :byte_size, [:abc], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "ceil/1" do
+    test "rounds positive float with fractional part up" do
+      assert :erlang.ceil(1.23) == 2
+    end
+
+    test "rounds negative float with fractional part up toward zero" do
+      assert :erlang.ceil(-1.23) == -1
+    end
+
+    test "keeps positive float without fractional part unchanged" do
+      assert :erlang.ceil(1.0) == 1
+    end
+
+    test "keeps negative float without fractional part unchanged" do
+      assert :erlang.ceil(-1.0) == -1
+    end
+
+    test "keeps signed negative zero float unchanged" do
+      assert :erlang.ceil(-0.0) == 0
+    end
+
+    test "keeps signed positive zero float unchanged" do
+      assert :erlang.ceil(+0.0) == 0
+    end
+
+    test "keeps unsigned zero float unchanged" do
+      assert :erlang.ceil(0.0) == 0
+    end
+
+    test "keeps positive integer unchanged" do
+      assert :erlang.ceil(1) == 1
+    end
+
+    test "keeps negative integer unchanged" do
+      assert :erlang.ceil(-1) == -1
+    end
+
+    test "keeps zero integer unchanged" do
+      assert :erlang.ceil(0) == 0
+    end
+
+    test "raises ArgumentError if the argument is not a number" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a number"),
+                   {:erlang, :ceil, [:abc]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.ceil(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :ceil, [:abc], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "convert_time_unit/3" do
+    test "converts seconds to milliseconds" do
+      assert :erlang.convert_time_unit(2, :second, :millisecond) == 2000
+    end
+
+    test "converts milliseconds to seconds using floor rounding" do
+      assert :erlang.convert_time_unit(1500, :millisecond, :second) == 1
+    end
+
+    test "converts negative values using floor rounding" do
+      assert :erlang.convert_time_unit(-1500, :millisecond, :second) == -2
+    end
+
+    test "supports deprecated symbolic time units" do
+      assert :erlang.convert_time_unit(1, :seconds, :milli_seconds) == 1000
+    end
+
+    test "supports integer time units" do
+      assert :erlang.convert_time_unit(3, 1, 1000) == 3000
+    end
+
+    test "converts zero time" do
+      assert :erlang.convert_time_unit(0, :second, :millisecond) == 0
+    end
+
+    test "handles same unit conversion (identity)" do
+      assert :erlang.convert_time_unit(42, :millisecond, :millisecond) == 42
+    end
+
+    test "handles same unit conversion with negative value (identity)" do
+      assert :erlang.convert_time_unit(-42, :millisecond, :millisecond) == -42
+    end
+
+    test "supports native time unit" do
+      # :native is the time unit of :erlang.monotonic_time/0. It's technically
+      # platform-dependent, but is nanoseconds on all major platforms (Linux,
+      # macOS, Windows). The JS port standardizes on nanoseconds.
+      assert :erlang.convert_time_unit(1, :second, :native) == 1_000_000_000
+    end
+
+    test "supports perf_counter time unit" do
+      # :perf_counter is the time unit of :os.perf_counter/0 (high-resolution OS timer
+      # used for micro-benchmarking). Like :native, it's technically platform-dependent
+      # but is nanoseconds on all major platforms. 2_000_000 nanoseconds = 2 milliseconds.
+      assert :erlang.convert_time_unit(2_000_000, :perf_counter, :millisecond) == 2
+    end
+
+    test "supports nanosecond time unit" do
+      assert :erlang.convert_time_unit(1, :second, :nanosecond) == 1_000_000_000
+    end
+
+    test "supports microsecond time unit" do
+      # 1 microsecond < 1 millisecond, floor(1/1000) = 0
+      assert :erlang.convert_time_unit(1, :microsecond, :millisecond) == 0
+    end
+
+    test "supports all deprecated time unit forms" do
+      # 1 nanosecond < 1 microsecond, floor(1/1000) = 0
+      assert :erlang.convert_time_unit(1, :nano_seconds, :micro_seconds) == 0
+    end
+
+    test "handles large integer values" do
+      # Number.MAX_SAFE_INTEGER == 9_007_199_254_740_991
+      large_value = 9_007_199_254_740_992
+
+      assert :erlang.convert_time_unit(large_value, :second, :second) == large_value
+    end
+
+    test "raises ArgumentError if time is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an integer"),
+                   {:erlang, :convert_time_unit, [1.0, :second, :second]}
+    end
+
+    test "raises ArgumentError if fromUnit is invalid" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "invalid time unit"),
+                   {:erlang, :convert_time_unit, [1, :banana, :second]}
+    end
+
+    test "raises ArgumentError if toUnit is invalid" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "invalid time unit"),
+                   {:erlang, :convert_time_unit, [1, :second, 0]}
+    end
+
+    test "raises ArgumentError if fromUnit is a negative integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "invalid time unit"),
+                   {:erlang, :convert_time_unit, [1, -1, :second]}
+    end
+
+    test "raises ArgumentError if fromUnit is zero" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "invalid time unit"),
+                   {:erlang, :convert_time_unit, [1, 0, :second]}
+    end
+
+    test "raises ArgumentError if toUnit is a float" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "invalid time unit"),
+                   {:erlang, :convert_time_unit, [1, :second, 1.5]}
+    end
+
+    test "raises ArgumentError if fromUnit is not an atom or positive integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "invalid time unit"),
+                   {:erlang, :convert_time_unit, [1, "second", :second]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:a)
+
+      top_frame =
+        try do
+          :erlang.convert_time_unit(arg, :second, :second)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :convert_time_unit, [:a, :second, :second], @erts_info}
+    end
+  end
+
+  describe "delete_element/2" do
+    test "deletes the only item from a single-item tuple" do
+      assert :erlang.delete_element(1, {5}) == {}
+    end
+
+    test "deletes the first item from a tuple with multiple items" do
+      assert :erlang.delete_element(1, {5, 6, 7}) == {6, 7}
+    end
+
+    test "deletes a middle item from a tuple with multiple items" do
+      assert :erlang.delete_element(2, {5, 6, 7}) == {5, 7}
+    end
+
+    test "deletes the last item from a tuple with multiple items" do
+      assert :erlang.delete_element(3, {5, 6, 7}) == {5, 6}
+    end
+
+    test "raises ArgumentError if the first argument is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an integer"),
+                   {:erlang, :delete_element, [:abc, {5, 6, 7}]}
+    end
+
+    test "raises ArgumentError if the second argument is not a tuple" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not a tuple"),
+                   {:erlang, :delete_element, [1, :abc]}
+    end
+
+    test "raises ArgumentError if the given index is greater than the number of elements in the tuple" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "out of range"),
+                   {:erlang, :delete_element, [10, {5, 6, 7}]}
+    end
+
+    test "raises ArgumentError if the given index is 0" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "out of range"),
+                   {:erlang, :delete_element, [0, {5, 6, 7}]}
+    end
+
+    test "raises ArgumentError if the given index is negative" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "out of range"),
+                   {:erlang, :delete_element, [-1, {5, 6, 7}]}
+    end
+
+    test "error frame carries args and error_info" do
+      index = wrap_term(:a)
+      tuple = wrap_term(:b)
+
+      top_frame =
+        try do
+          :erlang.delete_element(index, tuple)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :delete_element, [:a, :b], @erts_info}
+    end
+  end
+
+  describe "div/2" do
+    test "divides positive integers" do
+      assert :erlang.div(10, 3) === 3
+    end
+
+    test "divides negative dividend by positive divisor" do
+      assert :erlang.div(-10, 3) === -3
+    end
+
+    test "divides positive dividend by negative divisor" do
+      assert :erlang.div(10, -3) === -3
+    end
+
+    test "divides negative integers" do
+      assert :erlang.div(-10, -3) === 3
+    end
+
+    test "divides evenly" do
+      assert :erlang.div(12, 4) === 3
+    end
+
+    test "truncates toward zero for positive result" do
+      assert :erlang.div(7, 2) === 3
+    end
+
+    test "truncates toward zero for negative result" do
+      assert :erlang.div(-7, 2) === -3
+    end
+
+    test "divides by 1" do
+      assert :erlang.div(42, 1) === 42
+    end
+
+    test "divides by -1" do
+      assert :erlang.div(42, -1) === -42
+    end
+
+    test "divides 0 by non-zero" do
+      assert :erlang.div(0, 5) === 0
+    end
+
+    test "raises ArithmeticError when dividing by zero" do
+      assert_error ArithmeticError, "bad argument in arithmetic expression: div(5, 0)", fn ->
+        assert :erlang.div(5, 0)
+      end
+    end
+
+    test "raises ArithmeticError if the first argument is a float" do
+      assert_error ArithmeticError, "bad argument in arithmetic expression: div(5.5, 2)", fn ->
+        assert 5.5
+               |> wrap_term()
+               |> :erlang.div(2)
+      end
+    end
+
+    test "raises ArithmeticError if the second argument is a float" do
+      assert_error ArithmeticError, "bad argument in arithmetic expression: div(5, 2.5)", fn ->
+        assert :erlang.div(5, wrap_term(2.5))
+      end
+    end
+
+    test "raises ArithmeticError if the first argument is not a number" do
+      assert_error ArithmeticError, "bad argument in arithmetic expression: div(:abc, 2)", fn ->
+        assert :abc
+               |> wrap_term()
+               |> :erlang.div(2)
+      end
+    end
+
+    test "raises ArithmeticError if the second argument is not a number" do
+      assert_error ArithmeticError, "bad argument in arithmetic expression: div(5, :abc)", fn ->
+        assert :erlang.div(5, wrap_term(:abc))
+      end
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(0)
+
+      top_frame =
+        try do
+          :erlang.div(5, arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :div, [5, 0], @erts_info}
+    end
+  end
+
+  describe "element/2" do
+    test "returns the element at the one-based index in the tuple" do
+      assert :erlang.element(2, {5, 6, 7}) == 6
+    end
+
+    test "raises ArgumentError if the first argument is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an integer"),
+                   {:erlang, :element, [:abc, {5, 6, 7}]}
+    end
+
+    test "raises ArgumentError if the second argument is not a tuple" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not a tuple"),
+                   {:erlang, :element, [1, :abc]}
+    end
+
+    test "raises ArgumentError if the given index is greater than the number of elements in the tuple" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "out of range"),
+                   {:erlang, :element, [10, {5, 6, 7}]}
+    end
+
+    test "raises ArgumentError if the given index is smaller than 1" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "out of range"),
+                   {:erlang, :element, [0, {5, 6, 7}]}
+    end
+
+    test "error frame carries args and error_info" do
+      index = wrap_term(:a)
+      tuple = wrap_term(:b)
+
+      top_frame =
+        try do
+          :erlang.element(index, tuple)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :element, [:a, :b], @erts_info}
+    end
+  end
+
+  describe "error/1" do
+    test "raises the given reason" do
+      reason = %RuntimeError{message: "my message"}
+
+      result =
+        reason
+        |> :erlang.error()
+        |> catch_error()
+
+      assert result == reason
+    end
+
+    test "normalizes a bare reason into an exception struct" do
+      result =
+        try do
+          :erlang.error(:badarg)
+        rescue
+          error -> error
+        end
+
+      assert result == %ArgumentError{}
+    end
+
+    test "keeps the caller's arity on the raising frame" do
+      caller = fn -> :erlang.error(:my_reason) end
+
+      top_frame =
+        try do
+          caller.()
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert {module, _function, 0, [file: _file, line: _line]} = top_frame
+      assert module == __MODULE__
+    end
+  end
+
+  describe "error/2" do
+    test "raises the given reason" do
+      reason = %RuntimeError{message: "my message"}
+
+      result =
+        reason
+        |> :erlang.error([1, 2])
+        |> catch_error()
+
+      assert result == reason
+    end
+
+    test "replaces the caller's arity with the given args on the raising frame" do
+      caller = fn -> :erlang.error(:my_reason, [1, 2]) end
+
+      top_frame =
+        try do
+          caller.()
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert {module, _function, [1, 2], [file: _file, line: _line]} = top_frame
+      assert module == __MODULE__
+    end
+  end
+
+  describe "error/3" do
+    test "raises the given reason" do
+      reason = %RuntimeError{message: "my message"}
+
+      result =
+        reason
+        |> :erlang.error([1, 2], [])
+        |> catch_error()
+
+      assert result == reason
+    end
+
+    test "copies the caller frame into the raising frame" do
+      caller = fn -> :erlang.error(:my_reason, :none, []) end
+
+      top_frame =
+        try do
+          caller.()
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert {module, _function, 0, [file: _file, line: _line]} = top_frame
+      assert module == __MODULE__
+    end
+
+    test "replaces the caller's arity with args given as a proper list" do
+      caller = fn -> :erlang.error(:my_reason, [1, 2], []) end
+
+      top_frame =
+        try do
+          caller.()
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert {_module, _function, [1, 2], [file: _file, line: _line]} = top_frame
+    end
+
+    test "replaces the caller's arity with args given as an improper list" do
+      caller = fn -> :erlang.error(:my_reason, wrap_term([1 | 2]), []) end
+
+      top_frame =
+        try do
+          caller.()
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert {_module, _function, [1 | 2], [file: _file, line: _line]} = top_frame
+    end
+
+    test "keeps the caller's arity when args is not a list" do
+      caller = fn -> :erlang.error(:my_reason, wrap_term(:my_args), []) end
+
+      top_frame =
+        try do
+          caller.()
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert {_module, _function, 0, [file: _file, line: _line]} = top_frame
+    end
+
+    test "attaches error_info from options to the raising frame" do
+      caller = fn ->
+        :erlang.error(:my_reason, :none, error_info: %{module: :my_format_module})
+      end
+
+      top_frame =
+        try do
+          caller.()
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert {_module, _function, 0, [file: _file, line: _line, error_info: error_info]} =
+               top_frame
+
+      assert error_info == %{module: :my_format_module}
+    end
+
+    test "ignores options other than error_info" do
+      caller = fn -> :erlang.error(:my_reason, :none, wrap_term([:my_option])) end
+
+      top_frame =
+        try do
+          caller.()
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert {_module, _function, 0, [file: _file, line: _line]} = top_frame
+    end
+
+    test "ignores options that are not a list" do
+      caller = fn -> :erlang.error(:my_reason, :none, wrap_term(:my_options)) end
+
+      top_frame =
+        try do
+          caller.()
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert {_module, _function, 0, [file: _file, line: _line]} = top_frame
+    end
+
+    test "excludes :erlang.error dispatch frames from the trace" do
+      caller = fn -> :erlang.error(:my_reason, :none, []) end
+
+      stacktrace =
+        try do
+          caller.()
+        rescue
+          _error -> __STACKTRACE__
+        end
+
+      refute Enum.any?(stacktrace, fn frame ->
+               match?({:erlang, :error, _arity_or_args, _location}, frame)
+             end)
+    end
+
+    test "keeps the frames below the caller in the trace" do
+      caller = fn -> :erlang.error(:my_reason, :none, []) end
+
+      # The inner call must not be in tail position - the BEAM drops
+      # tail-calling frames from the trace.
+      outer_caller = fn ->
+        caller.()
+        :ok
+      end
+
+      stacktrace =
+        try do
+          outer_caller.()
+        rescue
+          _error -> __STACKTRACE__
+        end
+
+      assert [
+               {module_1, function_1, _arity_or_args_1, _location_1},
+               {module_2, function_2, _arity_or_args_2, _location_2} | _rest
+             ] =
+               stacktrace
+
+      assert module_1 == __MODULE__
+      assert module_2 == __MODULE__
+      assert function_1 != function_2
+    end
+
+    test "derives the message from error_info at normalize time" do
+      expected_message = """
+      errors were found at the given arguments:
+
+        * 2nd argument: not a map
+      """
+
+      result =
+        try do
+          :erlang.error(:badarg, [:a, :b], error_info: %{module: Module3})
+        rescue
+          error -> error
+        end
+
+      assert result == %ArgumentError{message: expected_message}
+    end
+  end
+
+  describe "exit/1" do
+    test "exits with the given reason" do
+      reason = :my_reason
+
+      result =
+        reason
+        |> :erlang.exit()
+        |> catch_exit()
+
+      assert result == reason
+    end
+  end
+
+  describe "float/1" do
+    test "converts integer to float" do
+      assert :erlang.float(1) == 1.0
+    end
+
+    test "is idempotent for float" do
+      assert :erlang.float(1.0) == 1.0
+    end
+
+    test "raises ArgumentError if the argument is not a number" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a number"),
+                   {:erlang, :float, [:abc]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.float(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :float, [:abc], @erts_info}
+    end
+  end
+
+  describe "float_to_binary/2" do
+    @input_above_10 1000 / 3
+    @input_between_1_and_10 10 / 3
+    @input_below_1 1 / 30
+
+    # default format is equaivalent to [{:scientific, 20}]
+
+    test "default format, input > 10, padding not needed" do
+      assert :erlang.float_to_binary(@input_above_10, []) == "3.33333333333333314386e+02"
+    end
+
+    test "default format, input > 10, padding needed" do
+      assert :erlang.float_to_binary(128.0, []) == "1.28000000000000000000e+02"
+    end
+
+    test "default format, input between 1 and 10, padding not needed" do
+      assert :erlang.float_to_binary(@input_between_1_and_10, []) == "3.33333333333333348136e+00"
+    end
+
+    test "default format, input between 1 and 10, padding needed" do
+      assert :erlang.float_to_binary(2.0, []) == "2.00000000000000000000e+00"
+    end
+
+    test "default format, input < 1, padding not needed" do
+      assert :erlang.float_to_binary(@input_below_1, []) == "3.33333333333333328707e-02"
+    end
+
+    test "default format, input < 1, padding needed" do
+      assert :erlang.float_to_binary(0.0625, []) == "6.25000000000000000000e-02"
+    end
+
+    test "default format, input is signed positive zero" do
+      assert :erlang.float_to_binary(+0.0, []) == "0.00000000000000000000e+00"
+    end
+
+    test "default format, input is signed negative zero" do
+      assert :erlang.float_to_binary(-0.0, []) == "-0.00000000000000000000e+00"
+    end
+
+    test "default format, input is unsigned zero" do
+      assert :erlang.float_to_binary(0.0, []) == "0.00000000000000000000e+00"
+    end
+
+    test "default format, input is negative" do
+      assert :erlang.float_to_binary(-@input_between_1_and_10, []) ==
+               "-3.33333333333333348136e+00"
+    end
+
+    test ":decimals option, input > 10, padding not needed" do
+      assert :erlang.float_to_binary(@input_above_10, [{:decimals, 4}]) == "333.3333"
+    end
+
+    test ":decimals option, input > 10, padding needed" do
+      assert :erlang.float_to_binary(128.0, [{:decimals, 4}]) == "128.0000"
+    end
+
+    test ":decimals option, input between 1 and 10, padding not needed" do
+      assert :erlang.float_to_binary(@input_between_1_and_10, [{:decimals, 4}]) == "3.3333"
+    end
+
+    test ":decimals option, input between 1 and 10, padding needed" do
+      assert :erlang.float_to_binary(2.0, [{:decimals, 4}]) == "2.0000"
+    end
+
+    test ":decimals option, input < 1, padding not needed" do
+      assert :erlang.float_to_binary(@input_below_1, [{:decimals, 4}]) == "0.0333"
+    end
+
+    test ":decimals option, input < 1, padding needed" do
+      assert :erlang.float_to_binary(0.5, [{:decimals, 4}]) == "0.5000"
+    end
+
+    test ":decimals option, input is signed positive zero" do
+      assert :erlang.float_to_binary(+0.0, [{:decimals, 4}]) == "0.0000"
+    end
+
+    test ":decimals option, input is signed negative zero" do
+      assert :erlang.float_to_binary(-0.0, [{:decimals, 4}]) == "-0.0000"
+    end
+
+    test ":decimals option, input is unsigned zero" do
+      assert :erlang.float_to_binary(0.0, [{:decimals, 4}]) == "0.0000"
+    end
+
+    test ":decimals option, input is negative" do
+      assert :erlang.float_to_binary(-@input_between_1_and_10, [{:decimals, 4}]) == "-3.3333"
+    end
+
+    test ":decimals option, accepts option value 0 (the min allowed value)" do
+      assert :erlang.float_to_binary(123.45, [{:decimals, 0}]) == "123"
+    end
+
+    test ":decimals option, accepts option value 253 (the max allowed value)" do
+      result = :erlang.float_to_binary(@input_below_1, [{:decimals, 253}])
+
+      expected =
+        "0.033333333333333332870740406406184774823486804962158203125" <>
+          String.duplicate("0", 196)
+
+      assert result == expected
+    end
+
+    test ":decimals option, raises ArgumentError if option is not an integer" do
+      expected_msg = build_argument_error_msg(2, "invalid option in list")
+
+      assert_error ArgumentError, expected_msg, fn ->
+        :erlang.float_to_binary(@input_above_10, [{:decimals, 1.23}])
+      end
+    end
+
+    test ":decimals option, raises ArgumentError if option is less than zero" do
+      expected_msg = build_argument_error_msg(2, "invalid option in list")
+
+      assert_error ArgumentError, expected_msg, fn ->
+        :erlang.float_to_binary(@input_above_10, [{:decimals, -1}])
+      end
+    end
+
+    test ":decimals option, raises ArgumentError if option is greater than 253" do
+      expected_msg = build_argument_error_msg(2, "invalid option in list")
+
+      assert_error ArgumentError, expected_msg, fn ->
+        :erlang.float_to_binary(@input_above_10, [{:decimals, 254}])
+      end
+    end
+
+    test ":scientific option, positive option value, input > 10, padding not needed" do
+      assert :erlang.float_to_binary(@input_above_10, [{:scientific, 4}]) == "3.3333e+02"
+    end
+
+    test ":scientific option, positive option value, input > 10, padding needed" do
+      assert :erlang.float_to_binary(128.0, [{:scientific, 4}]) == "1.2800e+02"
+    end
+
+    test ":scientific option, positive option value, input between 1 and 10, padding not needed" do
+      assert :erlang.float_to_binary(@input_between_1_and_10, [{:scientific, 4}]) == "3.3333e+00"
+    end
+
+    test ":scientific option, positive option value, input between 1 and 10, padding needed" do
+      assert :erlang.float_to_binary(2.0, [{:scientific, 4}]) == "2.0000e+00"
+    end
+
+    test ":scientific option, positive option value, input < 1, padding not needed" do
+      assert :erlang.float_to_binary(@input_below_1, [{:scientific, 4}]) == "3.3333e-02"
+    end
+
+    test ":scientific option, positive option value, input < 1, padding needed" do
+      assert :erlang.float_to_binary(0.0625, [{:scientific, 4}]) == "6.2500e-02"
+    end
+
+    test ":scientific option, positive option value, input is signed positive zero" do
+      assert :erlang.float_to_binary(+0.0, [{:scientific, 4}]) == "0.0000e+00"
+    end
+
+    test ":scientific option, positive option value, input is signed negative zero" do
+      assert :erlang.float_to_binary(-0.0, [{:scientific, 4}]) == "-0.0000e+00"
+    end
+
+    test ":scientific option, positive option value, input is unsigned zero" do
+      assert :erlang.float_to_binary(0.0, [{:scientific, 4}]) == "0.0000e+00"
+    end
+
+    test ":scientific option, positive option value, input is negative" do
+      assert :erlang.float_to_binary(-@input_between_1_and_10, [{:scientific, 4}]) ==
+               "-3.3333e+00"
+    end
+
+    test ":scientific option, zero option value, input > 10" do
+      assert :erlang.float_to_binary(@input_above_10, [{:scientific, 0}]) == "3e+02"
+    end
+
+    test ":scientific option, zero option value, input between 1 and 10" do
+      assert :erlang.float_to_binary(@input_between_1_and_10, [{:scientific, 0}]) == "3e+00"
+    end
+
+    test ":scientific option, zero option value, input < 1" do
+      assert :erlang.float_to_binary(@input_below_1, [{:scientific, 0}]) == "3e-02"
+    end
+
+    test ":scientific option, negative option value, input > 10, padding not needed" do
+      assert :erlang.float_to_binary(@input_above_10, [{:scientific, -4}]) == "3.333333e+02"
+    end
+
+    test ":scientific option, negative option value, input > 10, padding needed" do
+      assert :erlang.float_to_binary(128.0, [{:scientific, -4}]) == "1.280000e+02"
+    end
+
+    test ":scientific option, negative option value, input between 1 and 10, padding not needed" do
+      assert :erlang.float_to_binary(@input_between_1_and_10, [{:scientific, -4}]) ==
+               "3.333333e+00"
+    end
+
+    test ":scientific option, negative option value, input between 1 and 10, padding needed" do
+      assert :erlang.float_to_binary(2.0, [{:scientific, -4}]) == "2.000000e+00"
+    end
+
+    test ":scientific option, negative option value, input < 1, padding not needed" do
+      assert :erlang.float_to_binary(@input_below_1, [{:scientific, -4}]) == "3.333333e-02"
+    end
+
+    test ":scientific option, negative option value, input < 1, padding needed" do
+      assert :erlang.float_to_binary(0.0625, [{:scientific, -4}]) == "6.250000e-02"
+    end
+
+    test ":scientific option, negative option value, input is signed positive zero" do
+      assert :erlang.float_to_binary(+0.0, [{:scientific, -4}]) == "0.000000e+00"
+    end
+
+    test ":scientific option, negative option value, input is signed negative zero" do
+      assert :erlang.float_to_binary(-0.0, [{:scientific, -4}]) == "-0.000000e+00"
+    end
+
+    test ":scientific option, negative option value, input is unsigned zero" do
+      assert :erlang.float_to_binary(0.0, [{:scientific, -4}]) == "0.000000e+00"
+    end
+
+    test ":scientific option, negative option value, input is negative" do
+      assert :erlang.float_to_binary(-@input_between_1_and_10, [{:scientific, -4}]) ==
+               "-3.333333e+00"
+    end
+
+    test ":scientific option, accepts option value 249 (the max allowed value)" do
+      result = :erlang.float_to_binary(@input_between_1_and_10, [{:scientific, 249}])
+
+      expected =
+        "3.333333333333333481363069950020872056484222412109375" <>
+          String.duplicate("0", 198) <> "e+00"
+
+      assert result == expected
+    end
+
+    test ":scientific option, raises ArgumentError if option is not an integer" do
+      expected_msg = build_argument_error_msg(2, "invalid option in list")
+
+      assert_error ArgumentError, expected_msg, fn ->
+        :erlang.float_to_binary(@input_above_10, [{:scientific, 1.23}])
+      end
+    end
+
+    test ":scientific option, raises ArgumentError if option is greater than 249" do
+      expected_msg = build_argument_error_msg(2, "invalid option in list")
+
+      assert_error ArgumentError, expected_msg, fn ->
+        :erlang.float_to_binary(@input_above_10, [{:scientific, 250}])
+      end
+    end
+
+    test ":short option, input > 10, infinite" do
+      assert :erlang.float_to_binary(@input_above_10, [:short]) == "333.3333333333333"
+    end
+
+    test ":short option, input > 10, finite" do
+      assert :erlang.float_to_binary(128.5, [:short]) == "128.5"
+    end
+
+    test ":short option, input between 1 and 10, infinite" do
+      assert :erlang.float_to_binary(@input_between_1_and_10, [:short]) == "3.3333333333333335"
+    end
+
+    test ":short option, input between 1 and 10, finite" do
+      assert :erlang.float_to_binary(8.5, [:short]) == "8.5"
+    end
+
+    test ":short option, input < 1, infinite" do
+      assert :erlang.float_to_binary(@input_below_1, [:short]) == "0.03333333333333333"
+    end
+
+    test ":short option, input < 1, finite" do
+      assert :erlang.float_to_binary(0.25, [:short]) == "0.25"
+    end
+
+    test ":short option, input is signed positive zero" do
+      assert :erlang.float_to_binary(+0.0, [:short]) == "0.0"
+    end
+
+    test ":short option, input is signed negative zero" do
+      assert :erlang.float_to_binary(-0.0, [:short]) == "-0.0"
+    end
+
+    test ":short option, input is unsigned zero" do
+      assert :erlang.float_to_binary(0.0, [:short]) == "0.0"
+    end
+
+    test ":short option, input is negative" do
+      assert :erlang.float_to_binary(-@input_between_1_and_10, [:short]) ==
+               "-3.3333333333333335"
+    end
+
+    test ":short option, decimal is shorter than exponential" do
+      # 0.001: Decimal "0.001" (5 chars) vs Exponential "1.0e-3" (6 chars) → decimal wins
+      assert :erlang.float_to_binary(0.001, [:short]) == "0.001"
+    end
+
+    test ":short option, exponential is shorter than decimal" do
+      # 0.00099: Decimal "0.00099" (7 chars) vs Exponential "9.9e-4" (6 chars) → exponential wins
+      assert :erlang.float_to_binary(0.00099, [:short]) == "9.9e-4"
+    end
+
+    test ":short option, tie - decimal wins" do
+      # 0.0009: Decimal "0.0009" (6 chars) vs Exponential "9.0e-4" (6 chars) → decimal wins tie
+      assert :erlang.float_to_binary(0.0009, [:short]) == "0.0009"
+    end
+
+    test ":short option, value at 2^53 boundary uses exponential" do
+      # 2^53 = 9_007_199_254_740_992
+      assert :erlang.float_to_binary(9_007_199_254_740_992.0, [:short]) == "9.007199254740992e15"
+    end
+
+    test ":short option, value below 2^53 boundary uses decimal" do
+      # 2^53 - 1 = 9_007_199_254_740_991
+      assert :erlang.float_to_binary(9_007_199_254_740_991.0, [:short]) ==
+               "9007199254740991.0"
+    end
+
+    test ":short option, value at -2^53 boundary uses exponential" do
+      # -2^53 = -9_007_199_254_740_992
+      assert :erlang.float_to_binary(-9_007_199_254_740_992.0, [:short]) ==
+               "-9.007199254740992e15"
+    end
+
+    test ":short option, value above -2^53 boundary uses decimal" do
+      # -2^53 + 1 = -9_007_199_254_740_991
+      assert :erlang.float_to_binary(-9_007_199_254_740_991.0, [:short]) ==
+               "-9007199254740991.0"
+    end
+
+    test ":compact option by itself is same as default format" do
+      assert :erlang.float_to_binary(@input_above_10, [:compact]) ==
+               :erlang.float_to_binary(@input_above_10, [])
+    end
+
+    test ":compact + :decimals option, input > 10, infinite" do
+      assert :erlang.float_to_binary(@input_above_10, [:compact, {:decimals, 4}]) == "333.3333"
+    end
+
+    test ":compact + :decimals option, input > 10, finite" do
+      assert :erlang.float_to_binary(128.5, [:compact, {:decimals, 4}]) == "128.5"
+    end
+
+    test ":compact + :decimals option, input between 1 and 10, infinite" do
+      assert :erlang.float_to_binary(@input_between_1_and_10, [:compact, {:decimals, 4}]) ==
+               "3.3333"
+    end
+
+    test ":compact + :decimals option, input between 1 and 10, finite" do
+      assert :erlang.float_to_binary(8.5, [:compact, {:decimals, 4}]) == "8.5"
+    end
+
+    test ":compact + :decimals option, input < 1, infinite" do
+      assert :erlang.float_to_binary(@input_below_1, [:compact, {:decimals, 4}]) == "0.0333"
+    end
+
+    test ":compact + :decimals option, input < 1, finite" do
+      assert :erlang.float_to_binary(0.25, [:compact, {:decimals, 4}]) == "0.25"
+    end
+
+    test ":compact + :decimals option, input is signed positive zero" do
+      assert :erlang.float_to_binary(+0.0, [:compact, {:decimals, 4}]) == "0.0"
+    end
+
+    test ":compact + :decimals option, input is signed negative zero" do
+      assert :erlang.float_to_binary(-0.0, [:compact, {:decimals, 4}]) == "-0.0"
+    end
+
+    test ":compact + :decimals option, input is unsigned zero" do
+      assert :erlang.float_to_binary(0.0, [:compact, {:decimals, 4}]) == "0.0"
+    end
+
+    test ":compact + :decimals option, order of options doesn't matter" do
+      assert :erlang.float_to_binary(128.5, [{:decimals, 4}, :compact]) == "128.5"
+    end
+
+    test ":compact + :decimals option, accepts compact option with decimals 0" do
+      assert :erlang.float_to_binary(128.0, [:compact, {:decimals, 0}]) == "128"
+    end
+
+    test ":compact option is ignored when used with :scientific option" do
+      scientific_result = :erlang.float_to_binary(@input_above_10, [{:scientific, 4}])
+
+      assert :erlang.float_to_binary(@input_above_10, [{:scientific, 4}, :compact]) ==
+               scientific_result
+
+      assert :erlang.float_to_binary(@input_above_10, [:compact, {:scientific, 4}]) ==
+               scientific_result
+    end
+
+    test ":compact option is ignored when used with :short option" do
+      short_result = :erlang.float_to_binary(@input_above_10, [:short])
+
+      assert :erlang.float_to_binary(@input_above_10, [:short, :compact]) == short_result
+      assert :erlang.float_to_binary(@input_above_10, [:compact, :short]) == short_result
+    end
+
+    test "multiple opts - last opt is :scientific" do
+      assert :erlang.float_to_binary(7.12, [{:decimals, 4}, {:scientific, 3}]) == "7.120e+00"
+    end
+
+    test "multiple opts - last opt is :scientific followed by :compact" do
+      assert :erlang.float_to_binary(7.12, [{:decimals, 4}, {:scientific, 3}, :compact]) ==
+               "7.120e+00"
+    end
+
+    test "multiple opts - last opt is :scientific preceded by :compact" do
+      assert :erlang.float_to_binary(7.12, [:compact, {:decimals, 4}, {:scientific, 3}]) ==
+               "7.120e+00"
+    end
+
+    test "multiple opts - last opt is :scientific with :compact in the middle" do
+      assert :erlang.float_to_binary(7.12, [{:decimals, 4}, :compact, {:scientific, 3}]) ==
+               "7.120e+00"
+    end
+
+    test "multiple opts - last opt is :decimals" do
+      assert :erlang.float_to_binary(7.12, [:short, {:decimals, 4}]) == "7.1200"
+    end
+
+    test "multiple opts - last opt is :decimals followed by :compact" do
+      assert :erlang.float_to_binary(7.12, [{:scientific, 3}, {:decimals, 4}, :compact]) == "7.12"
+    end
+
+    test "multiple opts - last opt is :decimals preceded by :compact" do
+      assert :erlang.float_to_binary(7.12, [:compact, {:scientific, 3}, {:decimals, 4}]) == "7.12"
+    end
+
+    test "multiple opts - last opt is :decimals with :compact in the middle" do
+      assert :erlang.float_to_binary(7.12, [{:scientific, 3}, :compact, {:decimals, 4}]) == "7.12"
+    end
+
+    test "multiple opts - last opt is :short" do
+      assert :erlang.float_to_binary(7.12, [{:scientific, 3}, :short]) == "7.12"
+    end
+
+    test "multiple opts - last opt is :short followed by :compact" do
+      assert :erlang.float_to_binary(7.12, [{:scientific, 3}, :short, :compact]) == "7.12"
+    end
+
+    test "multiple opts - last opt is :short preceded by :compact" do
+      assert :erlang.float_to_binary(7.12, [:compact, {:scientific, 3}, :short]) == "7.12"
+    end
+
+    test "multiple opts - last opt is :short with :compact in the middle" do
+      assert :erlang.float_to_binary(7.12, [{:scientific, 3}, :compact, :short]) == "7.12"
+    end
+
+    test "allows result with exactly 255 bytes (boundary condition)" do
+      # Test boundary: 1.0 with decimals=253 → "1." + 253 zeros = 255 chars (allowed)
+      result = :erlang.float_to_binary(1.0, [{:decimals, 253}])
+
+      assert String.length(result) == 255
+      assert result == "1." <> String.duplicate("0", 253)
+    end
+
+    test "raises ArgumentError if result exceeds 255-byte buffer limit" do
+      # Native Erlang enforces a 256-byte buffer limit (result must be < 256) but reports it as
+      # "2nd argument: invalid option in list" rather than a clearer error message
+      # Test boundary: 10.0 with decimals=253 → "10." + 253 zeros = 256 chars (not allowed)
+      expected_msg = build_argument_error_msg(2, "invalid option in list")
+
+      assert_error ArgumentError, expected_msg, fn ->
+        :erlang.float_to_binary(10.0, [{:decimals, 253}])
+      end
+    end
+
+    test "raises ArgumentError if the first argument is not a float" do
+      assert_error ArgumentError, build_argument_error_msg(1, "not a float"), fn ->
+        :erlang.float_to_binary(123, [:short])
+      end
+    end
+
+    test "raises ArgumentError if the second argument is not a list" do
+      assert_error ArgumentError, build_argument_error_msg(2, "not a list"), fn ->
+        :erlang.float_to_binary(@input_above_10, 123)
+      end
+    end
+
+    test "raises ArgumentError if the second argument is not a proper list" do
+      assert_error ArgumentError, build_argument_error_msg(2, "not a proper list"), fn ->
+        :erlang.float_to_binary(@input_above_10, [:compact | {:decimals, 4}])
+      end
+    end
+
+    test "raises ArgumentError if the second argument has invalid option in list" do
+      assert_error ArgumentError, build_argument_error_msg(2, "invalid option in list"), fn ->
+        :erlang.float_to_binary(@input_above_10, [:abc])
+      end
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(1.0)
+
+      top_frame =
+        try do
+          :erlang.float_to_binary(arg, [:bad])
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :float_to_binary, [1.0, [:bad]],
+                [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  # Delegates to float_to_binary/2, only need to test opts passthrough and codepoint conversion
+  describe "float_to_list/2" do
+    test "returns a list of character code points" do
+      result = :erlang.float_to_list(2.0, [:short])
+
+      # [50, 46, 48] == ~c"2.0"
+      assert result == [50, 46, 48]
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(1)
+
+      top_frame =
+        try do
+          :erlang.float_to_list(arg, [])
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :float_to_list, [1, []], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "floor/1" do
+    test "rounds positive float with fractional part down" do
+      assert :erlang.floor(1.23) == 1
+    end
+
+    test "rounds negative float with fractional part down" do
+      assert :erlang.floor(-1.23) == -2
+    end
+
+    test "keeps positive float without fractional part unchanged" do
+      assert :erlang.floor(1.0) == 1
+    end
+
+    test "keeps negative float without fractional part unchanged" do
+      assert :erlang.floor(-1.0) == -1
+    end
+
+    test "keeps signed negative zero float unchanged" do
+      assert :erlang.floor(-0.0) == 0
+    end
+
+    test "keeps signed positive zero float unchanged" do
+      assert :erlang.floor(+0.0) == 0
+    end
+
+    test "keeps unsigned zero float unchanged" do
+      assert :erlang.floor(0.0) == 0
+    end
+
+    test "keeps positive integer unchanged" do
+      assert :erlang.floor(1) == 1
+    end
+
+    test "keeps negative integer unchanged" do
+      assert :erlang.floor(-1) == -1
+    end
+
+    test "keeps zero integer unchanged" do
+      assert :erlang.floor(0) == 0
+    end
+
+    test "raises ArgumentError if the argument is not a number" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a number"),
+                   {:erlang, :floor, [:abc]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.floor(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :floor, [:abc], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "fun_info/1" do
+    test "external function, arity 0" do
+      assert :erlang.fun_info(&Module1.fun_0/0) == [
+               module: Module1,
+               name: :fun_0,
+               arity: 0,
+               env: [],
+               type: :external
+             ]
+    end
+
+    test "external function, arity 1" do
+      assert :erlang.fun_info(&Module1.fun_1/1) == [
+               module: Module1,
+               name: :fun_1,
+               arity: 1,
+               env: [],
+               type: :external
+             ]
+    end
+
+    test "external function, arity 2" do
+      assert :erlang.fun_info(&Module1.fun_2/2) == [
+               module: Module1,
+               name: :fun_2,
+               arity: 2,
+               env: [],
+               type: :external
+             ]
+    end
+
+    test "external function, Erlang module" do
+      assert :erlang.fun_info(&:erlang.abs/1) == [
+               module: :erlang,
+               name: :abs,
+               arity: 1,
+               env: [],
+               type: :external
+             ]
+    end
+
+    test "local function, arity 0, empty env" do
+      fun = fn -> 123 end
+      result = :erlang.fun_info(fun)
+
+      assert Keyword.keys(result) == [
+               :pid,
+               :module,
+               :new_index,
+               :new_uniq,
+               :index,
+               :uniq,
+               :name,
+               :arity,
+               :env,
+               :type
+             ]
+
+      assert {:pid, pid("0.0.0")} in result
+      assert {:module, __MODULE__} in result
+      assert {:name, :"-test fun_info/1 local function, arity 0, empty env/1-fun-0-"} in result
+      assert {:arity, 0} in result
+      assert {:env, []} in result
+      assert {:type, :local} in result
+
+      # Verify types of dynamic fields
+      assert is_integer(Keyword.get(result, :index))
+      assert is_integer(Keyword.get(result, :new_index))
+      assert is_binary(Keyword.get(result, :new_uniq))
+      assert is_integer(Keyword.get(result, :uniq))
+    end
+
+    test "local function, arity 1, closure reference" do
+      my_var = wrap_term(123)
+      fun = fn x -> x + my_var end
+      result = :erlang.fun_info(fun)
+
+      assert {:arity, 1} in result
+      assert {:env, [123]} in result
+      assert {:type, :local} in result
+    end
+
+    test "local function, arity 2, multiple closure references" do
+      var_a = wrap_term(10)
+      var_b = wrap_term(20)
+      fun = fn x, y -> x + y + var_a + var_b end
+      result = :erlang.fun_info(fun)
+
+      assert {:arity, 2} in result
+      assert {:env, [10, 20]} in result
+      assert {:type, :local} in result
+    end
+
+    test "raises ArgumentError if the argument is not a fun" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a fun"),
+                   {:erlang, :fun_info, [:abc]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.fun_info(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :fun_info, [:abc], @erts_info}
+    end
+  end
+
+  describe "fun_info/2" do
+    test "external function, item present" do
+      assert :erlang.fun_info(&Module1.fun_1/1, :arity) == {:arity, 1}
+    end
+
+    test "external function, item available only for local functions returns undefined" do
+      assert :erlang.fun_info(&Module1.fun_1/1, :pid) == {:pid, :undefined}
+    end
+
+    test "local function, item present" do
+      fun = fn x -> x + 1 end
+
+      assert :erlang.fun_info(fun, :arity) == {:arity, 1}
+    end
+
+    test "raises ArgumentError if the first arg is not a fun" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a fun"),
+                   {:erlang, :fun_info, [:abc, :arity]}
+    end
+
+    test "raises ArgumentError if the second arg is not an atom" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "invalid item"),
+                   {:erlang, :fun_info, [&Module1.fun_1/1, 123]}
+    end
+
+    test "external function, invalid item raises ArgumentError" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "invalid item"),
+                   {:erlang, :fun_info, [&Module1.fun_1/1, :invalid_item]}
+    end
+
+    test "local function, invalid item raises ArgumentError" do
+      fun = fn x -> x + 1 end
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "invalid item"),
+                   {:erlang, :fun_info, [fun, :invalid_item]}
+    end
+
+    test "blames the first arg when neither arg is valid" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a fun"),
+                   {:erlang, :fun_info, [:abc, :invalid_item]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.fun_info(arg, :arity)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :fun_info, [:abc, :arity], @erts_info}
+    end
+  end
+
+  describe "function_exported/3" do
+    # Erlang module
+
+    test "returns true for existing function in Erlang module" do
+      assert :erlang.function_exported(:erlang, :abs, 1) == true
+    end
+
+    test "returns false for non-existing function in Erlang module" do
+      assert :erlang.function_exported(:erlang, :nonexistent_function, 1) == false
+    end
+
+    test "returns false for wrong arity in Erlang module" do
+      assert :erlang.function_exported(:erlang, :abs, 2) == false
+    end
+
+    test "returns false for non-existing Erlang module" do
+      assert :erlang.function_exported(:nonexistent_module, :foo, 1) == false
+    end
+
+    # Elixir module
+
+    test "returns true for public function in Elixir module" do
+      Code.ensure_loaded!(Module2)
+
+      assert :erlang.function_exported(Module2, :public_fun, 1) == true
+    end
+
+    test "returns false for private function in Elixir module" do
+      Code.ensure_loaded!(Module2)
+
+      assert :erlang.function_exported(Module2, :private_fun, 1) == false
+    end
+
+    test "returns false for non-existing function in Elixir module" do
+      Code.ensure_loaded!(Module2)
+
+      assert :erlang.function_exported(Module2, :nonexistent_function, 1) == false
+    end
+
+    test "returns false for wrong arity in Elixir module" do
+      Code.ensure_loaded!(Module2)
+
+      assert :erlang.function_exported(Module2, :public_fun, 2) == false
+    end
+
+    test "returns false for non-existing Elixir module" do
+      assert :erlang.function_exported(NonExistentModule, :foo, 1) == false
+    end
+
+    # Arity edge cases
+
+    test "returns true for arity 0" do
+      Code.ensure_loaded!(Module2)
+
+      assert :erlang.function_exported(Module2, :public_fun_0, 0) == true
+    end
+
+    test "returns false for negative arity" do
+      Code.ensure_loaded!(Module2)
+
+      assert :erlang.function_exported(Module2, :public_fun, -1) == false
+    end
+
+    test "returns false for arity greater than 255" do
+      Code.ensure_loaded!(Module2)
+
+      assert :erlang.function_exported(Module2, :public_fun, 256) == false
+    end
+
+    # Errors
+
+    test "raises ArgumentError if module is not an atom" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an atom"),
+                   {:erlang, :function_exported, ["not_atom", :foo, 1]}
+    end
+
+    test "raises ArgumentError if function is not an atom" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an atom"),
+                   {:erlang, :function_exported, [:erlang, "not_atom", 1]}
+    end
+
+    test "raises ArgumentError if arity is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "not an integer"),
+                   {:erlang, :function_exported, [:erlang, :abs, 2.0]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(1)
+
+      top_frame =
+        try do
+          :erlang.function_exported(arg, :f, 1)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :function_exported, [1, :f, 1], @erts_info}
+    end
+  end
+
+  describe "hd/1" do
+    test "returns the first item in the list" do
+      assert :erlang.hd([1, 2, 3]) === 1
+    end
+
+    test "raises ArgumentError if the argument is an empty list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a nonempty list"),
+                   {:erlang, :hd, [[]]}
+    end
+
+    test "raises ArgumentError if the argument is not a list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a nonempty list"),
+                   {:erlang, :hd, [123]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.hd(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :hd, [:abc], @erts_info}
+    end
+  end
+
+  describe "insert_element/3" do
+    test "inserts the given value into an empty tuple" do
+      assert :erlang.insert_element(1, {}, :a) === {:a}
+    end
+
+    test "inserts the given value at the beginning of a one-element tuple" do
+      assert :erlang.insert_element(1, {1}, :a) === {:a, 1}
+    end
+
+    test "inserts the given value at the end of a one-element tuple" do
+      assert :erlang.insert_element(2, {1}, :a) === {1, :a}
+    end
+
+    test "inserts the given value at the beginning of a multi-element tuple" do
+      assert :erlang.insert_element(1, {1, 2}, :a) === {:a, 1, 2}
+    end
+
+    test "inserts the given value into the middle of a multi-element tuple" do
+      assert :erlang.insert_element(2, {1, 2}, :a) === {1, :a, 2}
+    end
+
+    test "inserts the given value at the end of a multi-element tuple" do
+      assert :erlang.insert_element(3, {1, 2}, :a) === {1, 2, :a}
+    end
+
+    test "raises ArgumentError if the first argument is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an integer"),
+                   {:erlang, :insert_element, [:b, {1, 2}, :a]}
+    end
+
+    test "raises ArgumentError if the second argument is not a tuple" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not a tuple"),
+                   {:erlang, :insert_element, [1, :b, :a]}
+    end
+
+    test "raises ArgumentError if the index is larger than the size of the tuple plus one" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "out of range"),
+                   {:erlang, :insert_element, [4, {1, 2}, :a]}
+    end
+
+    test "raises ArgumentError if the index is not positive" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "out of range"),
+                   {:erlang, :insert_element, [0, {1, 2}, :a]}
+    end
+
+    test "error frame carries args and error_info" do
+      index = wrap_term(:a)
+      tuple = wrap_term(:b)
+
+      top_frame =
+        try do
+          :erlang.insert_element(index, tuple, :c)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :insert_element, [:a, :b, :c], @erts_info}
+    end
+  end
+
+  describe "integer_to_binary/1" do
+    test "delegates to integer_to_binary/2" do
+      assert :erlang.integer_to_binary(123_123) == :erlang.integer_to_binary(123_123, 10)
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:a)
+
+      top_frame =
+        try do
+          :erlang.integer_to_binary(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :integer_to_binary, [:a], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "integer_to_binary/2" do
+    test "positive integer, base = 1" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an integer in the range 2 through 36"),
+                   {:erlang, :integer_to_binary, [123_123, 1]}
+    end
+
+    test "positive integer, base = 2" do
+      assert :erlang.integer_to_binary(123_123, 2) == "11110000011110011"
+    end
+
+    test "positive integer, base = 16" do
+      assert :erlang.integer_to_binary(123_123, 16) == "1E0F3"
+    end
+
+    test "positive integer, base = 36" do
+      assert :erlang.integer_to_binary(123_123, 36) == "2N03"
+    end
+
+    test "positive integer, base = 37" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an integer in the range 2 through 36"),
+                   {:erlang, :integer_to_binary, [123_123, 37]}
+    end
+
+    test "negative integer" do
+      assert :erlang.integer_to_binary(-123_123, 16) == "-1E0F3"
+    end
+
+    test "1st argument (integer) is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an integer"),
+                   {:erlang, :integer_to_binary, [:abc, 16]}
+    end
+
+    test "2nd argument (base) is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an integer in the range 2 through 36"),
+                   {:erlang, :integer_to_binary, [123_123, :abc]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:a)
+
+      top_frame =
+        try do
+          :erlang.integer_to_binary(arg, 10)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :integer_to_binary, [:a, 10], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "integer_to_list/1" do
+    test "delegates to integer_to_list/2 with base 10" do
+      assert :erlang.integer_to_list(123) == :erlang.integer_to_list(123, 10)
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:a)
+
+      top_frame =
+        try do
+          :erlang.integer_to_list(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :integer_to_list, [:a], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "integer_to_list/2" do
+    test "base 2 (min allowed value for base param)" do
+      assert :erlang.integer_to_list(123, 2) == ~c"1111011"
+    end
+
+    test "base 10" do
+      assert :erlang.integer_to_list(123, 10) == ~c"123"
+    end
+
+    test "base 36 (max allowed value for base param)" do
+      assert :erlang.integer_to_list(123, 36) == ~c"3F"
+    end
+
+    test "negative integer, base 10" do
+      assert :erlang.integer_to_list(-123, 10) == ~c"-123"
+    end
+
+    test "negative integer, base other than 10" do
+      assert :erlang.integer_to_list(-123, 16) == ~c"-7B"
+    end
+
+    test "zero, base 10" do
+      assert :erlang.integer_to_list(0, 10) == ~c"0"
+    end
+
+    test "zero, base other than 10" do
+      assert :erlang.integer_to_list(0, 16) == ~c"0"
+    end
+
+    test "raises ArgumentError when the first argument is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an integer"),
+                   {:erlang, :integer_to_list, [3.14, 10]}
+    end
+
+    test "raises ArgumentError when base is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an integer in the range 2 through 36"),
+                   {:erlang, :integer_to_list, [123, 3.14]}
+    end
+
+    test "raises ArgumentError for base < 2" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an integer in the range 2 through 36"),
+                   {:erlang, :integer_to_list, [123, 1]}
+    end
+
+    test "raises ArgumentError for base > 36" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an integer in the range 2 through 36"),
+                   {:erlang, :integer_to_list, [123, 37]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:a)
+
+      top_frame =
+        try do
+          :erlang.integer_to_list(arg, 50)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :integer_to_list, [:a, 50], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "iolist_to_binary/1" do
+    test "returns a binary unchanged" do
+      binary = <<1, 2, 3>>
+
+      assert :erlang.iolist_to_binary(binary) == binary
+    end
+
+    test "delegates valid list input to :erlang.list_to_binary/1" do
+      fragment = [<<"0">> | <<"1">>]
+      iodata = [<<"2022">> | [45 | [fragment | [45 | fragment]]]]
+
+      assert :erlang.iolist_to_binary(iodata) == "2022-01-01"
+    end
+
+    test "raises ArgumentError for non-list input" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an iodata term"),
+                   {:erlang, :iolist_to_binary, [123]}
+    end
+
+    test "remaps invalid iolist errors from :erlang.list_to_binary/1" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an iodata term"),
+                   {:erlang, :iolist_to_binary, [[<<1::3>>]]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.iolist_to_binary(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :iolist_to_binary, [:abc], @erts_info}
+    end
+  end
+
+  describe "is_atom/1" do
+    test "atom" do
+      assert :erlang.is_atom(:abc) == true
+    end
+
+    test "non-atom" do
+      assert :erlang.is_atom(123) == false
+    end
+  end
+
+  describe "is_binary/1" do
+    test "binary bitsting" do
+      assert :erlang.is_binary("abc") == true
+    end
+
+    test "non-binary bitstring" do
+      assert :erlang.is_binary(<<2::size(3)>>) == false
+    end
+
+    test "non-bitstring" do
+      assert :erlang.is_binary(:abc) == false
+    end
+  end
+
+  describe "is_bitstring/1" do
+    test "bitstring" do
+      assert :erlang.is_bitstring(<<2::size(3)>>) == true
+    end
+
+    test "non-bitstring" do
+      assert :erlang.is_bitstring(:abc) == false
+    end
+  end
+
+  describe "is_boolean/1" do
+    test "boolean" do
+      assert :erlang.is_boolean(true) == true
+    end
+
+    test "non-boolean" do
+      assert :erlang.is_boolean(nil) == false
+    end
+  end
+
+  describe "is_float/1" do
+    test "float" do
+      assert :erlang.is_float(1.0) == true
+    end
+
+    test "non-float" do
+      assert :erlang.is_float(:abc) == false
+    end
+  end
+
+  describe "is_function/1" do
+    test "function" do
+      assert :erlang.is_function(fn x -> x end) == true
+    end
+
+    test "non-function" do
+      assert :erlang.is_function(:abc) == false
+    end
+  end
+
+  describe "is_function/2" do
+    test "function with the given arity" do
+      term = fn x, y, z -> {x, y, z} end
+      assert :erlang.is_function(term, 3) == true
+    end
+
+    test "function with a different arity" do
+      term = fn x, y, z -> {x, y, z} end
+      assert :erlang.is_function(term, 4) == false
+    end
+
+    test "non-function" do
+      assert :erlang.is_function(:abc, 3) == false
+    end
+  end
+
+  describe "is_integer/1" do
+    test "integer" do
+      assert :erlang.is_integer(1) == true
+    end
+
+    test "non-integer" do
+      assert :erlang.is_integer(:abc) == false
+    end
+  end
+
+  describe "is_list/1" do
+    test "list" do
+      assert :erlang.is_list([1, 2]) == true
+    end
+
+    test "non-list" do
+      assert :erlang.is_list(:abc) == false
+    end
+  end
+
+  describe "is_map/1" do
+    test "map" do
+      assert :erlang.is_map(%{a: 1, b: 2}) == true
+    end
+
+    test "non-map" do
+      assert :erlang.is_map(:abc) == false
+    end
+  end
+
+  describe "is_map_key/2" do
+    test "returns true if the given map has the given key" do
+      assert :erlang.is_map_key(:b, %{a: 1, b: 2}) == true
+    end
+
+    test "returns false if the given map doesn't have the given key" do
+      assert :erlang.is_map_key(:c, %{a: 1, b: 2}) == false
+    end
+
+    test "raises BadMapError if the second argument is not a map" do
+      assert_error BadMapError, build_bad_map_error_msg(:abc), {:erlang, :is_map_key, [:x, :abc]}
+    end
+  end
+
+  describe "is_number/1" do
+    test "float" do
+      assert :erlang.is_number(1.0) == true
+    end
+
+    test "integer" do
+      assert :erlang.is_number(1) == true
+    end
+
+    test "non-number" do
+      assert :erlang.is_number(:abc) == false
+    end
+  end
+
+  describe "is_pid/1" do
+    test "pid" do
+      assert :erlang.is_pid(self()) == true
+    end
+
+    test "non-pid" do
+      assert :erlang.is_pid(:abc) == false
+    end
+  end
+
+  describe "is_port/1" do
+    test "port" do
+      port = port("0.11")
+      assert :erlang.is_port(port) == true
+    end
+
+    test "non-port" do
+      assert :erlang.is_port(:abc) == false
+    end
+  end
+
+  describe "is_reference/1" do
+    test "reference" do
+      assert :erlang.is_reference(make_ref()) == true
+    end
+
+    test "non-reference" do
+      assert :erlang.is_reference(:abc) == false
+    end
+  end
+
+  describe "is_tuple/1" do
+    test "tuple" do
+      assert :erlang.is_tuple({1, 2}) == true
+    end
+
+    test "non-tuple" do
+      assert :erlang.is_tuple(:abc) == false
+    end
+  end
+
+  describe "length/1" do
+    test "returns the number of items in the list" do
+      assert :erlang.length([1, 2]) == 2
+    end
+
+    test "raises ArgumentError if the argument is not a list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list"),
+                   {:erlang, :length, [:abc]}
+    end
+
+    # A list has no length until it is walked to the end, and an improper one
+    # has no end to reach.
+    test "raises ArgumentError if the argument is an improper list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list"),
+                   {:erlang, :length, [[1 | 2]]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.length(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :length, [:abc], @erts_info}
+    end
+  end
+
+  describe "list_to_atom/1" do
+    test "empty list" do
+      # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+      assert :erlang.list_to_atom([]) == :""
+    end
+
+    test "ASCII characters" do
+      # ~c"abc" = [97, 98, 99]
+      # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+      assert :erlang.list_to_atom([97, 98, 99]) == :abc
+    end
+
+    test "Unicode characters" do
+      # ~c"全息图" = [20840, 24687, 22270]
+      # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+      assert :erlang.list_to_atom([20_840, 24_687, 22_270]) == :全息图
+    end
+
+    test "mixed ASCII and Unicode characters" do
+      # ~c"aπb" = [97, 960, 98]
+      # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+      assert :erlang.list_to_atom([97, 960, 98]) == String.to_atom("aπb")
+    end
+
+    test "single character" do
+      # ~c"a" = [97]
+      # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+      assert :erlang.list_to_atom([97]) == :a
+    end
+
+    test "raises ArgumentError if the argument is not a list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list"),
+                   {:erlang, :list_to_atom, [:abc]}
+    end
+
+    test "raises ArgumentError if the argument is an improper list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a proper list"),
+                   {:erlang, :list_to_atom, [[97 | 98]]}
+    end
+
+    test "raises ArgumentError if list contains non-integer element" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list of characters"),
+                   {:erlang, :list_to_atom, [[97, :x, 99]]}
+    end
+
+    test "raises ArgumentError if list contains invalid codepoint" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list of characters"),
+                   {:erlang, :list_to_atom, [[-1]]}
+    end
+
+    test "raises ArgumentError if given a binary instead of a charlist" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list"),
+                   {:erlang, :list_to_atom, ["abc"]}
+    end
+
+    test "raises ArgumentError if given chardata with nested list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list of characters"),
+                   {:erlang, :list_to_atom, [[[97, 98], 99]]}
+    end
+
+    test "raises ArgumentError if given iolist containing binary" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list of characters"),
+                   {:erlang, :list_to_atom, [[97, "bc"]]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+          :erlang.list_to_atom(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :list_to_atom, [:abc], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "list_to_binary/1" do
+    test "empty list" do
+      assert :erlang.list_to_binary([]) == <<>>
+    end
+
+    test "list of integers" do
+      assert :erlang.list_to_binary([1, 2, 3]) == <<1, 2, 3>>
+    end
+
+    test "list of binaries" do
+      assert :erlang.list_to_binary([<<1, 2>>, <<3, 4>>]) == <<1, 2, 3, 4>>
+    end
+
+    test "nested list" do
+      assert :erlang.list_to_binary([[1, 2], [3, 4]]) == <<1, 2, 3, 4>>
+    end
+
+    test "deeply nested list" do
+      assert :erlang.list_to_binary([[1, [2, [3, [4]]]]]) == <<1, 2, 3, 4>>
+    end
+
+    test "improper list with binary tail" do
+      assert :erlang.list_to_binary([1 | <<2, 3>>]) == <<1, 2, 3>>
+    end
+
+    test "nested improper list with list tail" do
+      fragment = [<<"0">> | <<"1">>]
+      iodata = [<<"2022">> | [45 | [fragment | [45 | fragment]]]]
+
+      assert :erlang.list_to_binary(iodata) == "2022-01-01"
+    end
+
+    test "mixed integers and binaries (iolist from doc example)" do
+      bin1 = <<1, 2, 3>>
+      bin2 = <<4, 5>>
+      bin3 = <<6>>
+
+      assert :erlang.list_to_binary([bin1, 1, [2, 3, bin2], 4 | bin3]) ==
+               <<1, 2, 3, 1, 2, 3, 4, 5, 4, 6>>
+    end
+
+    test "list with empty sublists" do
+      assert :erlang.list_to_binary([[], [], []]) == <<>>
+    end
+
+    test "boundary values 0 and 255" do
+      assert :erlang.list_to_binary([0, 255]) == <<0, 255>>
+    end
+
+    test "raises ArgumentError if the argument is not a list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an iolist term"),
+                   {:erlang, :list_to_binary, [:abc]}
+    end
+
+    test "raises ArgumentError if the argument is a binary" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an iolist term"),
+                   {:erlang, :list_to_binary, ["abc"]}
+    end
+
+    test "raises ArgumentError if list contains an atom" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an iolist term"),
+                   {:erlang, :list_to_binary, [[:abc]]}
+    end
+
+    test "raises ArgumentError if list contains a float" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an iolist term"),
+                   {:erlang, :list_to_binary, [[1.0]]}
+    end
+
+    test "raises ArgumentError if list contains an integer greater than 255" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an iolist term"),
+                   {:erlang, :list_to_binary, [[256]]}
+    end
+
+    test "raises ArgumentError if list contains a negative integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an iolist term"),
+                   {:erlang, :list_to_binary, [[-1]]}
+    end
+
+    test "raises ArgumentError if improper list has a non-binary tail" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an iolist term"),
+                   {:erlang, :list_to_binary, [[1, 2 | :abc]]}
+    end
+
+    test "raises ArgumentError if list contains a non-byte-aligned bitstring" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an iolist term"),
+                   {:erlang, :list_to_binary, [[<<1::3>>]]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.list_to_binary(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :list_to_binary, [:abc], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  # Note: due to practical reasons the behaviour of the client version is inconsistent with the server version.
+  # The client version works exactly the same as list_to_atom/1.
+  # test "list_to_existing_atom/1"
+
+  describe "list_to_float/1" do
+    test "positive float without sign in decimal notation" do
+      # ~c"1.23" = [49, 46, 50, 51]
+      assert :erlang.list_to_float([49, 46, 50, 51]) == 1.23
+    end
+
+    test "positive float with sign in decimal notation" do
+      # ~c"+1.23" = [43, 49, 46, 50, 51]
+      assert :erlang.list_to_float([43, 49, 46, 50, 51]) == 1.23
+    end
+
+    test "negative float in decimal notation" do
+      # ~c"-1.23" = [45, 49, 46, 50, 51]
+      assert :erlang.list_to_float([45, 49, 46, 50, 51]) == -1.23
+    end
+
+    test "unsigned zero float in decimal notation" do
+      # ~c"0.0" = [48, 46, 48]
+      assert :erlang.list_to_float([48, 46, 48]) === 0.0
+    end
+
+    test "signed positive zero float in decimal notation" do
+      # ~c"+0.0" = [43, 48, 46, 48]
+      assert :erlang.list_to_float([43, 48, 46, 48]) === +0.0
+    end
+
+    test "signed negative zero float in decimal notation" do
+      # ~c"-0.0" = [45, 48, 46, 48]
+      assert :erlang.list_to_float([45, 48, 46, 48]) === -0.0
+    end
+
+    test "positive float in scientific notation" do
+      # ~c"1.23456e+3" = [49, 46, 50, 51, 52, 53, 54, 101, 43, 51]
+      assert :erlang.list_to_float([49, 46, 50, 51, 52, 53, 54, 101, 43, 51]) == 1234.56
+    end
+
+    test "negative float in scientific notation" do
+      # ~c"-1.23456e+3" = [45, 49, 46, 50, 51, 52, 53, 54, 101, 43, 51]
+      assert :erlang.list_to_float([45, 49, 46, 50, 51, 52, 53, 54, 101, 43, 51]) == -1234.56
+    end
+
+    test "unsigned zero float in scientific notation" do
+      # ~c"0.0e+1" = [48, 46, 48, 101, 43, 49]
+      assert :erlang.list_to_float([48, 46, 48, 101, 43, 49]) === 0.0
+    end
+
+    test "signed positive zero float in scientific notation" do
+      # ~c"+0.0e+1" = [43, 48, 46, 48, 101, 43, 49]
+      assert :erlang.list_to_float([43, 48, 46, 48, 101, 43, 49]) === +0.0
+    end
+
+    test "signed negative zero float in scientific notation" do
+      # ~c"-0.0e+1" = [45, 48, 46, 48, 101, 43, 49]
+      assert :erlang.list_to_float([45, 48, 46, 48, 101, 43, 49]) === -0.0
+    end
+
+    test "with leading zeros" do
+      # ~c"00012.34" = [48, 48, 48, 49, 50, 46, 51, 52]
+      assert :erlang.list_to_float([48, 48, 48, 49, 50, 46, 51, 52]) == 12.34
+    end
+
+    test "uppercase scientific notation" do
+      # ~c"1.23456E3" = [49, 46, 50, 51, 52, 53, 54, 69, 51]
+      assert :erlang.list_to_float([49, 46, 50, 51, 52, 53, 54, 69, 51]) == 1234.56
+    end
+
+    test "negative exponent" do
+      # ~c"1.23e-3" = [49, 46, 50, 51, 101, 45, 51]
+      assert :erlang.list_to_float([49, 46, 50, 51, 101, 45, 51]) == 0.00123
+    end
+
+    test "raises ArgumentError if the argument is not a list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list"),
+                   {:erlang, :list_to_float, [:abc]}
+    end
+
+    test "raises ArgumentError if the argument is an improper list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list"),
+                   {:erlang, :list_to_float, [[49, 46 | 50]]}
+    end
+
+    test "raises ArgumentError if list contains non-integer element" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[49, :abc, 51]]}
+    end
+
+    test "positive integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[49, 50, 51]]}
+    end
+
+    test "negative integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[45, 49, 50, 51]]}
+    end
+
+    test "zero integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[48]]}
+    end
+
+    test "with underscore" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[49, 95, 48, 48, 48, 46, 53]]}
+    end
+
+    test "invalid float format" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[49, 50, 46, 51, 46, 52]]}
+    end
+
+    test "non-numeric text" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[97, 98, 99]]}
+    end
+
+    test "empty input" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[]]}
+    end
+
+    test "decimal point only" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[46]]}
+    end
+
+    test "with leading dot" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[46, 53]]}
+    end
+
+    test "with trailing dot" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[53, 46]]}
+    end
+
+    test "scientific notation without the fractional part" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[51, 101, 49, 48]]}
+    end
+
+    test "with trailing exponent marker" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[50, 101]]}
+    end
+
+    test "with leading whitespace" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[32, 49, 50, 46, 51]]}
+    end
+
+    test "with trailing whitespace" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[49, 50, 46, 51, 32]]}
+    end
+
+    test "with multiple exponent markers" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[49, 101, 50, 101, 51]]}
+    end
+
+    test "Infinity text" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[73, 110, 102, 105, 110, 105, 116, 121]]}
+    end
+
+    test "hex-style JS float" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[48, 120, 49, 46, 102, 112, 50]]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.list_to_float(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :list_to_float, [:abc], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "list_to_integer/1" do
+    test "delegates to list_to_integer/2 with base 10" do
+      assert :erlang.list_to_integer([49, 50, 51]) ==
+               :erlang.list_to_integer([49, 50, 51], 10)
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.list_to_integer(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :list_to_integer, [:abc], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "list_to_integer/2" do
+    test "base 2" do
+      # 0b1010 = 10
+      assert :erlang.list_to_integer([49, 48, 49, 48], 2) == 10
+    end
+
+    test "base 10" do
+      assert :erlang.list_to_integer([49, 50, 51], 10) == 123
+    end
+
+    test "base 16" do
+      # 0x3AF = 943
+      assert :erlang.list_to_integer([51, 65, 70], 16) == 943
+    end
+
+    test "base 36" do
+      # "YZ" = 1259
+      assert :erlang.list_to_integer([89, 90], 36) == 1259
+    end
+
+    test "positive integer with plus sign" do
+      assert :erlang.list_to_integer([43, 49, 50, 51], 10) == 123
+    end
+
+    test "negative integer" do
+      assert :erlang.list_to_integer([45, 49, 50, 51], 10) == -123
+    end
+
+    test "zero" do
+      assert :erlang.list_to_integer([48], 10) == 0
+    end
+
+    test "lowercase letters" do
+      assert :erlang.list_to_integer([97, 98, 99, 100], 16) == 43_981
+    end
+
+    test "uppercase letters" do
+      assert :erlang.list_to_integer([65, 66, 67, 68], 16) == 43_981
+    end
+
+    test "mixed case letters" do
+      assert :erlang.list_to_integer([97, 66, 99, 68], 16) == 43_981
+    end
+
+    test "leading zeros" do
+      assert :erlang.list_to_integer([48, 48, 49, 50, 51], 10) == 123
+    end
+
+    test "very large (above Number.MAX_SAFE_INTEGER) base 10 integer" do
+      # Number.MAX_SAFE_INTEGER = 9007199254740991
+      large_list = List.duplicate(57, 30)
+      large_int = :erlang.list_to_integer(large_list, 10)
+
+      assert large_int == 999_999_999_999_999_999_999_999_999_999
+    end
+
+    test "very large (below Number.MIN_SAFE_INTEGER) negative base 10 integer" do
+      # Number.MIN_SAFE_INTEGER = -9007199254740991
+      large_list = List.duplicate(57, 30)
+      large_int = :erlang.list_to_integer([?- | large_list], 10)
+
+      assert large_int == -999_999_999_999_999_999_999_999_999_999
+    end
+
+    test "very large (above Number.MAX_SAFE_INTEGER) integer with letter digits" do
+      # Number.MAX_SAFE_INTEGER = 9007199254740991
+      large_list = List.duplicate(?F, 20)
+      large_int = :erlang.list_to_integer(large_list, 16)
+
+      assert large_int == 0xFFFFFFFFFFFFFFFFFFFF
+    end
+
+    test "very large (below Number.MIN_SAFE_INTEGER) negative integer with letter digits" do
+      # Number.MIN_SAFE_INTEGER = -9007199254740991
+      large_list = List.duplicate(?F, 20)
+      large_int = :erlang.list_to_integer([?- | large_list], 16)
+
+      assert large_int == -0xFFFFFFFFFFFFFFFFFFFF
+    end
+
+    test "raises ArgumentError if the first argument is not a list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list"),
+                   {:erlang, :list_to_integer, [:abc, 10]}
+    end
+
+    test "raises ArgumentError if the first argument is not a proper list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a proper list"),
+                   {:erlang, :list_to_integer, [[49, 50 | 51], 10]}
+    end
+
+    test "raises ArgumentError if list is empty" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of an integer"),
+                   {:erlang, :list_to_integer, [[], 10]}
+    end
+
+    test "raises ArgumentError if list contains non-integer element" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of an integer"),
+                   {:erlang, :list_to_integer, [[49, :abc, 51], 10]}
+    end
+
+    test "raises ArgumentError if list contains characters outside of the alphabet" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of an integer"),
+                   {:erlang, :list_to_integer, [[50], 2]}
+    end
+
+    test "raises ArgumentError on sign in non-leading position" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of an integer"),
+                   {:erlang, :list_to_integer, [[49, 50, 45, 51], 10]}
+    end
+
+    test "raises ArgumentError on multiple signs" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of an integer"),
+                   {:erlang, :list_to_integer, [[43, 45, 49, 50, 51], 10]}
+    end
+
+    test "raises ArgumentError on minus sign only" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of an integer"),
+                   {:erlang, :list_to_integer, [[45], 10]}
+    end
+
+    test "raises ArgumentError on plus sign only" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of an integer"),
+                   {:erlang, :list_to_integer, [[43], 10]}
+    end
+
+    test "raises ArgumentError if the second argument is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an integer in the range 2 through 36"),
+                   {:erlang, :list_to_integer, [[49], :abc]}
+    end
+
+    test "raises ArgumentError if base is less than 2" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an integer in the range 2 through 36"),
+                   {:erlang, :list_to_integer, [[49, 50, 51], 1]}
+    end
+
+    test "raises ArgumentError if base is greater than 36" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an integer in the range 2 through 36"),
+                   {:erlang, :list_to_integer, [[49, 50, 51], 37]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.list_to_integer(arg, 10)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :list_to_integer, [:abc, 10], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "list_to_pid/1" do
+    test "valid textual representation of PID" do
+      assert :erlang.list_to_pid(~c"<0.11.222>") == pid("0.11.222")
+    end
+
+    test "invalid textual representation of PID" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a pid"),
+                   {:erlang, :list_to_pid, [~c"<0.11>"]}
+    end
+
+    test "not a list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list"),
+                   {:erlang, :list_to_pid, [123]}
+    end
+
+    test "a list that contains a non-integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a pid"),
+                   {:erlang, :list_to_pid, [[60, :abc, 46]]}
+    end
+
+    test "a list that contains an invalid codepoint" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a pid"),
+                   {:erlang, :list_to_pid, [[60, 255, 46]]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.list_to_pid(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :list_to_pid, [:abc], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "list_to_ref/1" do
+    test "valid textual representation of reference for local node" do
+      assert :erlang.list_to_ref(~c"#Ref<0.1.2.3>") == ref("0.1.2.3")
+    end
+
+    # Not testable in a practical way
+    # test "valid textual representation of reference for remote node"
+
+    test "invalid textual representation of reference (missing parts)" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a reference"),
+                   {:erlang, :list_to_ref, [~c"#Ref<0.1>"]}
+    end
+
+    test "non-existent local incarnation ID" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a reference"),
+                   {:erlang, :list_to_ref, [~c"#Ref<999.1.2.3>"]}
+    end
+
+    test "not a list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list"),
+                   {:erlang, :list_to_ref, [123]}
+    end
+
+    test "not a proper list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list"),
+                   {:erlang, :list_to_ref, [[123 | 124]]}
+    end
+
+    test "a list that contains a non-integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a reference"),
+                   # 36 = $, 82 = R
+                   {:erlang, :list_to_ref, [[36, :abc, 82]]}
+    end
+
+    test "a list that contains an invalid codepoint" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a reference"),
+                   # 36 = $, 82 = R
+                   {:erlang, :list_to_ref, [[36, 255, 82]]}
+    end
+  end
+
+  describe "list_to_tuple/1" do
+    test "non-empty list" do
+      assert :erlang.list_to_tuple([1, 2, 3]) == {1, 2, 3}
+    end
+
+    test "empty list" do
+      assert :erlang.list_to_tuple([]) == {}
+    end
+
+    test "raises ArgumentError if the argument is not a list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list"),
+                   {:erlang, :list_to_tuple, [:abc]}
+    end
+
+    test "raises ArgumentError if the argument is an improper list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list"),
+                   {:erlang, :list_to_tuple, [[1, 2 | 3]]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.list_to_tuple(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :list_to_tuple, [:abc], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "localtime/0" do
+    test "returns a tuple with date and time" do
+      assert {{year, month, day}, {hour, minute, second}} = :erlang.localtime()
+
+      assert year in 1970..2100
+      assert month in 1..12
+      assert day in 1..31
+      assert hour in 0..23
+      assert minute in 0..59
+      assert second in 0..59
+    end
+  end
+
+  describe "make_fun/3" do
+    test "creates a function capture from an Elixir module function with no args" do
+      assert :erlang.make_fun(Module1, :fun_0, 0) == (&Module1.fun_0/0)
+    end
+
+    test "creates a function capture from an Elixir module function with a single arg" do
+      assert :erlang.make_fun(Module1, :fun_1, 1) == (&Module1.fun_1/1)
+    end
+
+    test "creates a function capture from an Elixir module function with multiple args" do
+      assert :erlang.make_fun(Module1, :fun_2, 2) == (&Module1.fun_2/2)
+    end
+
+    test "creates a function capture from an Erlang module function" do
+      assert :erlang.make_fun(:erlang, :+, 2) == (&:erlang.+/2)
+    end
+
+    test "creates a function capture with maximum arity 255" do
+      result = :erlang.make_fun(Module1, :fun_0, 255)
+
+      assert is_function(result, 255)
+    end
+
+    test "creates a function capture for a non-existent module" do
+      result = :erlang.make_fun(NonExistentModule, :some_fun, 1)
+
+      assert is_function(result, 1)
+    end
+
+    test "creates a function capture for a non-existent function" do
+      result = :erlang.make_fun(Module1, :nonexistent_fun, 1)
+
+      assert is_function(result, 1)
+    end
+
+    test "creates a function capture for a non-matching arity" do
+      result = :erlang.make_fun(Module1, :fun_1, 2)
+
+      assert is_function(result, 2)
+    end
+
+    test "raises ArgumentError if the first argument is not an atom" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an atom"),
+                   {:erlang, :make_fun, [123, :fun_0, 0]}
+    end
+
+    test "raises ArgumentError if the second argument is not an atom" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an atom"),
+                   {:erlang, :make_fun, [Module1, 123, 0]}
+    end
+
+    test "raises ArgumentError if the third argument is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "not an integer"),
+                   {:erlang, :make_fun, [Module1, :fun_0, 2.0]}
+    end
+
+    test "raises ArgumentError if the third argument is a negative integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "out of range"),
+                   {:erlang, :make_fun, [Module1, :fun_0, -1]}
+    end
+
+    test "raises ArgumentError if the third argument exceeds maximum arity" do
+      assert_error ArgumentError,
+                   "argument error",
+                   {:erlang, :make_fun, [Module1, :fun_0, 256]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(1)
+
+      top_frame =
+        try do
+          :erlang.make_fun(arg, :f, -1)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :make_fun, [1, :f, -1], @erts_info}
+    end
+  end
+
+  describe "make_ref/0" do
+    test "returns a reference" do
+      result = :erlang.make_ref()
+
+      assert is_reference(result)
+    end
+
+    test "consecutive calls return unique references" do
+      ref1 = :erlang.make_ref()
+      ref2 = :erlang.make_ref()
+
+      assert ref1 != ref2
+    end
+  end
+
+  describe "make_tuple/2" do
+    test "creates tuple of the given size with all elements set to the given value" do
+      assert :erlang.make_tuple(3, :a) === {:a, :a, :a}
+    end
+
+    test "creates an empty tuple when arity is zero" do
+      assert :erlang.make_tuple(0, :a) === {}
+    end
+
+    test "raises ArgumentError when arity is negative" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "out of range"),
+                   {:erlang, :make_tuple, [-1, :a]}
+    end
+
+    test "raises ArgumentError when arity is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "out of range"),
+                   {:erlang, :make_tuple, [2.0, :a]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:a)
+
+      top_frame =
+        try do
+          :erlang.make_tuple(arg, :x)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :make_tuple, [:a, :x], @erts_info}
+    end
+  end
+
+  describe "map_get/2" do
+    test "returns the value associated with the given key if map contains the key" do
+      assert :erlang.map_get(:b, %{a: 1, b: 2}) == 2
+    end
+
+    test "raises BadMapError if the second argument is not a map" do
+      assert_error BadMapError, build_bad_map_error_msg(1), {:erlang, :map_get, [:a, 1]}
+    end
+
+    test "raises KeyError if the map doesn't contain the given key" do
+      assert_error KeyError, build_key_error_msg(:a, %{}), {:erlang, :map_get, [:a, %{}]}
+    end
+  end
+
+  describe "map_size/1" do
+    test "returns the number of items in the map" do
+      assert :erlang.map_size(%{a: 1, b: 2}) == 2
+    end
+
+    test "raises BadMapError if the argument is not a map" do
+      assert_error BadMapError,
+                   build_bad_map_error_msg(:abc),
+                   {:erlang, :map_size, [:abc]}
+    end
+  end
+
+  describe "monotonic_time/0" do
+    test "returns an integer" do
+      assert is_integer(:erlang.monotonic_time())
+    end
+
+    test "is monotonic non-decreasing" do
+      t1 = :erlang.monotonic_time()
+      t2 = :erlang.monotonic_time()
+
+      assert t2 >= t1
+    end
+  end
+
+  describe "monotonic_time/1" do
+    test "with valid atom unit" do
+      assert is_integer(:erlang.monotonic_time(:second))
+    end
+
+    test "with valid integer unit" do
+      assert is_integer(:erlang.monotonic_time(1000))
+    end
+
+    test "applies time unit conversion" do
+      micro = :erlang.monotonic_time(:microsecond)
+      nano = :erlang.monotonic_time(:nanosecond)
+
+      # Use absolute values since monotonic_time can be negative
+      abs_micro = abs(micro)
+      abs_nano = abs(nano)
+
+      # Allow small timing drift between calls
+      assert abs_nano >= abs_micro * 999
+      assert abs_nano <= abs_micro * 1001 + 1000
+    end
+
+    test "raises ArgumentError when argument is not atom or integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid time unit"),
+                   {:erlang, :monotonic_time, [1.0]}
+    end
+
+    test "raises ArgumentError when atom argument is not a valid time unit" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid time unit"),
+                   {:erlang, :monotonic_time, [:invalid]}
+    end
+
+    test "raises ArgumentError when integer argument is 0" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid time unit"),
+                   {:erlang, :monotonic_time, [0]}
+    end
+
+    test "raises ArgumentError when integer argument is negative" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid time unit"),
+                   {:erlang, :monotonic_time, [-1]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:bad)
+
+      top_frame =
+        try do
+          :erlang.monotonic_time(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :monotonic_time, [:bad], @erts_info}
+    end
+  end
+
+  # On the server, node/0 returns `nonode@nohost` if the node is not alive,
+  # or the actual node name if it is. On the client it always returns `hologram_client`.
+  describe "node/0" do
+    test "returns local node" do
+      assert :erlang.node() == :nonode@nohost
+    end
+  end
+
+  describe "not/1" do
+    test "true" do
+      assert :erlang.not(true) == false
+    end
+
+    test "false" do
+      assert :erlang.not(false) == true
+    end
+
+    test "not boolean" do
+      assert_error ArgumentError,
+                   "argument error",
+                   {:erlang, :not, ["abc"]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(1)
+
+      top_frame =
+        try do
+          :erlang.not(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :not, [1], @erts_info}
+    end
+  end
+
+  describe "pid_to_list/1" do
+    test "single digit segments" do
+      pid = pid("0.1.2")
+
+      assert :erlang.pid_to_list(pid) == ~c"<0.1.2>"
+    end
+
+    test "multi-digit segments" do
+      pid = pid("0.11.222")
+
+      assert :erlang.pid_to_list(pid) == ~c"<0.11.222>"
+    end
+
+    test "not a pid" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a pid"),
+                   {:erlang, :pid_to_list, [123]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.pid_to_list(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :pid_to_list, [:abc], @erts_info}
+    end
+  end
+
+  describe "raise/3" do
+    test "raises with the given kind and reason" do
+      reason = :my_reason
+
+      result =
+        :throw
+        |> :erlang.raise(reason, [])
+        |> catch_throw()
+
+      assert result == reason
+    end
+
+    test "normalizes a bare :error reason into an exception struct" do
+      result =
+        try do
+          :erlang.raise(:error, :badarg, [])
+        rescue
+          error -> error
+        end
+
+      assert result == %ArgumentError{}
+    end
+
+    test "preserves the given stacktrace" do
+      stacktrace = [{:my_mod, :my_fun, 2, [file: ~c"my_file.ex", line: 7]}]
+
+      result =
+        try do
+          :erlang.raise(:error, :my_reason, stacktrace)
+        rescue
+          _error -> __STACKTRACE__
+        end
+
+      assert result == stacktrace
+    end
+
+    test "preserves a stacktrace entry with args in place of arity" do
+      stacktrace = [{:my_mod, :my_fun, [1, 2], []}]
+
+      result =
+        try do
+          :erlang.raise(:error, :my_reason, stacktrace)
+        rescue
+          _error -> __STACKTRACE__
+        end
+
+      assert result == stacktrace
+    end
+
+    test "preserves a fun stacktrace entry" do
+      fun = fn -> :ok end
+      stacktrace = [{fun, 0, []}]
+
+      result =
+        try do
+          :erlang.raise(:error, :my_reason, stacktrace)
+        rescue
+          _error -> __STACKTRACE__
+        end
+
+      assert result == stacktrace
+    end
+
+    test "preserves an empty stacktrace" do
+      stacktrace = []
+
+      result =
+        try do
+          :erlang.raise(:error, :my_reason, stacktrace)
+        rescue
+          _error -> __STACKTRACE__
+        end
+
+      assert result == stacktrace
+    end
+
+    test "returns :badarg when the kind is not a valid exception class" do
+      result = apply(:erlang, :raise, wrap_term([:not_a_kind, :my_reason, []]))
+
+      assert result == :badarg
+    end
+
+    test "returns :badarg when the stacktrace is not a list" do
+      result = apply(:erlang, :raise, wrap_term([:error, :my_reason, :not_a_list]))
+
+      assert result == :badarg
+    end
+
+    test "returns :badarg when the stacktrace is an improper list" do
+      stacktrace = [{:my_mod, :my_fun, 0, []} | :tail]
+
+      result = apply(:erlang, :raise, wrap_term([:error, :my_reason, stacktrace]))
+
+      assert result == :badarg
+    end
+
+    test "returns :badarg when a stacktrace entry is not a tuple" do
+      stacktrace = [:not_a_tuple]
+
+      result = apply(:erlang, :raise, wrap_term([:error, :my_reason, stacktrace]))
+
+      assert result == :badarg
+    end
+
+    test "returns :badarg when a stacktrace entry's module is not an atom" do
+      stacktrace = [{123, :my_fun, 0, []}]
+
+      result = apply(:erlang, :raise, wrap_term([:error, :my_reason, stacktrace]))
+
+      assert result == :badarg
+    end
+
+    test "returns :badarg when a stacktrace entry's function is not an atom" do
+      stacktrace = [{:my_mod, 123, 0, []}]
+
+      result = apply(:erlang, :raise, wrap_term([:error, :my_reason, stacktrace]))
+
+      assert result == :badarg
+    end
+
+    test "returns :badarg when a stacktrace entry's location is not a list" do
+      stacktrace = [{:my_mod, :my_fun, 0, :bad_location}]
+
+      result = apply(:erlang, :raise, wrap_term([:error, :my_reason, stacktrace]))
+
+      assert result == :badarg
+    end
+
+    test "returns :badarg when a stacktrace entry has an invalid size" do
+      stacktrace = [{:my_mod, :my_fun}]
+
+      result = apply(:erlang, :raise, wrap_term([:error, :my_reason, stacktrace]))
+
+      assert result == :badarg
+    end
+
+    test "returns :badarg when a 3-element stacktrace entry's first element is not a fun" do
+      stacktrace = [{:my_mod, 0, []}]
+
+      result = apply(:erlang, :raise, wrap_term([:error, :my_reason, stacktrace]))
+
+      assert result == :badarg
+    end
+  end
+
+  describe "ref_to_list/1" do
+    test "reference for local node" do
+      result =
+        "0.1.2.3"
+        |> ref()
+        |> :erlang.ref_to_list()
+
+      assert result == ~c"#Ref<0.1.2.3>"
+    end
+
+    test "not a reference" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a reference"),
+                   {:erlang, :ref_to_list, [:abc]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.ref_to_list(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :ref_to_list, [:abc], @erts_info}
+    end
+  end
+
+  describe "rem/2" do
+    test "returns remainder of positive integers" do
+      assert :erlang.rem(10, 3) === 1
+    end
+
+    test "returns remainder with negative dividend and positive divisor" do
+      assert :erlang.rem(-10, 3) === -1
+    end
+
+    test "returns remainder with positive dividend and negative divisor" do
+      assert :erlang.rem(10, -3) === 1
+    end
+
+    test "returns remainder with negative integers" do
+      assert :erlang.rem(-10, -3) === -1
+    end
+
+    test "returns 0 when dividend is evenly divisible" do
+      assert :erlang.rem(12, 4) === 0
+    end
+
+    test "returns 0 when dividend is 0" do
+      assert :erlang.rem(0, 5) === 0
+    end
+
+    test "returns 0 when dividend is 1" do
+      assert :erlang.rem(42, 1) === 0
+    end
+
+    test "returns 0 when dividend is -1" do
+      assert :erlang.rem(42, -1) === 0
+    end
+
+    test "raises ArithmeticError when dividend is 0" do
+      assert_error ArithmeticError, "bad argument in arithmetic expression: rem(5, 0)", fn ->
+        assert :erlang.rem(5, 0)
+      end
+    end
+
+    test "raises ArithmeticError if the first argument is a float" do
+      assert_error ArithmeticError, "bad argument in arithmetic expression: rem(5.5, 2)", fn ->
+        assert 5.5
+               |> wrap_term()
+               |> :erlang.rem(2)
+      end
+    end
+
+    test "raises ArithmeticError if the second argument is a float" do
+      assert_error ArithmeticError, "bad argument in arithmetic expression: rem(5, 2.5)", fn ->
+        assert :erlang.rem(5, wrap_term(2.5))
+      end
+    end
+
+    test "raises ArithmeticError if the first argument is not a number" do
+      assert_error ArithmeticError, "bad argument in arithmetic expression: rem(:abc, 2)", fn ->
+        assert :abc
+               |> wrap_term()
+               |> :erlang.rem(2)
+      end
+    end
+
+    test "raises ArithmeticError if the second argument is not a number" do
+      assert_error ArithmeticError, "bad argument in arithmetic expression: rem(5, :abc)", fn ->
+        assert :erlang.rem(5, wrap_term(:abc))
+      end
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(0)
+
+      top_frame =
+        try do
+          :erlang.rem(5, arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :rem, [5, 0], @erts_info}
+    end
+  end
+
+  describe "round/1" do
+    test "rounds positive float with fractional part less than 0.5 down" do
+      assert :erlang.round(1.23) == 1
+    end
+
+    test "rounds positive float with fractional part greater than 0.5 up" do
+      assert :erlang.round(1.67) == 2
+    end
+
+    test "rounds positive float with fractional part equal to 0.5 away from zero (up)" do
+      assert :erlang.round(5.5) == 6
+    end
+
+    test "rounds negative float with fractional part less than 0.5 up toward zero" do
+      assert :erlang.round(-1.23) == -1
+    end
+
+    test "rounds negative float with fractional part greater than 0.5 down away from zero" do
+      assert :erlang.round(-1.67) == -2
+    end
+
+    test "rounds negative float with fractional part equal to 0.5 away from zero (down)" do
+      assert :erlang.round(-5.5) == -6
+    end
+
+    test "keeps positive float without fractional part unchanged" do
+      assert :erlang.round(1.0) == 1
+    end
+
+    test "keeps negative float without fractional part unchanged" do
+      assert :erlang.round(-1.0) == -1
+    end
+
+    test "keeps signed negative zero float unchanged" do
+      assert :erlang.round(-0.0) == 0
+    end
+
+    test "keeps signed positive zero float unchanged" do
+      assert :erlang.round(+0.0) == 0
+    end
+
+    test "keeps unsigned zero float unchanged" do
+      assert :erlang.round(0.0) == 0
+    end
+
+    test "rounds 0.5 away from zero" do
+      assert :erlang.round(0.5) == 1
+    end
+
+    test "rounds -0.5 away from zero" do
+      assert :erlang.round(-0.5) == -1
+    end
+
+    test "keeps positive integer unchanged" do
+      assert :erlang.round(1) == 1
+    end
+
+    test "keeps negative integer unchanged" do
+      assert :erlang.round(-1) == -1
+    end
+
+    test "keeps zero integer unchanged" do
+      assert :erlang.round(0) == 0
+    end
+
+    test "handles MAX_SAFE_INTEGER float" do
+      # Number.MAX_SAFE_INTEGER == 9_007_199_254_740_991
+      assert :erlang.round(9_007_199_254_740_991.0) == 9_007_199_254_740_991
+    end
+
+    test "handles MIN_SAFE_INTEGER float" do
+      # Number.MIN_SAFE_INTEGER == -9_007_199_254_740_991
+      assert :erlang.round(-9_007_199_254_740_991.0) == -9_007_199_254_740_991
+    end
+
+    test "handles large float that loses precision" do
+      # This demonstrates that float representation limits apply before rounding
+      # 36_028_797_018_963_969.0 cannot be represented exactly as a float
+      # It's stored as 36_028_797_018_963_968.0
+      assert :erlang.round(36_028_797_018_963_969.0) == 36_028_797_018_963_968
+    end
+
+    test "raises ArgumentError if the argument is not a number" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a number"),
+                   {:erlang, :round, [:abc]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.round(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :round, [:abc], @erts_info}
+    end
+  end
+
+  describe "setelement/3" do
+    test "replaces a middle element" do
+      assert :erlang.setelement(2, {1, 2, 3}, :a) === {1, :a, 3}
+    end
+
+    test "replaces the first element" do
+      assert :erlang.setelement(1, {1, 2}, :a) === {:a, 2}
+    end
+
+    test "replaces the last element" do
+      assert :erlang.setelement(2, {1, 2}, :a) === {1, :a}
+    end
+
+    test "raises ArgumentError if the first argument is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an integer"),
+                   {:erlang, :setelement, [:b, {1, 2}, :a]}
+    end
+
+    test "raises ArgumentError if the second argument is not a tuple" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not a tuple"),
+                   {:erlang, :setelement, [1, :b, :a]}
+    end
+
+    test "raises ArgumentError if the index is larger than the size of the tuple" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "out of range"),
+                   {:erlang, :setelement, [3, {1, 2}, :a]}
+    end
+
+    test "raises ArgumentError if the index is not positive" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "out of range"),
+                   {:erlang, :setelement, [0, {1, 2}, :a]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(0)
+
+      top_frame =
+        try do
+          :erlang.setelement(arg, {:a}, :x)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :setelement, [0, {:a}, :x], @erts_info}
+    end
+  end
+
+  describe "split_binary/2" do
+    test "splits binary at position 0" do
+      binary = "0123456789"
+
+      assert :erlang.split_binary(binary, 0) == {"", "0123456789"}
+    end
+
+    test "splits binary at middle position" do
+      binary = "0123456789"
+
+      assert :erlang.split_binary(binary, 3) == {"012", "3456789"}
+    end
+
+    test "splits binary at end position" do
+      binary = "0123456789"
+
+      assert :erlang.split_binary(binary, 10) == {"0123456789", ""}
+    end
+
+    test "splits empty binary" do
+      binary = ""
+
+      assert :erlang.split_binary(binary, 0) == {"", ""}
+    end
+
+    test "splits single character binary" do
+      binary = "a"
+
+      assert :erlang.split_binary(binary, 1) == {"a", ""}
+    end
+
+    test "splits Unicode binary" do
+      binary = "全息图全息图"
+
+      assert :erlang.split_binary(binary, 4) ==
+               {<<229, 133, 168, 230>>,
+                <<129, 175, 229, 155, 190, 229, 133, 168, 230, 129, 175, 229, 155, 190>>}
+    end
+
+    test "raises ArgumentError if the first argument is not a binary" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a binary"),
+                   {:erlang, :split_binary, [:abc, 1]}
+    end
+
+    test "raises ArgumentError if the first argument is a non-binary bitstring" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a binary"),
+                   {:erlang, :split_binary, [<<1::1, 0::1, 1::1>>, 1]}
+    end
+
+    test "raises ArgumentError if the second argument is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an integer"),
+                   {:erlang, :split_binary, ["abc", :invalid]}
+    end
+
+    test "raises ArgumentError if the second argument is a negative integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "out of range"),
+                   {:erlang, :split_binary, ["abc", -1]}
+    end
+
+    test "raises ArgumentError if position is greater than binary size" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "out of range"),
+                   {:erlang, :split_binary, ["abc", 4]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:a)
+
+      top_frame =
+        try do
+          :erlang.split_binary(arg, 1)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :split_binary, [:a, 1], @erts_info}
+    end
+  end
+
+  describe "system_info/1" do
+    test "returns the endian" do
+      assert :erlang.system_info(:endian) == :little
+    end
+
+    # Note: JS test is named "returns the emulated OTP release"
+    # The client port hardcodes the newest emulated OTP release, so this test
+    # fails when the server runtime gets ahead of it - bump the release in the
+    # :erlang.system_info/1 port together with this assertion.
+    test "returns the OTP release" do
+      result = :erlang.system_info(:otp_release)
+
+      assert is_list(result)
+      assert Enum.all?(result, &(&1 in ?0..?9))
+      assert List.to_integer(result) <= 29
+    end
+
+    test "raises ArgumentError on non-atom item" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid system info item"),
+                   {:erlang, :system_info, [123]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(1)
+
+      top_frame =
+        try do
+          :erlang.system_info(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :system_info, [1], @erts_info}
+    end
+  end
+
+  # Simplified tests since JS port delegates to :os.system_time/0
+  describe "system_time/0" do
+    # Note: JS test is named "delegates to :os.system_time/0"
+    test "returns current system time in native time unit (nanoseconds)" do
+      result = :erlang.system_time()
+      expected = :os.system_time()
+
+      assert is_integer(result)
+      assert abs(result - expected) < 10_000_000
+    end
+  end
+
+  # Simplified tests since JS port delegates to :os.system_time/1
+  describe "system_time/1" do
+    # Note: JS test is named "delegates to :os.system_time/1"
+    test "returns current system time in the given time unit" do
+      unit = :microsecond
+      result = :erlang.system_time(unit)
+      expected = :os.system_time(unit)
+
+      assert is_integer(result)
+      assert abs(result - expected) < 10_000
+    end
+  end
+
+  describe "throw/1" do
+    test "throws the given value" do
+      value = :my_value
+
+      result =
+        value
+        |> :erlang.throw()
+        |> catch_throw()
+
+      assert result == value
+    end
+  end
+
+  describe "time_offset/0" do
+    test "returns an integer" do
+      assert is_integer(:erlang.time_offset())
+    end
+
+    test "returns difference between system time and monotonic time" do
+      system_time = :os.system_time()
+      monotonic_time = :erlang.monotonic_time()
+      offset = :erlang.time_offset()
+
+      # The offset should be close to system_time - monotonic_time
+      # Allow small timing drift between calls (10 ms = 10_000_000 ns)
+      expected = system_time - monotonic_time
+
+      assert abs(offset - expected) < 10_000_000
+    end
+  end
+
+  describe "time_offset/1" do
+    test "with valid atom unit" do
+      assert is_integer(:erlang.time_offset(:second))
+    end
+
+    test "with valid integer unit" do
+      assert is_integer(:erlang.time_offset(1000))
+    end
+
+    test "applies time unit conversion" do
+      micro = :erlang.time_offset(:microsecond)
+      nano = :erlang.time_offset(:nanosecond)
+
+      # Use absolute values since time_offset can be negative
+      abs_micro = abs(micro)
+      abs_nano = abs(nano)
+
+      # Allow small timing drift between calls
+      assert abs_nano >= abs_micro * 999
+      assert abs_nano <= abs_micro * 1001 + 1000
+    end
+
+    test "raises ArgumentError when argument is not atom or integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid time unit"),
+                   {:erlang, :time_offset, [1.0]}
+    end
+
+    test "raises ArgumentError when atom argument is not a valid time unit" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid time unit"),
+                   {:erlang, :time_offset, [:invalid]}
+    end
+
+    test "raises ArgumentError when integer argument is 0" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid time unit"),
+                   {:erlang, :time_offset, [0]}
+    end
+
+    test "raises ArgumentError when integer argument is negative" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid time unit"),
+                   {:erlang, :time_offset, [-1]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:bad)
+
+      top_frame =
+        try do
+          :erlang.time_offset(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :time_offset, [:bad], @erts_info}
+    end
+  end
+
+  describe "tl/1" do
+    test "proper list, 1 item" do
+      assert :erlang.tl([1]) == []
+    end
+
+    test "proper list, 2 items" do
+      assert :erlang.tl([1, 2]) == [2]
+    end
+
+    test "proper list, 3 items" do
+      assert :erlang.tl([1, 2, 3]) == [2, 3]
+    end
+
+    test "improper list, 2 items" do
+      assert :erlang.tl([1 | 2]) == 2
+    end
+
+    test "improper list, 3 items" do
+      assert :erlang.tl([1, 2 | 3]) == [2 | 3]
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.tl(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :tl, [:abc], @erts_info}
+    end
+  end
+
+  describe "trunc/1" do
+    test "drops fractional part of positive float" do
+      assert :erlang.trunc(1.23) == 1
+    end
+
+    test "drops fractional part of negative float" do
+      assert :erlang.trunc(-1.23) == -1
+    end
+
+    test "drops fractional part of negative zero float" do
+      assert :erlang.trunc(-0.0) == 0
+    end
+
+    test "drops fractional part of positive zero float" do
+      assert :erlang.trunc(+0.0) == 0
+    end
+
+    test "drops fractional part of unsigned zero float" do
+      assert :erlang.trunc(0.0) == 0
+    end
+
+    test "keeps positive integer unchanged" do
+      assert :erlang.trunc(1) == 1
+    end
+
+    test "keeps negative integer unchanged" do
+      assert :erlang.trunc(-1) == -1
+    end
+
+    test "keeps zero integer unchanged" do
+      assert :erlang.trunc(0) == 0
+    end
+
+    test "demonstrates floating-point precision limits for large numbers" do
+      assert :erlang.trunc(36_028_797_018_963_969.0) == 36_028_797_018_963_968
+    end
+
+    test "raises ArgumentError if the argument is not a number" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a number"),
+                   {:erlang, :trunc, [:abc]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.trunc(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :trunc, [:abc], @erts_info}
+    end
+  end
+
+  describe "tuple_size/1" do
+    test "returns the number of elements in the tuple" do
+      assert :erlang.tuple_size({1, 2, 3}) == 3
+    end
+
+    test "returns 0 for an empty tuple" do
+      assert :erlang.tuple_size({}) == 0
+    end
+
+    test "raises ArgumentError if the argument is not a tuple" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a tuple"),
+                   {:erlang, :tuple_size, [:abc]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.tuple_size(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :tuple_size, [:abc], @erts_info}
+    end
+  end
+
+  describe "tuple_to_list/1" do
+    test "returns a list corresponding to the given tuple" do
+      assert :erlang.tuple_to_list({1, 2, 3}) == [1, 2, 3]
+    end
+
+    test "raises ArgumentError if the argument is not a tuple" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a tuple"),
+                   {:erlang, :tuple_to_list, [:abc]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:abc)
+
+      top_frame =
+        try do
+          :erlang.tuple_to_list(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame ==
+               {:erlang, :tuple_to_list, [:abc], [error_info: %{module: :erl_erts_errors}]}
+    end
+  end
+
+  describe "unique_integer/0" do
+    test "returns a unique integer each time it is called" do
+      integer_1 = :erlang.unique_integer()
+      assert is_integer(integer_1)
+
+      integer_2 = :erlang.unique_integer()
+      assert is_integer(integer_2)
+
+      assert integer_1 != integer_2
+    end
+  end
+
+  describe "unique_integer/1" do
+    test "returns a unique integer each time it is called with empty modifier list" do
+      integer_1 = :erlang.unique_integer([])
+      assert is_integer(integer_1)
+
+      integer_2 = :erlang.unique_integer([])
+      assert is_integer(integer_2)
+
+      assert integer_1 != integer_2
+    end
+
+    test "returns a unique integer with positive modifier" do
+      integer_1 = :erlang.unique_integer([:positive])
+      assert is_integer(integer_1)
+
+      integer_2 = :erlang.unique_integer([:positive])
+      assert is_integer(integer_2)
+
+      assert integer_1 != integer_2
+    end
+
+    test "returns a unique integer with monotonic modifier" do
+      integer_1 = :erlang.unique_integer([:monotonic])
+      assert is_integer(integer_1)
+
+      integer_2 = :erlang.unique_integer([:monotonic])
+      assert is_integer(integer_2)
+
+      assert integer_1 != integer_2
+    end
+
+    test "returns a unique integer with both positive and monotonic modifiers" do
+      integer_1 = :erlang.unique_integer([:positive, :monotonic])
+      assert is_integer(integer_1)
+
+      integer_2 = :erlang.unique_integer([:positive, :monotonic])
+      assert is_integer(integer_2)
+
+      assert integer_1 != integer_2
+    end
+
+    test "raises ArgumentError if the argument is not a list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list"),
+                   {:erlang, :unique_integer, [:abc]}
+    end
+
+    test "raises ArgumentError if the argument is not a proper list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a proper list"),
+                   {:erlang, :unique_integer, [[:positive | :abc]]}
+    end
+
+    test "raises ArgumentError if the modifier is not an atom" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid modifier"),
+                   {:erlang, :unique_integer, [[123]]}
+    end
+
+    test "raises ArgumentError if the modifier is not a valid modifier" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid modifier"),
+                   {:erlang, :unique_integer, [[:invalid]]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(:bad)
+
+      top_frame =
+        try do
+          :erlang.unique_integer(arg)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :unique_integer, [:bad], @erts_info}
+    end
+  end
+
+  describe "xor/2" do
+    test "true xor false" do
+      assert :erlang.xor(true, false) == true
+    end
+
+    test "false xor true" do
+      assert :erlang.xor(false, true) == true
+    end
+
+    test "true xor true" do
+      assert :erlang.xor(true, true) == false
+    end
+
+    test "false xor false" do
+      assert :erlang.xor(false, false) == false
+    end
+
+    test "raises ArgumentError if the first argument is not a boolean" do
+      assert_error ArgumentError, "argument error", {:erlang, :xor, [:abc, true]}
+    end
+
+    test "raises ArgumentError if the second argument is not a boolean" do
+      assert_error ArgumentError, "argument error", {:erlang, :xor, [true, :abc]}
+    end
+
+    test "error frame carries args and error_info" do
+      arg = wrap_term(1)
+
+      top_frame =
+        try do
+          :erlang.xor(arg, true)
+        rescue
+          _error -> hd(wrap_term(__STACKTRACE__))
+        end
+
+      assert top_frame == {:erlang, :xor, [1, true], @erts_info}
+    end
+  end
+end

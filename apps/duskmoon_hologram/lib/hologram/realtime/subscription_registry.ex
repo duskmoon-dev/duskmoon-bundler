@@ -1,0 +1,734 @@
+defmodule Hologram.Realtime.SubscriptionRegistry do
+  @moduledoc false
+
+  use GenServer
+
+  require Logger
+
+  alias Hologram.Realtime
+  alias Hologram.Realtime.Handshake
+
+  # One client round trip on a slow connection: the span between a boot-time command
+  # reaching the server and the handshake it raced completing.
+  @client_round_trip_ms 3_000
+
+  # `Hologram.Realtime.SSE` redeems the handshake *before* it attaches, and that redemption
+  # blocks for up to this long. A window at or below it can be consumed entirely by the
+  # redeem wait, leaving no chance for the attach to land. Summing it in makes that floor
+  # structural instead of something to remember.
+  @redeem_wait_ms Handshake.server_wait_ms()
+
+  # Headroom for server-side queueing. After a deploy, tabs reconnect in a herd, handshake
+  # requests queue, and `redeem/2` grows likelier to burn its full wait - precisely when
+  # first connects are most numerous.
+  @server_queueing_ms 1_500
+
+  # Summed rather than picked as one figure, so each term above carries its own reason.
+  # Defined after its components because it depends on them.
+  #
+  # Only one situation truly needs this window: a tab's first connect, where a command
+  # issued during page boot reaches the server before the handshake has attached. That
+  # stream goes on to connect *successfully*, so nothing errors, the client's reconnect
+  # backoff never runs, and no retry replays the receipt. Undershooting there leaves the
+  # subscription unapplied until something unrelated breaks the stream or the user reloads,
+  # which for a short-lived tab may be never.
+  #
+  # Do NOT size this against the client's reconnect cadence (`MAX_RECONNECT_DELAY` and its
+  # backoff in sse.mjs). When a stream genuinely errors the client *is* retrying, and the
+  # receipt signed on the timeout path replays at the next handshake and attaches the
+  # binding anyway. Waiting long enough to catch that retry only withholds the command's
+  # response while a working recovery is already under way.
+  @attach_wait_ms @client_round_trip_ms + @redeem_wait_ms + @server_queueing_ms
+
+  # A single routed ask can be published before the connection has attached anywhere -
+  # into an announce topic nobody subscribes to yet - and a lost publish is never
+  # retried by PubSub. So a parked caller repeats the ask on this cadence until it is
+  # released or times out. Policy: fast enough that an attach at any point inside the
+  # window is heard within half a second, bounded to ~10 cheap publishes worst case.
+  @republish_interval_ms 500
+
+  @table_name :hologram_subscriptions
+
+  @doc """
+  Applies `adds` and `drops` deltas to the registry's bindings for
+  `instance_id`. Called after a same-page `command/3` returns, to fold the
+  command's subscription changes into the live binding set without
+  disturbing bindings the command didn't touch.
+
+  Idempotent:
+
+    * Re-adding an already-present key is a no-op; the existing binding's
+      `authorizing_user_id` is not retagged.
+
+    * Dropping a missing key is a no-op.
+
+  Returns `{add_keys, drop_keys}` of the actually-applied deltas, after
+  idempotence filtering, so the framework knows which adds need fresh
+  receipts signed and which drops to acknowledge to the client.
+
+  Emits zero-crossing `{:sub, channel}` / `{:unsub, channel}` messages to
+  the entry's `sse_pid`: a channel sees `:sub` only when it gains its first
+  cid-binding, and `:unsub` only when it loses its last. Adding or dropping
+  cids for an already-bound channel is silent.
+
+  Each added binding is tagged with `authorizing_user_id` (the authenticated
+  user_id at handler time, or `nil` for anonymous). The per-binding tag lets
+  later identity changes selectively drop bindings whose authorization no
+  longer holds.
+
+  When no entry exists at call time the caller is parked rather than answered.
+  A lookup miss has three causes with different correct responses: the
+  connection is attaching right now (a command issued during page boot races the
+  SSE handshake), it is live on another node of the cluster, or it is genuinely
+  gone (the connection died and was garbage-collected by the registry's `:DOWN`
+  handler). Answering immediately assumes the last and silently discards the
+  deltas in the other two.
+
+  So a parked caller is released by whichever of these resolves first:
+
+    * `attach_connection/5`, which applies the deltas against the entry it has
+      just created and replies with the real result. Ordering is therefore
+      correct by construction: the attach establishes the handshake baseline and
+      the parked deltas fold in on top of it, rather than the two racing.
+      Callers parked for the same instance are released in the order they were
+      issued.
+
+    * The node that holds the connection, which is asked over the instance's
+      announce topic, applies the deltas against its own registry and answers.
+      The ask is repeated on a short cadence while the caller stays parked,
+      since the first one can fire before the connection has attached anywhere -
+      into an announce topic with no subscriber yet. Repeats are harmless:
+      applying the same deltas again is a no-op, and a second answer finds no
+      waiter carrying its ref.
+
+  If no connection attaches within `attach_wait_ms/0`, no entry is created and
+  no zero-crossing messages are emitted, and the input `adds` and `drops` are
+  returned unchanged so the framework can still sign receipts and ship a
+  coherent response to the client. Receipts signed on that path stay valid and
+  reattach their bindings at the client's next handshake, and the unapplied
+  deltas are logged as a warning so the case is visible rather than silent.
+  """
+  @spec apply_deltas(String.t(), [{any, String.t()}], [{any, String.t()}], term | nil) ::
+          {[{any, String.t()}], [{any, String.t()}]}
+  def apply_deltas(instance_id, adds, drops, authorizing_user_id) do
+    message = {:apply_deltas, instance_id, adds, drops, authorizing_user_id}
+
+    # The server bounds this call on its own: a parked caller is released either by
+    # attach_connection/5 or by its own timer, so every path replies. A client-side
+    # timeout would be a second bound that has to track whatever wait `start_link/1`
+    # was given, and would cut the caller off early whenever the two drift.
+    # `GenServer.call/3` monitors the server regardless, so a dead registry still
+    # exits the caller immediately rather than hanging it.
+    GenServer.call(__MODULE__, message, :infinity)
+  end
+
+  @doc """
+  Attaches a fresh SSE connection to `instance_id`. The handshake endpoint
+  owns all signature / identity / tombstone verification ahead of this
+  call - `attach_connection/5` itself trusts the supplied bindings.
+
+  `validated_bindings` is a list of `{{channel, cid}, authorizing_user_id}`
+  pairs (map-compatible). The function monitors `sse_pid` so the entry is
+  cleaned up when the connection dies, and returns the deduped list of
+  channels in the resulting binding set so the caller can subscribe the SSE
+  process to PubSub topics.
+
+  Two paths:
+
+    * **No prior entry** (initial attach, or reconnect after the prior entry
+      was garbage-collected): create a fresh entry whose `bindings` field
+      equals exactly the supplied `validated_bindings`.
+
+    * **Prior entry exists** (newest-attach-wins): demonitor the prior
+      `sse_pid`, send it `{:close, :superseded}` for graceful shutdown, and
+      swap the entry to the new pid + monitor. The prior canonical binding
+      set (including each binding's `authorizing_user_id`) is preserved so
+      PubSub subs don't churn through zero-crossings during the swap; the
+      new client's `validated_bindings` is intentionally ignored in this
+      path because the live registry's state is the source of truth.
+  """
+  @spec attach_connection(String.t(), term | nil, term | nil, pid, [
+          {{any, String.t()}, term | nil}
+        ]) ::
+          [any]
+  def attach_connection(instance_id, session_id, user_id, sse_pid, validated_bindings) do
+    GenServer.call(
+      __MODULE__,
+      {:attach_connection, instance_id, session_id, user_id, sse_pid, validated_bindings}
+    )
+  end
+
+  @doc """
+  Returns how long `apply_deltas/4` waits for a connection to attach before
+  giving up and returning its deltas unapplied. A parked caller is released as
+  soon as one attaches, so the full window is only ever paid when none arrives.
+  """
+  @spec attach_wait_ms() :: pos_integer
+  def attach_wait_ms, do: @attach_wait_ms
+
+  @doc """
+  Returns the `bindings` map (`%{ {channel, cid} => authorizing_user_id | nil }`)
+  for the given `instance_id`, or `nil` if no entry exists. Reads ETS directly
+  to bypass the registry's GenServer mailbox.
+  """
+  @spec bindings_of(String.t()) :: %{{any, String.t()} => term | nil} | nil
+  def bindings_of(instance_id) do
+    case :ets.lookup(@table_name, instance_id) do
+      [{^instance_id, entry}] -> entry.bindings
+      [] -> nil
+    end
+  end
+
+  @doc """
+  Returns `{add_keys, drop_keys}` between the subscription keys a page declares
+  and the ones the client claims to hold: keys only the page declares, and keys
+  only the client holds.
+
+  Pure set arithmetic over the two given lists. Neither the registry's own
+  bindings nor any process state takes part, so the answer is the same on any
+  node.
+  """
+  @spec diff_sub_keys([{any, String.t()}], [{any, String.t()}]) ::
+          {[{any, String.t()}], [{any, String.t()}]}
+  def diff_sub_keys(new_sub_keys, client_claimed_sub_keys) do
+    new_keys_set = MapSet.new(new_sub_keys)
+    client_keys_set = MapSet.new(client_claimed_sub_keys)
+
+    add_keys =
+      new_keys_set
+      |> MapSet.difference(client_keys_set)
+      |> MapSet.to_list()
+
+    drop_keys =
+      client_keys_set
+      |> MapSet.difference(new_keys_set)
+      |> MapSet.to_list()
+
+    {add_keys, drop_keys}
+  end
+
+  @doc """
+  Drops every binding from the entry for `instance_id` whose
+  `authorizing_user_id` is non-nil and does not equal `new_user_id`.
+  Anonymous-authorized bindings (`authorizing_user_id == nil`) stay live -
+  the elevation rule means they apply equally to any subsequent identity.
+
+  Returns `{dropped_keys, zero_crossing_channels}`:
+
+    * `dropped_keys` is the list of `{channel, cid}` pairs that were removed.
+
+    * `zero_crossing_channels` is the list of channels whose last cid-binding
+      was dropped (i.e., the channel is no longer present in the resulting
+      binding set). Channels that still have surviving cid-bindings under
+      anonymous or matching-user authorization are not included.
+
+  When no entry exists for `instance_id`, returns `{[], []}`.
+  """
+  @spec drop_for_identity_change(String.t(), term | nil) ::
+          {[{any, String.t()}], [any]}
+  def drop_for_identity_change(instance_id, new_user_id) do
+    GenServer.call(__MODULE__, {:drop_for_identity_change, instance_id, new_user_id})
+  end
+
+  @doc """
+  Drops the given `keys` from the entry's `bindings` for `instance_id`.
+
+  Returns `{actually_dropped, zero_crossing_channels}`:
+
+    * `actually_dropped` is the subset of `keys` that were present in the
+      bindings before the call.
+
+    * `zero_crossing_channels` is the list of channels whose last cid-binding
+      was dropped.
+
+  Unlike `apply_deltas/4`, this function does *not* emit `{:unsub, channel}`
+  self-messages to the SSE process - the caller drives synchronous PubSub
+  unsubscribe based on the returned `zero_crossing_channels` to control
+  ordering against downstream notifications.
+
+  When no entry exists for `instance_id`, returns `{[], []}`.
+  """
+  @spec drop_keys(String.t(), [{any, String.t()}]) ::
+          {[{any, String.t()}], [any]}
+  def drop_keys(instance_id, keys) do
+    GenServer.call(__MODULE__, {:drop_keys, instance_id, keys})
+  end
+
+  @doc """
+  Returns the name of the ETS table that backs the registry.
+  """
+  @spec ets_table_name() :: atom
+  def ets_table_name, do: @table_name
+
+  @doc """
+  Returns `{session_id, user_id}` for the given `instance_id`, or `nil` if no
+  entry exists. Reads ETS directly to bypass the registry's GenServer mailbox.
+  """
+  @spec identity_of(String.t()) :: {term | nil, term | nil} | nil
+  def identity_of(instance_id) do
+    case :ets.lookup(@table_name, instance_id) do
+      [{^instance_id, entry}] -> {entry.session_id, entry.user_id}
+      [] -> nil
+    end
+  end
+
+  @doc """
+  Registers an SSE connection for the given `instance_id` by inserting an entry
+  into the ETS table. The registry monitors `sse_pid` so the entry can be
+  cleaned up when the pid goes down.
+
+  Inserted entry shape per `instance_id`:
+
+      %{
+        bindings:   %{ {channel, cid} => authorizing_user_id | nil },
+        session_id: term | nil,
+        sse_pid:    pid,
+        sse_ref:    reference,
+        user_id:    term | nil
+      }
+
+  `bindings` is initialized to `%{}` and populated later via `transition/4` /
+  `apply_deltas/4`. `session_id` and `user_id` are initialized to `nil` and
+  populated later via the identity-update helpers.
+  """
+  @spec register_connection(String.t(), pid) :: :ok
+  def register_connection(instance_id, sse_pid) do
+    GenServer.call(__MODULE__, {:register_connection, instance_id, sse_pid})
+  end
+
+  @doc """
+  Replaces the entire binding set for `instance_id` with the bindings derived
+  from `new_sub_keys`, each tagged with `authorizing_user_id`.
+
+  A page navigation declares the complete set rather than a delta, so unlike
+  `apply_deltas/4` every binding is retagged - including keys that survive the
+  replacement.
+
+  Emits zero-crossing `{:sub, channel}` / `{:unsub, channel}` messages to the
+  entry's `sse_pid`: a channel bound on only one side of the replacement is
+  announced, one bound on both is silent.
+
+  Returns `:ok`. When no entry exists nothing is written and no messages are
+  emitted, which is the correct reading of an initial page render - no
+  connection exists yet, and the receipts ride the page response into the
+  handshake.
+  """
+  @spec replace_bindings(String.t(), [{any, String.t()}], term | nil) :: :ok
+  def replace_bindings(instance_id, new_sub_keys, authorizing_user_id) do
+    GenServer.call(
+      __MODULE__,
+      {:replace_bindings, instance_id, new_sub_keys, authorizing_user_id}
+    )
+  end
+
+  @doc """
+  Starts the subscription registry process.
+
+  ## Options
+
+    * `:attach_wait_ms` - overrides how long `apply_deltas/4` parks a caller
+      whose instance has no entry yet. Defaults to `attach_wait_ms/0`.
+
+    * `:republish_interval_ms` - overrides the cadence on which a parked
+      caller's routed ask is repeated.
+  """
+  @spec start_link(keyword) :: GenServer.on_start()
+  def start_link(opts \\ []) do
+    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  @doc """
+  Updates the `session_id` and `user_id` fields of the entry for the given
+  `instance_id`. No-op when no entry exists.
+  """
+  @spec update_identity(String.t(), term | nil, term | nil) :: :ok
+  def update_identity(instance_id, session_id, user_id) do
+    GenServer.call(__MODULE__, {:update_identity, instance_id, session_id, user_id})
+  end
+
+  @impl GenServer
+  def init(opts) do
+    :ets.new(@table_name, [:set, :public, :named_table, read_concurrency: true])
+
+    attach_wait_ms = Keyword.get(opts, :attach_wait_ms, @attach_wait_ms)
+    republish_interval_ms = Keyword.get(opts, :republish_interval_ms, @republish_interval_ms)
+
+    # `refs` maps each monitor reference to its instance_id, so a :DOWN can find
+    # the entry to delete. `waiters` holds callers parked because their instance
+    # has no entry yet, keyed by instance_id.
+    {:ok,
+     %{
+       attach_wait_ms: attach_wait_ms,
+       refs: %{},
+       republish_interval_ms: republish_interval_ms,
+       waiters: %{}
+     }}
+  end
+
+  @impl GenServer
+  def handle_call({:apply_deltas, instance_id, adds, drops, authorizing_user_id}, from, state) do
+    case :ets.lookup(@table_name, instance_id) do
+      [{^instance_id, entry}] ->
+        reply = apply_deltas_to_entry(instance_id, entry, adds, drops, authorizing_user_id)
+
+        {:reply, reply, state}
+
+      # The connection may be attaching right now, live on another node, or gone. Park
+      # the caller and ask the cluster in the same breath - whichever resolves first
+      # releases it.
+      [] ->
+        {new_state, waiter_ref} =
+          park_caller(state, instance_id, from, adds, drops, authorizing_user_id)
+
+        publish_remote_request(instance_id, adds, drops, authorizing_user_id, waiter_ref)
+
+        {:noreply, new_state}
+    end
+  end
+
+  @impl GenServer
+  def handle_call(
+        {:attach_connection, instance_id, session_id, user_id, sse_pid, validated_bindings},
+        _from,
+        state
+      ) do
+    {bindings, refs_without_prior} =
+      case :ets.lookup(@table_name, instance_id) do
+        [] ->
+          {Map.new(validated_bindings), state.refs}
+
+        [{^instance_id, %{sse_pid: prior_pid, sse_ref: prior_ref, bindings: prior_bindings}}] ->
+          Process.demonitor(prior_ref, [:flush])
+          send(prior_pid, {:close, :superseded})
+          {prior_bindings, Map.delete(state.refs, prior_ref)}
+      end
+
+    sse_ref = Process.monitor(sse_pid)
+
+    entry = %{
+      bindings: bindings,
+      session_id: session_id,
+      sse_pid: sse_pid,
+      sse_ref: sse_ref,
+      user_id: user_id
+    }
+
+    :ets.insert(@table_name, {instance_id, entry})
+
+    validated_channels =
+      bindings
+      |> channels_of()
+      |> MapSet.to_list()
+
+    new_refs = Map.put(refs_without_prior, sse_ref, instance_id)
+
+    # Drained after the insert so the parked deltas fold into the entry this attach
+    # just established. Channels they newly bind reach the SSE process as ordinary
+    # zero-crossing messages, so they need no place in validated_channels.
+    new_waiters = drain_waiters(state.waiters, instance_id)
+
+    {:reply, validated_channels, %{state | refs: new_refs, waiters: new_waiters}}
+  end
+
+  @impl GenServer
+  def handle_call({:drop_for_identity_change, instance_id, new_user_id}, _from, state) do
+    reply =
+      case :ets.lookup(@table_name, instance_id) do
+        [{^instance_id, entry}] ->
+          prior_bindings = entry.bindings
+
+          dropped_keys =
+            prior_bindings
+            |> Enum.filter(fn {_key, authorizing_user_id} ->
+              authorizing_user_id != nil and authorizing_user_id != new_user_id
+            end)
+            |> Enum.map(fn {key, _user_id} -> key end)
+
+          new_bindings = Map.drop(prior_bindings, dropped_keys)
+
+          :ets.insert(@table_name, {instance_id, %{entry | bindings: new_bindings}})
+
+          prior_channels = channels_of(prior_bindings)
+          new_channels = channels_of(new_bindings)
+
+          {dropped_keys, unsub_channels(prior_channels, new_channels)}
+
+        [] ->
+          {[], []}
+      end
+
+    {:reply, reply, state}
+  end
+
+  @impl GenServer
+  def handle_call({:drop_keys, instance_id, keys}, _from, state) do
+    reply =
+      case :ets.lookup(@table_name, instance_id) do
+        [{^instance_id, entry}] ->
+          prior_bindings = entry.bindings
+
+          actually_dropped = Enum.filter(keys, &Map.has_key?(prior_bindings, &1))
+          new_bindings = Map.drop(prior_bindings, actually_dropped)
+
+          :ets.insert(@table_name, {instance_id, %{entry | bindings: new_bindings}})
+
+          prior_channels = channels_of(prior_bindings)
+          new_channels = channels_of(new_bindings)
+
+          {actually_dropped, unsub_channels(prior_channels, new_channels)}
+
+        [] ->
+          {[], []}
+      end
+
+    {:reply, reply, state}
+  end
+
+  @impl GenServer
+  def handle_call({:register_connection, instance_id, sse_pid}, _from, state) do
+    sse_ref = Process.monitor(sse_pid)
+
+    entry = %{
+      bindings: %{},
+      session_id: nil,
+      sse_pid: sse_pid,
+      sse_ref: sse_ref,
+      user_id: nil
+    }
+
+    :ets.insert(@table_name, {instance_id, entry})
+
+    new_refs = Map.put(state.refs, sse_ref, instance_id)
+
+    {:reply, :ok, %{state | refs: new_refs}}
+  end
+
+  @impl GenServer
+  def handle_call(
+        {:replace_bindings, instance_id, new_sub_keys, authorizing_user_id},
+        _from,
+        state
+      ) do
+    case :ets.lookup(@table_name, instance_id) do
+      [{^instance_id, entry}] ->
+        new_bindings = Map.new(new_sub_keys, fn key -> {key, authorizing_user_id} end)
+
+        :ets.insert(@table_name, {instance_id, %{entry | bindings: new_bindings}})
+
+        prior_channels = channels_of(entry.bindings)
+        new_channels = channels_of(new_bindings)
+
+        emit_zero_crossings(entry.sse_pid, prior_channels, new_channels)
+
+      [] ->
+        :noop
+    end
+
+    {:reply, :ok, state}
+  end
+
+  @impl GenServer
+  def handle_call({:update_identity, instance_id, session_id, user_id}, _from, state) do
+    case :ets.lookup(@table_name, instance_id) do
+      [{^instance_id, entry}] ->
+        new_entry = %{entry | session_id: session_id, user_id: user_id}
+        :ets.insert(@table_name, {instance_id, new_entry})
+
+      [] ->
+        :noop
+    end
+
+    {:reply, :ok, state}
+  end
+
+  @impl GenServer
+  def handle_info({:apply_deltas_remote_reply, instance_id, waiter_ref, result}, state) do
+    case pop_waiter(state.waiters, instance_id, waiter_ref) do
+      # The waiter is already gone - a local attach drained it, or it timed out - so the
+      # holder's answer arrived too late to be anyone's. Nothing to do.
+      {nil, _waiters} ->
+        {:noreply, state}
+
+      {{from, _ref, _adds, _drops, _user_id}, new_waiters} ->
+        GenServer.reply(from, result)
+
+        {:noreply, %{state | waiters: new_waiters}}
+    end
+  end
+
+  @impl GenServer
+  def handle_info({:apply_deltas_republish, instance_id, waiter_ref}, state) do
+    case find_waiter(state.waiters, instance_id, waiter_ref) do
+      # Released or timed out in the meantime - the cadence simply stops.
+      nil ->
+        {:noreply, state}
+
+      {_from, _ref, adds, drops, authorizing_user_id} ->
+        publish_remote_request(instance_id, adds, drops, authorizing_user_id, waiter_ref)
+
+        republish_message = {:apply_deltas_republish, instance_id, waiter_ref}
+        Process.send_after(self(), republish_message, state.republish_interval_ms)
+
+        {:noreply, state}
+    end
+  end
+
+  @impl GenServer
+  def handle_info({:apply_deltas_timeout, instance_id, timer_ref}, state) do
+    case pop_waiter(state.waiters, instance_id, timer_ref) do
+      {nil, _waiters} ->
+        {:noreply, state}
+
+      {{from, _ref, adds, drops, _user_id}, new_waiters} ->
+        log_unapplied_deltas(instance_id, adds, drops, state.attach_wait_ms)
+        GenServer.reply(from, {adds, drops})
+
+        {:noreply, %{state | waiters: new_waiters}}
+    end
+  end
+
+  @impl GenServer
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+    case Map.pop(state.refs, ref) do
+      {nil, _refs} ->
+        {:noreply, state}
+
+      {instance_id, new_refs} ->
+        :ets.delete(@table_name, instance_id)
+        {:noreply, %{state | refs: new_refs}}
+    end
+  end
+
+  defp apply_deltas_to_entry(instance_id, entry, adds, drops, authorizing_user_id) do
+    prior_bindings = entry.bindings
+
+    actually_added = Enum.reject(adds, &Map.has_key?(prior_bindings, &1))
+    actually_dropped = Enum.filter(drops, &Map.has_key?(prior_bindings, &1))
+
+    new_bindings =
+      prior_bindings
+      |> Map.drop(actually_dropped)
+      |> Map.merge(Map.new(actually_added, fn key -> {key, authorizing_user_id} end))
+
+    :ets.insert(@table_name, {instance_id, %{entry | bindings: new_bindings}})
+
+    prior_channels = channels_of(prior_bindings)
+    new_channels = channels_of(new_bindings)
+
+    emit_zero_crossings(entry.sse_pid, prior_channels, new_channels)
+
+    {actually_added, actually_dropped}
+  end
+
+  defp channels_of(bindings) do
+    MapSet.new(bindings, fn {{channel, _cid}, _user_id} -> channel end)
+  end
+
+  defp drain_waiters(waiters, instance_id) do
+    {waiter_list, remaining_waiters} = Map.pop(waiters, instance_id, [])
+
+    waiter_list
+    |> Enum.reverse()
+    |> Enum.each(fn {from, _timer_ref, adds, drops, authorizing_user_id} ->
+      # Re-read per waiter so each set of deltas folds into the result of the last.
+      [{^instance_id, entry}] = :ets.lookup(@table_name, instance_id)
+      reply = apply_deltas_to_entry(instance_id, entry, adds, drops, authorizing_user_id)
+
+      GenServer.reply(from, reply)
+    end)
+
+    remaining_waiters
+  end
+
+  defp emit_zero_crossings(sse_pid, prior_channels, new_channels) do
+    new_channels
+    |> MapSet.difference(prior_channels)
+    |> Enum.each(fn channel -> send(sse_pid, {:sub, channel}) end)
+
+    prior_channels
+    |> MapSet.difference(new_channels)
+    |> Enum.each(fn channel -> send(sse_pid, {:unsub, channel}) end)
+  end
+
+  defp find_waiter(waiters, instance_id, waiter_ref) do
+    waiters
+    |> Map.get(instance_id, [])
+    |> Enum.find(fn {_from, ref, _adds, _drops, _user_id} -> ref == waiter_ref end)
+  end
+
+  defp log_unapplied_deltas(instance_id, adds, drops, wait_ms) do
+    message = """
+    No connection attached for instance #{inspect(instance_id)} within #{wait_ms}ms, \
+    so its subscription deltas were not applied \
+    (adds: #{inspect(adds)}, drops: #{inspect(drops)}). \
+    Receipts already issued for these bindings stay valid and reattach the subscriptions \
+    at the client's next handshake.\
+    """
+
+    Logger.warning(message)
+  end
+
+  defp park_caller(state, instance_id, from, adds, drops, authorizing_user_id) do
+    timer_ref = make_ref()
+    timeout_message = {:apply_deltas_timeout, instance_id, timer_ref}
+    republish_message = {:apply_deltas_republish, instance_id, timer_ref}
+
+    Process.send_after(self(), timeout_message, state.attach_wait_ms)
+    Process.send_after(self(), republish_message, state.republish_interval_ms)
+
+    # The timer is left to fire even when the waiter is released early. Its handler
+    # matches on timer_ref, finds nothing, and returns - cheaper than tracking a
+    # second reference solely to cancel it.
+    waiter = {from, timer_ref, adds, drops, authorizing_user_id}
+
+    # Prepended for O(1) insert. The drain reverses, so deltas parked for the same
+    # instance apply in the order they were issued.
+    waiters = Map.update(state.waiters, instance_id, [waiter], &[waiter | &1])
+
+    # The ref goes back to the caller so it can be sent to the connection's holder as a
+    # correlation id, letting a reply address exactly this waiter.
+    {%{state | waiters: waiters}, timer_ref}
+  end
+
+  # Removes the waiter carrying `waiter_ref` and returns it alongside the remaining
+  # waiters, or `{nil, waiters}` when none carries it. Refs are unique per park, so at
+  # most one can match. Shared by the two ways a parked caller is released, which differ
+  # only in what they answer with.
+  defp pop_waiter(waiters, instance_id, waiter_ref) do
+    waiter_list = Map.get(waiters, instance_id, [])
+
+    {matching, remaining} =
+      Enum.split_with(waiter_list, fn {_from, ref, _adds, _drops, _user_id} ->
+        ref == waiter_ref
+      end)
+
+    case matching do
+      [] ->
+        {nil, waiters}
+
+      [waiter] ->
+        remaining_waiters =
+          case remaining do
+            [] -> Map.delete(waiters, instance_id)
+            _other -> Map.put(waiters, instance_id, remaining)
+          end
+
+        {waiter, remaining_waiters}
+    end
+  end
+
+  defp publish_remote_request(instance_id, adds, drops, authorizing_user_id, waiter_ref) do
+    topic = Realtime.instance_announce_topic(instance_id)
+
+    message =
+      {:apply_deltas_remote, instance_id, adds, drops, authorizing_user_id, self(), waiter_ref}
+
+    Phoenix.PubSub.broadcast(Hologram.PubSub, topic, message)
+  end
+
+  defp unsub_channels(prior_channels, new_channels) do
+    prior_channels
+    |> MapSet.difference(new_channels)
+    |> Enum.to_list()
+  end
+end

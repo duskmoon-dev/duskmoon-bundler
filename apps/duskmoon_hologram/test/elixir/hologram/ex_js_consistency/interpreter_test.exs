@@ -1,0 +1,378 @@
+defmodule Hologram.ExJsConsistency.InterpreterTest do
+  @moduledoc """
+  IMPORTANT!
+  Each Elixir consistency test has a related unit JavaScript or Elixir feature test.
+  Always update both together.
+  """
+  use Hologram.Test.BasicCase, async: true
+  alias Hologram.Test.Fixtures.ExJsConsistency.Interpreter.Module1
+
+  @moduletag :consistency
+
+  @env %Macro.Env{
+    aliases: [{:"Elixir.Module1", Hologram.Test.Fixtures.ExJsConsistency.Interpreter.Module1}]
+  }
+
+  @spec my_local_fun(integer, integer) :: integer
+  def my_local_fun(x, y) do
+    x + y * x
+  end
+
+  # IMPORTANT!
+  # Keep consistent with feature tests in test/features/test/function_calls/anonymous_function_test.exs
+  # TODO: reimplement to be consistent with feature tests in test/features/test/function_calls/anonymous_function_test.exs
+  describe "call anonymous function" do
+    test "arity is invalid, called with no args" do
+      fun =
+        wrap_term(fn
+          1 -> :expr_1
+          2 -> :expr_2
+        end)
+
+      expected_msg = build_bad_arity_error_msg(fun, [])
+
+      assert_error BadArityError, expected_msg, fn -> fun.() end
+    end
+
+    test "arity is invalid, called with a single arg" do
+      fun =
+        wrap_term(fn
+          1, 2 -> :expr_1
+          3, 4 -> :expr_2
+        end)
+
+      expected_msg = build_bad_arity_error_msg(fun, [9])
+
+      assert_error BadArityError, expected_msg, fn -> fun.(9) end
+    end
+
+    test "arity is invalid, called with multiple args" do
+      fun =
+        wrap_term(fn
+          1 -> :expr_1
+          2 -> :expr_2
+        end)
+
+      expected_msg = build_bad_arity_error_msg(fun, [9, 8])
+
+      assert_error BadArityError, expected_msg, fn -> fun.(9, 8) end
+    end
+
+    # credo:disable-for-lines:15 Credo.Check.Readability.MaxLineLength
+    # TODO: fix the failing test (except the error message inconsistency):
+    # TODO: client error message for this case is inconsistent with server error message
+    # test "no matching clause" do
+    #   fun = fn
+    #     1 -> :expr_1
+    #     2 -> :expr_2
+    #   end
+
+    #   assert_error FunctionClauseError,
+    #                build_function_clause_error_msg(
+    #                  ~s(anonymous fn/1 in Hologram.ExJsConsistency.InterpreterTest."test call anonymous function arity is valid, but args don't match the pattern in any of the clauses"/1),
+    #                  [9]
+    #                ),
+    #                fn -> fun.(9) end
+    # end
+  end
+
+  # IMPORTANT!
+  # Keep consistent with feature tests in test/features/test/function_calls/function_capture_test.exs
+  # TODO: implement
+  # describe "call function capture"
+
+  # IMPORTANT!
+  # Keep consistent with feature tests in:
+  # * test/features/test/function_calls/local_function_test.exs
+  # * test/features/test/function_calls/remote_function_test.exs
+  # TODO: split into "call local function" and "call remote function"
+  # TODO: reimplement to be consistent with aforementioned feature tests
+  describe "call named function" do
+    test "remote private function call" do
+      expected_msg =
+        build_undefined_function_error_msg({Module1, :my_private_fun, 2}, [
+          {:my_public_fun, 1},
+          {:my_public_fun, 2}
+        ])
+
+      assert_error UndefinedFunctionError,
+                   expected_msg,
+                   fn ->
+                     # Code.eval_string/3 used here, because this code wouldn't compile.
+                     Code.eval_string("Module1.my_private_fun(1, 2)", [], @env)
+                   end
+    end
+
+    test "module is available, but function is undefined" do
+      expected_msg = build_undefined_function_error_msg({Module1, :undefined_function, 2})
+
+      assert_error UndefinedFunctionError,
+                   expected_msg,
+                   fn ->
+                     # Code.eval_string/3 used here, because this code wouldn't compile.
+                     Code.eval_string("Module1.undefined_function(1, 2)", [], @env)
+                   end
+    end
+
+    test "module is not available" do
+      expected_msg = build_undefined_function_error_msg({MyModule, :my_fun, 2}, [], false)
+
+      assert_error UndefinedFunctionError,
+                   expected_msg,
+                   fn ->
+                     # Code.eval_string/3 used here, because this code wouldn't compile.
+                     Code.eval_string("MyModule.my_fun(1, 2)", [], @env)
+                   end
+    end
+
+    test "function with the same name and different arity is defined" do
+      expected_msg =
+        build_undefined_function_error_msg({Module1, :my_public_fun, 3}, [
+          {:my_public_fun, 1},
+          {:my_public_fun, 2}
+        ])
+
+      assert_error UndefinedFunctionError,
+                   expected_msg,
+                   fn ->
+                     # Code.eval_string/3 used here, because this code wouldn't compile.
+                     Code.eval_string("Module1.my_public_fun(1, 2, 3)", [], @env)
+                   end
+    end
+
+    test "function arity is correct, but args don't match the pattern" do
+      expected_msg =
+        build_function_clause_error_msg(
+          "Hologram.Test.Fixtures.ExJsConsistency.Interpreter.Module1.my_public_fun/2",
+          [1, 3],
+          ["def my_public_fun(x, -2-)"]
+        )
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        Code.eval_string("Module1.my_public_fun(1, 3)", [], @env)
+      end
+    end
+  end
+
+  describe "inspect" do
+    test "anonymous function, non-capture" do
+      anon_fun = fn x, y -> x + y * x end
+      info = Function.info(anon_fun)
+
+      expected =
+        "#Function<#{info[:new_index]}.#{info[:uniq]}/2 in " <>
+          ~s(Hologram.ExJsConsistency.InterpreterTest."test inspect anonymous function, non-capture"/1>)
+
+      assert Kernel.inspect(anon_fun, []) == expected
+    end
+
+    # Case not possible on the server - every fun there is defined inside a function definition.
+    # test "anonymous function, non-capture, defined outside of a function definition"
+
+    test "anonymous function, local function capture" do
+      info = Function.info(&my_local_fun/2)
+
+      expected =
+        "#Function<#{info[:new_index]}.#{info[:uniq]}/2 in " <>
+          "Hologram.ExJsConsistency.InterpreterTest.my_local_fun>"
+
+      assert Kernel.inspect(&my_local_fun/2, []) == expected
+    end
+
+    test "anonymous function, remote function capture" do
+      assert Kernel.inspect(&DateTime.now/2) == "&DateTime.now/2"
+    end
+
+    test "atom, true" do
+      assert Kernel.inspect(true, []) == "true"
+    end
+
+    test "atom, false" do
+      assert Kernel.inspect(false, []) == "false"
+    end
+
+    test "atom, nil" do
+      assert Kernel.inspect(nil, []) == "nil"
+    end
+
+    test "atom, module alias" do
+      assert Kernel.inspect(Aaa.Bbb, []) == "Aaa.Bbb"
+    end
+
+    test "atom, module alias naming Elixir itself" do
+      assert Kernel.inspect(Elixir.Elixir.Aaa, []) == "Elixir.Elixir.Aaa"
+    end
+
+    test "atom, non-boolean and non-nil" do
+      assert Kernel.inspect(:abc, []) == ":abc"
+    end
+
+    test "atom, name that isn't a valid identifier" do
+      assert Kernel.inspect(:"aaa bbb", []) == ~s':"aaa bbb"'
+    end
+
+    # The client classifies operators through the transpiled Macro.inspect_atom/3, which the
+    # JavaScript unit tests stand in for without the operator tables - this is what pins them.
+    test "atom, operator" do
+      assert Kernel.inspect(:<>, []) == ":<>"
+    end
+
+    test "bitstring, text, empty" do
+      assert Kernel.inspect("", []) == ~s'""'
+    end
+
+    test "bitstring, text, ASCII" do
+      assert Kernel.inspect("abc", []) == ~s'"abc"'
+    end
+
+    test "bitstring, text, Unicode" do
+      assert Kernel.inspect("全息图", []) == ~s'"全息图"'
+    end
+
+    test "bitstring, text, characters shown as escape sequences" do
+      assert Kernel.inspect("\a\b\t\n\v\f\r\e\d", []) == ~S'"\a\b\t\n\v\f\r\e\d"'
+    end
+
+    test "bitstring, text, quote and backslash" do
+      assert Kernel.inspect("\"\\", []) == ~S'"\"\\"'
+    end
+
+    test "bitstring, text, invisible characters shown as unicode escapes" do
+      assert Kernel.inspect("\u00A0\u200B\uFEFF", []) == ~S'"\u00A0\u200B\uFEFF"'
+    end
+
+    test "bitstring, text, an interpolation opener is escaped" do
+      assert Kernel.inspect("\#{", []) == ~S'"\#{"'
+    end
+
+    test "bitstring, text, a hash that doesn't open an interpolation is not escaped" do
+      assert Kernel.inspect("a#b", []) == ~s'"a#b"'
+    end
+
+    test "bitstring, text, non-printable" do
+      assert Kernel.inspect("a\x01b") == "<<97, 1, 98>>"
+    end
+
+    # TODO: bitstring / bytes (see client-side Interpreter.inspect() tests)
+
+    test "float, integer-representable" do
+      assert Kernel.inspect(123.0, []) == "123.0"
+    end
+
+    test "float, not integer-representable" do
+      assert Kernel.inspect(123.45, []) == "123.45"
+    end
+
+    test "integer" do
+      assert Kernel.inspect(123, []) == "123"
+    end
+
+    test "list, empty" do
+      assert Kernel.inspect([], []) == "[]"
+    end
+
+    test "list, proper" do
+      assert Kernel.inspect([1, 2, 3], []) == "[1, 2, 3]"
+    end
+
+    test "list, improper" do
+      assert Kernel.inspect([1, 2 | 3], []) == "[1, 2 | 3]"
+    end
+
+    test "list, charlist, printable characters" do
+      assert Kernel.inspect([97, 98, 99], []) == ~s'~c"abc"'
+    end
+
+    test "list, charlist, characters shown as escape sequences" do
+      assert Kernel.inspect([7, 8, 9, 10, 11, 12, 13, 27], []) == ~S'~c"\a\b\t\n\v\f\r\e"'
+    end
+
+    test "list, charlist, quote and backslash" do
+      assert Kernel.inspect([34, 92], []) == ~S'~c"\"\\"'
+    end
+
+    test "list, charlist, an interpolation opener is escaped" do
+      assert Kernel.inspect([35, 123], []) == ~S'~c"\#{"'
+    end
+
+    test "list, charlist, a hash that doesn't open an interpolation is not escaped" do
+      assert Kernel.inspect([97, 35, 98], []) == ~S'~c"a#b"'
+    end
+
+    test "list, charlist, a non-printable character keeps the list form" do
+      assert Kernel.inspect([104, 105, 0], []) == "[104, 105, 0]"
+    end
+
+    test "list, charlist, a codepoint above ASCII keeps the list form" do
+      assert Kernel.inspect([104, 105, 233], []) == "[104, 105, 233]"
+    end
+
+    test "list, charlist, an improper list keeps the list form" do
+      assert Kernel.inspect([104 | 105], []) == "[104 | 105]"
+    end
+
+    # TODO: lits / keyword list (see client-side Interpreter.inspect() tests)
+
+    test "map, empty" do
+      assert Kernel.inspect(%{}, []) == "%{}"
+    end
+
+    test "map, with atom keys" do
+      assert Kernel.inspect(%{a: 1, b: "xyz"}, []) in [
+               ~s'%{a: 1, b: "xyz"}',
+               ~s'%{b: "xyz", a: 1}'
+             ]
+    end
+
+    test "map, with an alias key" do
+      assert Kernel.inspect(%{Aaa.Bbb => 1}, []) == "%{Aaa.Bbb => 1}"
+    end
+
+    test "map, with a key that isn't a valid identifier" do
+      assert Kernel.inspect(%{"aaa bbb": 1}, []) == ~s'%{"aaa bbb": 1}'
+    end
+
+    test "map, with non-atom keys" do
+      assert Kernel.inspect(%{9 => "xyz", "abc" => 2.3}, []) == ~s'%{9 => "xyz", "abc" => 2.3}'
+    end
+
+    # TODO: maps / sort_maps opt (see client-side Interpreter.inspect() tests)
+
+    # TODO: maps / structs
+
+    test "PID" do
+      result =
+        "0.11.222"
+        |> pid()
+        |> Kernel.inspect()
+
+      assert result == "#PID<0.11.222>"
+    end
+
+    test "port" do
+      result =
+        "0.11"
+        |> port()
+        |> Kernel.inspect()
+
+      assert result == "#Port<0.11>"
+    end
+
+    test "reference" do
+      result =
+        "0.1.2.3"
+        |> ref()
+        |> Kernel.inspect()
+
+      assert result == "#Reference<0.1.2.3>"
+    end
+
+    test "tuple, empty" do
+      assert Kernel.inspect({}, []) == "{}"
+    end
+
+    test "tuple, non-empty" do
+      assert Kernel.inspect({1, 2, 3}, []) == "{1, 2, 3}"
+    end
+  end
+end

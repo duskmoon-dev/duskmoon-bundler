@@ -1,0 +1,17 @@
+{
+  "dependencies": {
+    "lodash": "^4",
+    "snabbdom-to-html": "^7"
+  },
+  "devDependencies": {
+    "chai": "^6",
+    "jsdom": "27.0.0",
+    "jsdom-global": "^3",
+    "mocha": "^12",
+    "sinon": "^22"
+  },
+  "scripts": {
+    "test": "bun --bun run mocha ../test/javascript/*.mjs ../test/javascript/*/*.mjs ../test/javascript/*/*/*.mjs ../test/javascript/*/*/*/*.mjs --color --require jsdom-global/register",
+    "test-file": "bun --bun run mocha --color --require jsdom-global/register"
+  }
+}

@@ -1,0 +1,3216 @@
+"use strict";
+
+import Bitstring from "../bitstring.mjs";
+import Erlang_Maps from "../erlang/maps.mjs";
+import Erlang_Os from "../erlang/os.mjs";
+import ERTS from "../erts.mjs";
+import HologramBoxedError from "../errors/boxed_error.mjs";
+import HologramInterpreterError from "../errors/interpreter_error.mjs";
+import Interpreter from "../interpreter.mjs";
+import Type from "../type.mjs";
+import Utils from "../utils.mjs";
+
+// IMPORTANT!
+// If the given ported Erlang function calls other Erlang functions, then list such dependencies in the "Deps" comment (see :erlang./=/2 for an example).
+// Also, in such case add respective call graph edges in Hologram.CallGraph.list_runtime_mfas/1.
+
+/*
+MFAs for sorting:
+[
+  {:erlang, :*, 2},
+  {:erlang, :+, 1},
+  {:erlang, :+, 2},
+  {:erlang, :++, 2},
+  {:erlang, :-, 1},
+  {:erlang, :-, 2},
+  {:erlang, :--, 2},
+  {:erlang, :/, 2},
+  {:erlang, :"/=", 2},
+  {:erlang, :<, 2},
+  {:erlang, :"=/=", 2},
+  {:erlang, :"=:=", 2},
+  {:erlang, :"=<", 2},
+  {:erlang, :==, 2},
+  {:erlang, :>, 2},
+  {:erlang, :>=, 2}
+]
+|> Enum.sort()
+*/
+
+const Erlang = {
+  // Start _is_valid_time_unit/1
+  "_is_valid_time_unit/1": (unit) => {
+    const validAtomUnits = [
+      "nanosecond",
+      "nano_seconds",
+      "microsecond",
+      "micro_seconds",
+      "millisecond",
+      "milli_seconds",
+      "second",
+      "seconds",
+      "native",
+      "perf_counter",
+    ];
+
+    return (
+      (Type.isAtom(unit) && validAtomUnits.includes(unit.value)) ||
+      (Type.isInteger(unit) && unit.value > 0n)
+    );
+  },
+  // End _is_valid_time_unit/1
+  // Deps: []
+
+  // Start */2
+  "*/2": (left, right) => {
+    if (!Type.isNumber(left) || !Type.isNumber(right)) {
+      Interpreter.raiseBifError("badarith", "erlang", "*", [left, right]);
+    }
+
+    const [type, leftValue, rightValue] = Type.maybeNormalizeNumberTerms(left, right);
+
+    const result = leftValue.value * rightValue.value;
+
+    return type === "float" ? Type.float(result) : Type.integer(result);
+  },
+  // End */2
+  // Deps: []
+
+  // Start +/2
+  "+/2": (left, right) => {
+    if (!Type.isNumber(left) || !Type.isNumber(right)) {
+      Interpreter.raiseBifError("badarith", "erlang", "+", [left, right]);
+    }
+
+    const [type, leftValue, rightValue] = Type.maybeNormalizeNumberTerms(left, right);
+
+    const result = leftValue.value + rightValue.value;
+
+    return type === "float" ? Type.float(result) : Type.integer(result);
+  },
+  // End +/2
+  // Deps: []
+
+  // Start +/1
+  "+/1": (number) => {
+    if (!Type.isNumber(number)) {
+      Interpreter.raiseBifError("badarith", "erlang", "+", [number]);
+    }
+
+    return number;
+  },
+  // End +/1
+  // Deps: []
+
+  // Start ++/2
+  "++/2": (left, right) => {
+    if (!Type.isProperList(left)) {
+      Interpreter.raiseBifError("badarg", "erlang", "++", [left, right]);
+    }
+
+    const data = left.data.concat(Type.isList(right) ? right.data : [right]);
+
+    return Type.isProperList(right) ? Type.list(data) : Type.improperList(data);
+  },
+  // End ++/2
+  // Deps: []
+
+  // Start -/1
+  "-/1": (number) => {
+    if (!Type.isNumber(number)) {
+      Interpreter.raiseBifError("badarith", "erlang", "-", [number]);
+    }
+
+    return number.value == 0 ? number : Type[number.type](-number.value);
+  },
+  // End -/1
+  // Deps: []
+
+  // Start -/2
+  "-/2": (left, right) => {
+    if (!Type.isNumber(left) || !Type.isNumber(right)) {
+      Interpreter.raiseBifError("badarith", "erlang", "-", [left, right]);
+    }
+
+    const [type, leftValue, rightValue] = Type.maybeNormalizeNumberTerms(left, right);
+
+    const result = leftValue.value - rightValue.value;
+
+    return type === "float" ? Type.float(result) : Type.integer(result);
+  },
+  // End -/2
+  // Deps: []
+
+  // TODO: optimize
+  // This implementation is slow, i.e. O(m * n),
+  // where m = Enum.count(left), n = Enum.count(right).
+  // Start --/2
+  "--/2": (left, right) => {
+    if (!Type.isProperList(left) || !Type.isProperList(right)) {
+      Interpreter.raiseBifError("badarg", "erlang", "--", [left, right]);
+    }
+
+    const result = Utils.shallowCloneArray(left.data);
+
+    for (const rightElem of right.data) {
+      for (let i = 0; i < result.length; ++i) {
+        if (Interpreter.isStrictlyEqual(rightElem, result[i])) {
+          result.splice(i, 1);
+          break;
+        }
+      }
+    }
+
+    return Type.list(result);
+  },
+  // End --/2
+  // Deps: []
+
+  // Start //2
+  "//2": (left, right) => {
+    if (!Type.isNumber(left) || !Type.isNumber(right) || right.value == 0) {
+      Interpreter.raiseBifError("badarith", "erlang", "/", [left, right]);
+    }
+
+    return Type.float(Number(left.value) / Number(right.value));
+  },
+  // End //2
+  // Deps: []
+
+  // Start /=/2
+  "/=/2": (left, right) => {
+    return Type.boolean(!Interpreter.isEqual(left, right));
+  },
+  // End /=/2
+  // Deps: []
+
+  // Start </2
+  "</2": (left, right) => {
+    return Type.boolean(Interpreter.compareTerms(left, right) === -1);
+  },
+  // End </2
+  // Deps: []
+
+  // Start =/=/2
+  "=/=/2": (left, right) => {
+    return Type.boolean(!Interpreter.isStrictlyEqual(left, right));
+  },
+  // End =/=/2
+  // Deps: []
+
+  // Start =:=/2
+  "=:=/2": (left, right) => {
+    return Type.boolean(Interpreter.isStrictlyEqual(left, right));
+  },
+  // End =:=/2
+  // Deps: []
+
+  // Start =</2
+  "=</2": (left, right) => {
+    Interpreter.assertStructuralComparisonSupportedType(left);
+    Interpreter.assertStructuralComparisonSupportedType(right);
+
+    const result =
+      Type.isTrue(Erlang["==/2"](left, right)) || Type.isTrue(Erlang["</2"](left, right));
+
+    return Type.boolean(result);
+  },
+  // End =</2
+  // Deps: [:erlang.</2, :erlang.==/2]
+
+  // Start ==/2
+  "==/2": (left, right) => {
+    return Type.boolean(Interpreter.isEqual(left, right));
+  },
+  // End ==/2
+  // Deps: []
+
+  // Start >/2
+  ">/2": (left, right) => {
+    return Type.boolean(Interpreter.compareTerms(left, right) === 1);
+  },
+  // End >/2
+  // Deps: []
+
+  // Start >=/2
+  ">=/2": (left, right) => {
+    Interpreter.assertStructuralComparisonSupportedType(left);
+    Interpreter.assertStructuralComparisonSupportedType(right);
+
+    const result =
+      Type.isTrue(Erlang["==/2"](left, right)) || Type.isTrue(Erlang[">/2"](left, right));
+
+    return Type.boolean(result);
+  },
+  // End >=/2
+  // Deps: [:erlang.==/2, :erlang.>/2]
+
+  // Start abs/1
+  "abs/1": (number) => {
+    if (Type.isFloat(number)) {
+      return Type.float(Math.abs(number.value));
+    } else if (Type.isInteger(number)) {
+      const value = number.value;
+      return Type.integer(value < 0n ? -value : value);
+    }
+
+    Interpreter.raiseBifError("badarg", "erlang", "abs", [number]);
+  },
+  // End abs/1
+  // Deps: []
+
+  // Start append_element/2
+  "append_element/2": (tuple, term) => {
+    if (!Type.isTuple(tuple)) {
+      Interpreter.raiseBifError("badarg", "erlang", "append_element", [tuple, term]);
+    }
+
+    return Type.tuple([...tuple.data, term]);
+  },
+  // End append_element/2
+  // Deps: []
+
+  // Start apply/2
+  "apply/2": (fun, args) => {
+    if (!Type.isAnonymousFunction(fun)) {
+      Interpreter.raiseBadFunctionError(fun);
+    }
+
+    if (!Type.isProperList(args)) {
+      Interpreter.raiseBifError("badarg", "erlang", "apply", [fun, args]);
+    }
+
+    return Interpreter.callAnonymousFunction(fun, args.data);
+  },
+  // End apply/2
+  // Deps: []
+
+  // :erlang.apply/3 calls are encoded as Interpreter.callNamedFuntion() calls.
+  // See: https://github.com/bartblast/hologram/blob/4e832c722af7b0c1a0cca1c8c08287b999ecae78/lib/hologram/compiler/encoder.ex#L559
+  // Start apply/3
+  "apply/3": (module, fun, args) => {
+    if (!Type.isAtom(module) || !Type.isAtom(fun) || !Type.isProperList(args)) {
+      Interpreter.raiseBifError("badarg", "erlang", "apply", [module, fun, args]);
+    }
+
+    const context = Interpreter.buildContext({module: Type.nil()});
+
+    return Interpreter.callNamedFunction(module, fun, args, context);
+  },
+  // End apply/3
+  // Deps: []
+
+  // Start atom_to_binary/1
+  "atom_to_binary/1": (atom) => {
+    try {
+      return Erlang["atom_to_binary/2"](atom, Type.atom("utf8"));
+    } catch (error) {
+      if (error.struct) {
+        // Re-raise with this function's own identity - the BEAM reports the
+        // called function's frame, not the delegate's.
+        Interpreter.raiseBifError("badarg", "erlang", "atom_to_binary", [atom]);
+      }
+
+      throw error;
+    }
+  },
+  // End atom_to_binary/1
+  // Deps: [:erlang.atom_to_binary/2]
+
+  // Start atom_to_binary/2
+  "atom_to_binary/2": (atom, encoding) => {
+    if (!Type.isAtom(atom)) {
+      Interpreter.raiseBifError("badarg", "erlang", "atom_to_binary", [atom, encoding]);
+    }
+
+    // TODO: implement encoding argument validation
+
+    // TODO: implement other encodings for encoding param
+    if (!Interpreter.isStrictlyEqual(encoding, Type.atom("utf8"))) {
+      throw new HologramInterpreterError(
+        "encodings other than utf8 are not yet implemented in Hologram",
+      );
+    }
+
+    return Type.bitstring(atom.value);
+  },
+  // End atom_to_binary/2
+  // Deps: []
+
+  // Start atom_to_list/1
+  "atom_to_list/1": (atom) => {
+    if (!Type.isAtom(atom)) {
+      Interpreter.raiseBifError("badarg", "erlang", "atom_to_list", [atom]);
+    }
+
+    return Bitstring.toCodepoints(Type.bitstring(atom.value));
+  },
+  // End atom_to_list/1
+  // Deps: []
+
+  // Start band/2
+  "band/2": (integer1, integer2) => {
+    if (!Type.isInteger(integer1) || !Type.isInteger(integer2)) {
+      Interpreter.raiseBifError("badarith", "erlang", "band", [integer1, integer2]);
+    }
+
+    return Type.integer(integer1.value & integer2.value);
+  },
+  // End band/2
+  // Deps: []
+
+  // Start binary_part/3
+  "binary_part/3": (subject, start, length) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "binary_part", [subject, start, length]);
+    };
+
+    if (!Type.isBinary(subject)) {
+      raiseBadarg();
+    }
+
+    if (!Type.isInteger(start)) {
+      raiseBadarg();
+    }
+
+    if (!Type.isInteger(length)) {
+      raiseBadarg();
+    }
+
+    const totalBytes = Bitstring.calculateBitCount(subject) / 8;
+
+    if (start.value < 0n || start.value > totalBytes) {
+      raiseBadarg();
+    }
+
+    const isReverse = length.value < 0n;
+
+    const outOfRangeForward = !isReverse && start.value + length.value > totalBytes;
+
+    const outOfRangeReverse = isReverse && start.value + length.value < 0n;
+
+    if (outOfRangeForward || outOfRangeReverse) {
+      raiseBadarg();
+    }
+
+    const actualStart = isReverse ? start.value + length.value : start.value;
+    const actualLength = isReverse ? -length.value : length.value;
+
+    return Bitstring.takeChunk(subject, Number(actualStart) * 8, Number(actualLength) * 8);
+  },
+  // End binary_part/3
+  // Deps: []
+
+  // Start binary_to_atom/1
+  "binary_to_atom/1": (binary) => {
+    try {
+      return Erlang["binary_to_atom/2"](binary, Type.atom("utf8"));
+    } catch (error) {
+      if (error.struct) {
+        // Re-raise with this function's own identity - the BEAM reports the
+        // called function's frame, not the delegate's.
+        Interpreter.raiseBifError("badarg", "erlang", "binary_to_atom", [binary]);
+      }
+
+      throw error;
+    }
+  },
+  // End binary_to_atom/1
+  // Deps: [:erlang.binary_to_atom/2]
+
+  // Start binary_to_atom/2
+  "binary_to_atom/2": (binary, encoding) => {
+    if (!Type.isBinary(binary)) {
+      Interpreter.raiseBifError("badarg", "erlang", "binary_to_atom", [binary, encoding]);
+    }
+
+    // TODO: implement encoding argument validation
+
+    // TODO: implement other encodings for encoding param
+    if (!Interpreter.isStrictlyEqual(encoding, Type.atom("utf8"))) {
+      throw new HologramInterpreterError(
+        "encodings other than utf8 are not yet implemented in Hologram",
+      );
+    }
+
+    return Type.atom(Bitstring.toText(binary));
+  },
+  // End binary_to_atom/2
+  // Deps: []
+
+  // Note: due to practical reasons the behaviour of the client version is inconsistent with the server version.
+  // The client version works exactly the same as binary_to_atom/1.
+  // Start binary_to_existing_atom/1
+  "binary_to_existing_atom/1": (binary) => {
+    try {
+      return Erlang["binary_to_atom/1"](binary);
+    } catch (error) {
+      if (error.struct) {
+        // Re-raise with this function's own identity - the BEAM reports the
+        // called function's frame, not the delegate's.
+        Interpreter.raiseBifError("badarg", "erlang", "binary_to_existing_atom", [binary]);
+      }
+
+      throw error;
+    }
+  },
+  // End binary_to_existing_atom/1
+  // Deps: [:erlang.binary_to_atom/1]
+
+  // Note: due to practical reasons the behaviour of the client version is inconsistent with the server version.
+  // The client version works exactly the same as binary_to_atom/2.
+  // Start binary_to_existing_atom/2
+  "binary_to_existing_atom/2": (binary, encoding) => {
+    try {
+      return Erlang["binary_to_atom/2"](binary, encoding);
+    } catch (error) {
+      if (error.struct) {
+        // Re-raise with this function's own identity - the BEAM reports the
+        // called function's frame, not the delegate's.
+        Interpreter.raiseBifError("badarg", "erlang", "binary_to_existing_atom", [
+          binary,
+          encoding,
+        ]);
+      }
+
+      throw error;
+    }
+  },
+  // End binary_to_existing_atom/2
+  // Deps: [:erlang.binary_to_atom/2]
+
+  // Start binary_to_float/1
+  "binary_to_float/1": (binary) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "binary_to_float", [binary]);
+    };
+
+    if (!Type.isBinary(binary)) {
+      raiseBadarg();
+    }
+
+    const text = Bitstring.toText(binary);
+
+    const floatRegex = /^[+-]?\d+\.\d+([eE][+-]?\d+)?$/;
+
+    if (!floatRegex.test(text)) {
+      raiseBadarg();
+    }
+
+    return Type.float(Number(text));
+  },
+  // End binary_to_float/1
+  // Deps: []
+
+  // Start binary_to_integer/1
+  "binary_to_integer/1": (binary) => {
+    try {
+      return Erlang["binary_to_integer/2"](binary, Type.integer(10));
+    } catch (error) {
+      if (error.struct) {
+        // Re-raise with this function's own identity - the BEAM reports the
+        // called function's frame, not the delegate's.
+        Interpreter.raiseBifError("badarg", "erlang", "binary_to_integer", [binary]);
+      }
+
+      throw error;
+    }
+  },
+  // End binary_to_integer/1
+  // Deps: [:erlang.binary_to_integer/2]
+
+  // Start binary_to_integer/2
+  "binary_to_integer/2": (binary, base) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "binary_to_integer", [binary, base]);
+    };
+
+    if (!Type.isBinary(binary)) {
+      raiseBadarg();
+    }
+
+    if (!Type.isInteger(base) || base.value < 2n || base.value > 36n) {
+      raiseBadarg();
+    }
+
+    const text = Bitstring.toText(binary);
+    const baseNum = Number(base.value);
+
+    let validPattern;
+
+    // Validate the text representation based on the base
+    if (baseNum <= 10) {
+      const maxDigit = String(baseNum - 1);
+      validPattern = new RegExp(`^[+-]?[0-${maxDigit}]+$`);
+    } else {
+      const maxLetter = String.fromCharCode(65 + baseNum - 11); // A=10, B=11, etc.
+      validPattern = new RegExp(`^[+-]?[0-9A-${maxLetter}]+$`, "i");
+    }
+
+    if (!validPattern.test(text)) {
+      raiseBadarg();
+    }
+
+    // For base 10, use BigInt directly to avoid precision loss
+    // For other bases, use parseInt which handles the base conversion
+    const result = baseNum === 10 ? BigInt(text) : BigInt(parseInt(text, baseNum));
+
+    return Type.integer(result);
+  },
+  // End binary_to_integer/2
+  // Deps: []
+
+  // Start binary_to_list/1
+  "binary_to_list/1": (binary) => {
+    if (!Type.isBinary(binary)) {
+      Interpreter.raiseBifError("badarg", "erlang", "binary_to_list", [binary]);
+    }
+
+    Bitstring.maybeSetBytesFromText(binary);
+
+    return Type.list(Array.from(binary.bytes).map((b) => Type.integer(b)));
+  },
+  // End binary_to_list/1
+  // Deps: []
+
+  // Start binary_to_term/1
+  "binary_to_term/1": async (binary) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "binary_to_term", [binary]);
+    };
+
+    if (!Type.isBinary(binary)) {
+      raiseBadarg();
+    }
+
+    // ETF version byte (precedes every top-level term).
+    const VERSION_MAGIC = 131;
+
+    // ETF tag constants
+    const NEW_FLOAT_EXT = 70;
+    const BIT_BINARY_EXT = 77;
+    const COMPRESSED = 80;
+    const NEW_PID_EXT = 88;
+    const NEW_PORT_EXT = 89;
+    const NEWER_REFERENCE_EXT = 90;
+    const SMALL_INTEGER_EXT = 97;
+    const INTEGER_EXT = 98;
+    const FLOAT_EXT = 99;
+    const ATOM_EXT = 100;
+    const REFERENCE_EXT = 101;
+    const PORT_EXT = 102;
+    const PID_EXT = 103;
+    const SMALL_TUPLE_EXT = 104;
+    const LARGE_TUPLE_EXT = 105;
+    const NIL_EXT = 106;
+    const STRING_EXT = 107;
+    const LIST_EXT = 108;
+    const BINARY_EXT = 109;
+    const SMALL_BIG_EXT = 110;
+    const LARGE_BIG_EXT = 111;
+    const EXPORT_EXT = 113;
+    const NEW_REFERENCE_EXT = 114;
+    const SMALL_ATOM_EXT = 115;
+    const MAP_EXT = 116;
+    const ATOM_UTF8_EXT = 118;
+    const SMALL_ATOM_UTF8_EXT = 119;
+    const V4_PORT_EXT = 120;
+
+    const raiseInvalid = raiseBadarg;
+
+    // Decompresses zlib-compressed data using native DecompressionStream API.
+    // Returns a Promise that resolves to a Uint8Array; throws on failure.
+    const zlibInflate = async (compressedData) => {
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(compressedData);
+          controller.close();
+        },
+      });
+
+      const decompressedStream = stream.pipeThrough(new DecompressionStream("deflate"));
+
+      const reader = decompressedStream.getReader();
+      const chunks = [];
+
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+
+      // TODO: binary_to_term/2 with :used must report the exact number of
+      // bytes consumed by the zlib stream, which DecompressionStream does
+      // not expose. binary_to_term/1 does not care - it accepts trailing
+      // bytes and decodes only the first term. Options when we get there:
+      //   1. Parse the zlib header/trailer ourselves to find the stream end.
+      //   2. Switch to a sync zlib (e.g. pako) that returns bytes consumed.
+      //   3. Drop COMPRESSED support and reject tag 80.
+      return Utils.concatUint8Arrays(chunks);
+    };
+
+    // Sync recursive dispatcher. The COMPRESSED tag is intentionally NOT
+    // handled here - OTP only allows it at the top level (immediately after
+    // the version byte), so a nested tag 80 falls to the default case and
+    // raises. Keeping this function sync avoids a Promise allocation per
+    // recursive call, which matters for deeply nested / large terms.
+    //
+    // TODO: NEW_FUN_EXT (tag 112, anonymous fun encoding) is not implemented
+    // and currently falls to the default case, raising. OTP accepts it; we
+    // diverge. Filling the gap requires a JS shape for "remote anon fun
+    // reference" plus a decision on how Hologram represents funs encoded by
+    // a foreign BEAM (the decoded fun cannot actually be invoked without
+    // the matching module + Uniq). FUN_EXT (tag 117) is intentionally
+    // rejected forever - OTP itself stopped decoding it in OTP 23.
+    const decodeTerm = (dataView, bytes, offset) => {
+      if (offset >= bytes.length) raiseInvalid();
+
+      const tag = dataView.getUint8(offset);
+
+      switch (tag) {
+        case SMALL_INTEGER_EXT:
+          return decodeSmallInteger(dataView, offset + 1);
+
+        case INTEGER_EXT:
+          return decodeInteger(dataView, offset + 1);
+
+        case SMALL_BIG_EXT:
+          return decodeSmallBig(dataView, bytes, offset + 1);
+
+        case LARGE_BIG_EXT:
+          return decodeLargeBig(dataView, bytes, offset + 1);
+
+        case ATOM_EXT:
+          return decodeAtom(dataView, bytes, offset + 1, false);
+
+        case SMALL_ATOM_EXT:
+          return decodeSmallAtom(dataView, bytes, offset + 1, false);
+
+        case ATOM_UTF8_EXT:
+          return decodeAtom(dataView, bytes, offset + 1, true);
+
+        case SMALL_ATOM_UTF8_EXT:
+          return decodeSmallAtom(dataView, bytes, offset + 1, true);
+
+        case BINARY_EXT:
+          return decodeBinary(dataView, bytes, offset + 1);
+
+        case SMALL_TUPLE_EXT:
+          return decodeSmallTuple(dataView, bytes, offset + 1);
+
+        case LARGE_TUPLE_EXT:
+          return decodeLargeTuple(dataView, bytes, offset + 1);
+
+        case NIL_EXT:
+          return {term: Type.list(), newOffset: offset + 1};
+
+        case STRING_EXT:
+          return decodeString(dataView, bytes, offset + 1);
+
+        case LIST_EXT:
+          return decodeList(dataView, bytes, offset + 1);
+
+        case MAP_EXT:
+          return decodeMap(dataView, bytes, offset + 1);
+
+        case NEW_FLOAT_EXT:
+          return decodeNewFloat(dataView, offset + 1);
+
+        case FLOAT_EXT:
+          return decodeFloatExt(dataView, bytes, offset + 1);
+
+        case BIT_BINARY_EXT:
+          return decodeBitBinary(dataView, bytes, offset + 1);
+
+        case REFERENCE_EXT:
+          return decodeReference(dataView, bytes, offset + 1);
+
+        case NEW_REFERENCE_EXT:
+          return decodeNewReference(dataView, bytes, offset + 1);
+
+        case NEWER_REFERENCE_EXT:
+          return decodeNewerReference(dataView, bytes, offset + 1);
+
+        case PID_EXT:
+          return decodePid(dataView, bytes, offset + 1);
+
+        case NEW_PID_EXT:
+          return decodeNewPid(dataView, bytes, offset + 1);
+
+        case PORT_EXT:
+          return decodePort(dataView, bytes, offset + 1);
+
+        case NEW_PORT_EXT:
+          return decodeNewPort(dataView, bytes, offset + 1);
+
+        case V4_PORT_EXT:
+          return decodeV4Port(dataView, bytes, offset + 1);
+
+        case EXPORT_EXT:
+          return decodeExport(dataView, bytes, offset + 1);
+
+        default:
+          raiseInvalid();
+      }
+    };
+
+    const decodeSmallInteger = (dataView, offset) => {
+      const value = dataView.getUint8(offset);
+
+      return {
+        term: Type.integer(value),
+        newOffset: offset + 1,
+      };
+    };
+
+    const decodeInteger = (dataView, offset) => {
+      const value = dataView.getInt32(offset);
+
+      return {
+        term: Type.integer(value),
+        newOffset: offset + 4,
+      };
+    };
+
+    // OTP treats any non-zero Sign byte as negative (not just 1) - so e.g.
+    // sign=2, sign=255 all decode to a negative value. The spec says only 0
+    // and 1 are emitted, but the decoder is lenient.
+    const decodeSmallBig = (dataView, bytes, offset) => {
+      const n = dataView.getUint8(offset);
+      const sign = dataView.getUint8(offset + 1);
+
+      if (offset + 2 + n > bytes.length) raiseInvalid();
+
+      // Wire format is little-endian; walk high-to-low so each iteration is
+      // a single (value << 8n) | byte instead of allocating BigInt(i * 8).
+      let value = 0n;
+      for (let i = n - 1; i >= 0; i--) {
+        value = (value << 8n) | BigInt(bytes[offset + 2 + i]);
+      }
+
+      if (sign !== 0) {
+        value = -value;
+      }
+
+      return {
+        term: Type.integer(value),
+        newOffset: offset + 2 + n,
+      };
+    };
+
+    const decodeLargeBig = (dataView, bytes, offset) => {
+      const n = dataView.getUint32(offset);
+      const sign = dataView.getUint8(offset + 4);
+
+      if (offset + 5 + n > bytes.length) raiseInvalid();
+
+      let value = 0n;
+      for (let i = n - 1; i >= 0; i--) {
+        value = (value << 8n) | BigInt(bytes[offset + 5 + i]);
+      }
+
+      if (sign !== 0) {
+        value = -value;
+      }
+
+      return {
+        term: Type.integer(value),
+        newOffset: offset + 5 + n,
+      };
+    };
+
+    // Decodes atom name bytes. Latin-1 (the deprecated ATOM_EXT/SMALL_ATOM_EXT
+    // encoding) maps each byte 0-255 to the same Unicode code point, which is
+    // why we use String.fromCharCode in a loop rather than TextDecoder("latin1"):
+    // per the WHATWG Encoding Standard, "latin1" is a label for windows-1252,
+    // and would mis-decode 0x80-0x9F (e.g. 0x80 -> U+20AC). The loop also
+    // avoids String.fromCharCode(...atomBytes), whose argument count is engine-
+    // limited (~65k); Erlang atoms are capped at 255 bytes today, but ATOM_EXT's
+    // wire-format length field is uint16, so we stay defensive.
+    // For UTF-8, invalid bytes throw TypeError from TextDecoder({fatal:true});
+    // we convert that to ArgumentError here so the outer wrapper does not have
+    // to catch TypeError generically.
+    const decodeAtomBytes = (atomBytes, isUtf8) => {
+      if (!isUtf8) {
+        let result = "";
+        for (let i = 0; i < atomBytes.length; i++) {
+          result += String.fromCharCode(atomBytes[i]);
+        }
+        return result;
+      }
+      try {
+        return ERTS.utf8Decoder.decode(atomBytes);
+      } catch {
+        raiseInvalid();
+      }
+    };
+
+    const decodeAtom = (dataView, bytes, offset, isUtf8) => {
+      const length = dataView.getUint16(offset);
+
+      // OTP caps atom names at 255 characters. For Latin-1 (ATOM_EXT) one
+      // byte == one char, so we can early-reject without slicing. The
+      // SMALL_* variants use a uint8 length field and are naturally bounded.
+      if (!isUtf8 && length > 255) raiseInvalid();
+
+      if (offset + 2 + length > bytes.length) raiseInvalid();
+
+      const atomBytes = bytes.slice(offset + 2, offset + 2 + length);
+      const atomString = decodeAtomBytes(atomBytes, isUtf8);
+
+      // For UTF-8 (ATOM_UTF8_EXT) the byte length can be up to 1020 (255 * 4),
+      // but the code-point count must be <= 255. for...of iterates by code
+      // points (not UTF-16 units), so emoji etc. count as one. Short-circuit
+      // at 256 to avoid walking the whole string when we already know it
+      // overflows the cap.
+      if (isUtf8) {
+        let codepoints = 0;
+        for (const _ of atomString) {
+          if (++codepoints > 255) raiseInvalid();
+        }
+      }
+
+      return {
+        term: Type.atom(atomString),
+        newOffset: offset + 2 + length,
+      };
+    };
+
+    const decodeSmallAtom = (dataView, bytes, offset, isUtf8) => {
+      const length = dataView.getUint8(offset);
+      if (offset + 1 + length > bytes.length) raiseInvalid();
+
+      const atomBytes = bytes.slice(offset + 1, offset + 1 + length);
+      const atomString = decodeAtomBytes(atomBytes, isUtf8);
+
+      return {
+        term: Type.atom(atomString),
+        newOffset: offset + 1 + length,
+      };
+    };
+
+    const decodeBinary = (dataView, bytes, offset) => {
+      const length = dataView.getUint32(offset);
+
+      if (offset + 4 + length > bytes.length) raiseInvalid();
+
+      // Uint8Array.slice already returns a fresh Uint8Array, so passing it
+      // straight into Bitstring.fromBytes avoids the extra copy that
+      // `new Uint8Array(binaryBytes)` would do.
+      const binaryBytes = bytes.slice(offset + 4, offset + 4 + length);
+
+      return {
+        term: Bitstring.fromBytes(binaryBytes),
+        newOffset: offset + 4 + length,
+      };
+    };
+
+    const decodeSmallTuple = (dataView, bytes, offset) => {
+      const arity = dataView.getUint8(offset);
+      const elements = [];
+      let currentOffset = offset + 1;
+
+      for (let i = 0; i < arity; i++) {
+        const result = decodeTerm(dataView, bytes, currentOffset);
+        elements.push(result.term);
+        currentOffset = result.newOffset;
+      }
+
+      return {
+        term: Type.tuple(elements),
+        newOffset: currentOffset,
+      };
+    };
+
+    const decodeLargeTuple = (dataView, bytes, offset) => {
+      const arity = dataView.getUint32(offset);
+      const elements = [];
+      let currentOffset = offset + 4;
+
+      for (let i = 0; i < arity; i++) {
+        const result = decodeTerm(dataView, bytes, currentOffset);
+        elements.push(result.term);
+        currentOffset = result.newOffset;
+      }
+
+      return {
+        term: Type.tuple(elements),
+        newOffset: currentOffset,
+      };
+    };
+
+    const decodeString = (dataView, bytes, offset) => {
+      const length = dataView.getUint16(offset);
+      if (offset + 2 + length > bytes.length) raiseInvalid();
+      const elements = [];
+
+      for (let i = 0; i < length; i++) {
+        const byte = bytes[offset + 2 + i];
+        elements.push(Type.integer(byte));
+      }
+
+      return {
+        term: Type.list(elements),
+        newOffset: offset + 2 + length,
+      };
+    };
+
+    const decodeList = (dataView, bytes, offset) => {
+      const length = dataView.getUint32(offset);
+      const elements = [];
+      let currentOffset = offset + 4;
+
+      for (let i = 0; i < length; i++) {
+        const result = decodeTerm(dataView, bytes, currentOffset);
+        elements.push(result.term);
+        currentOffset = result.newOffset;
+      }
+
+      const tailResult = decodeTerm(dataView, bytes, currentOffset);
+      currentOffset = tailResult.newOffset;
+
+      // LIST_EXT with length=0 collapses to its tail. OTP accepts this and
+      // returns the tail term as-is (e.g. <<131,108,0,0,0,0,97,1>> decodes
+      // to the integer 1). Without this short-circuit, a non-list tail would
+      // hit Type.improperList([tail]) below and crash with
+      // HologramInterpreterError ("improper list must have at least 2 items").
+      if (length === 0) {
+        return {term: tailResult.term, newOffset: currentOffset};
+      }
+
+      // If tail is a list, merge it to preserve proper list semantics
+      if (Type.isList(tailResult.term)) {
+        const merged = elements.concat(tailResult.term.data);
+
+        return Type.isProperList(tailResult.term)
+          ? {term: Type.list(merged), newOffset: currentOffset}
+          : {term: Type.improperList(merged), newOffset: currentOffset};
+      }
+
+      elements.push(tailResult.term);
+
+      return {
+        term: Type.improperList(elements),
+        newOffset: currentOffset,
+      };
+    };
+
+    const decodeMap = (dataView, bytes, offset) => {
+      const arity = dataView.getUint32(offset);
+      const entries = [];
+      const seenKeys = new Set();
+      let currentOffset = offset + 4;
+
+      for (let i = 0; i < arity; i++) {
+        const keyResult = decodeTerm(dataView, bytes, currentOffset);
+        const valueResult = decodeTerm(dataView, bytes, keyResult.newOffset);
+
+        // Spec: MAP_EXT keys must be unique. OTP raises badarg on duplicates;
+        // without this check we'd silently apply Type.map's last-write-wins
+        // semantics and diverge from OTP.
+        const encodedKey = Type.encodeMapKey(keyResult.term);
+        if (seenKeys.has(encodedKey)) raiseInvalid();
+        seenKeys.add(encodedKey);
+
+        entries.push([keyResult.term, valueResult.term]);
+        currentOffset = valueResult.newOffset;
+      }
+
+      return {
+        term: Type.map(entries),
+        newOffset: currentOffset,
+      };
+    };
+
+    const decodeNewFloat = (dataView, offset) => {
+      const value = dataView.getFloat64(offset);
+
+      // OTP rejects non-finite floats (NaN, +Inf, -Inf): Erlang floats must
+      // be finite. Without this check, hand-crafted IEEE 754 bit patterns
+      // would produce a Type.float(NaN) / Type.float(Infinity) and diverge.
+      if (!Number.isFinite(value)) raiseInvalid();
+
+      return {
+        term: Type.float(value),
+        newOffset: offset + 8,
+      };
+    };
+
+    const decodeFloatExt = (dataView, bytes, offset) => {
+      // FLOAT_EXT: 31-byte null-terminated string (deprecated format)
+      if (offset + 31 > bytes.length) raiseInvalid();
+
+      const floatBytes = bytes.slice(offset, offset + 31);
+
+      // oxlint-disable-next-line no-control-regex -- Erlang escaping must recognize control characters.
+      const floatString = String.fromCharCode(...floatBytes).replace(/\0.*/, "");
+
+      const value = parseFloat(floatString);
+
+      // !isFinite covers NaN and +/-Infinity. parseFloat returns NaN for
+      // unparseable strings ("nan", "inf") and Infinity for "Infinity";
+      // OTP rejects all of them.
+      if (!Number.isFinite(value)) raiseInvalid();
+
+      return {
+        term: Type.float(value),
+        newOffset: offset + 31,
+      };
+    };
+
+    const decodeBitBinary = (dataView, bytes, offset) => {
+      const length = dataView.getUint32(offset);
+      const bits = dataView.getUint8(offset + 4);
+
+      // Reject BIT_BINARY_EXT with Length=0 (no data byte for trailing bits
+      // to attach to) or with Bits outside 1..8.
+      // Note: OTP also rejects all of these except the specific Length=0,
+      // Bits=0 pattern, which crashes the VM with a giant binary alloc
+      // (real OTP bug). We deliberately reject that case cleanly here.
+      if (length === 0 || bits < 1 || bits > 8) raiseInvalid();
+
+      if (offset + 5 + length > bytes.length) raiseInvalid();
+
+      // bytes.slice already returns a fresh Uint8Array; no need to copy
+      // again via `new Uint8Array(...)`.
+      const binaryBytes = bytes.slice(offset + 5, offset + 5 + length);
+      const bitstring = Bitstring.fromBytes(binaryBytes);
+
+      if (bits < 8) {
+        bitstring.leftoverBitCount = bits;
+      }
+
+      return {
+        term: bitstring,
+        newOffset: offset + 5 + length,
+      };
+    };
+
+    const decodeReferenceWithOptions = (dataView, bytes, offset, options) => {
+      let currentOffset = offset;
+      let idWordCount = 1; // Default for REFERENCE_EXT
+
+      if (options.hasLengthPrefix) {
+        idWordCount = dataView.getUint16(currentOffset);
+        currentOffset += 2;
+
+        // OTP caps both NEW_REFERENCE_EXT and NEWER_REFERENCE_EXT at 5 ID
+        // words regardless of what the wire format permits (uint16). Without
+        // this check a Len of e.g. 65535 would attempt a 256KB read - caught
+        // by the outer wrapper as RangeError, but we lose the early-exit and
+        // diverge from OTP for moderately oversized values like Len=6.
+        if (idWordCount > 5) raiseInvalid();
+      }
+
+      const nodeResult = decodeTerm(dataView, bytes, currentOffset);
+      currentOffset = nodeResult.newOffset;
+
+      // For REFERENCE_EXT: read ID words first, then creation
+      // For NEW/NEWER_REFERENCE_EXT: read creation first, then ID words
+      let creation, idWords;
+
+      if (options.hasLengthPrefix) {
+        creation =
+          options.creationSize === 4
+            ? dataView.getUint32(currentOffset)
+            : dataView.getUint8(currentOffset);
+
+        currentOffset += options.creationSize;
+
+        idWords = [];
+        for (let i = 0; i < idWordCount; i++) {
+          idWords.push(dataView.getUint32(currentOffset));
+          currentOffset += 4;
+        }
+      } else {
+        idWords = [];
+        for (let i = 0; i < idWordCount; i++) {
+          idWords.push(dataView.getUint32(currentOffset));
+          currentOffset += 4;
+        }
+
+        creation = dataView.getUint8(currentOffset);
+        currentOffset += 1;
+      }
+
+      return {
+        term: Type.reference(nodeResult.term, creation, idWords),
+        newOffset: currentOffset,
+      };
+    };
+
+    const decodeReference = (dataView, bytes, offset) => {
+      return decodeReferenceWithOptions(dataView, bytes, offset, {
+        hasLengthPrefix: false,
+        creationSize: 1,
+      });
+    };
+
+    const decodeNewReference = (dataView, bytes, offset) => {
+      return decodeReferenceWithOptions(dataView, bytes, offset, {
+        hasLengthPrefix: true,
+        creationSize: 1,
+      });
+    };
+
+    const decodeNewerReference = (dataView, bytes, offset) => {
+      return decodeReferenceWithOptions(dataView, bytes, offset, {
+        hasLengthPrefix: true,
+        creationSize: 4,
+      });
+    };
+
+    // The ETF spec describes "only N bits significant" for several fields
+    // (PID_EXT id 15 bits, serial 13 bits; PORT_EXT / NEW_PORT_EXT id 28 bits;
+    // PID_EXT / PORT_EXT creation 2 bits; NEW_PORT_EXT creation == 0 is
+    // "reserved"). Empirically OTP does not validate any of these - it accepts
+    // the full 32-bit / 64-bit values as written and accepts creation == 0 -
+    // so we deliberately do not validate either. Adding such checks would
+    // diverge from OTP rather than match it.
+
+    const decodePid = (dataView, bytes, offset) => {
+      let currentOffset = offset;
+
+      const nodeResult = decodeTerm(dataView, bytes, currentOffset);
+      currentOffset = nodeResult.newOffset;
+
+      // Read ID (4 bytes), Serial (4 bytes), Creation (1 byte)
+      const id = dataView.getUint32(currentOffset);
+      currentOffset += 4;
+
+      const serial = dataView.getUint32(currentOffset);
+      currentOffset += 4;
+
+      const creation = dataView.getUint8(currentOffset);
+      currentOffset += 1;
+
+      return {
+        term: Type.pid(nodeResult.term, [id, serial, creation]),
+        newOffset: currentOffset,
+      };
+    };
+
+    const decodeNewPid = (dataView, bytes, offset) => {
+      let currentOffset = offset;
+
+      const nodeResult = decodeTerm(dataView, bytes, currentOffset);
+      currentOffset = nodeResult.newOffset;
+
+      // Read ID (4 bytes), Serial (4 bytes), Creation (4 bytes)
+      const id = dataView.getUint32(currentOffset);
+      currentOffset += 4;
+
+      const serial = dataView.getUint32(currentOffset);
+      currentOffset += 4;
+
+      const creation = dataView.getUint32(currentOffset);
+      currentOffset += 4;
+
+      return {
+        term: Type.pid(nodeResult.term, [id, serial, creation]),
+        newOffset: currentOffset,
+      };
+    };
+
+    const decodePort = (dataView, bytes, offset) => {
+      let currentOffset = offset;
+
+      const nodeResult = decodeTerm(dataView, bytes, currentOffset);
+      currentOffset = nodeResult.newOffset;
+
+      // Read ID (4 bytes), Creation (1 byte)
+      const id = dataView.getUint32(currentOffset);
+      currentOffset += 4;
+
+      const creation = dataView.getUint8(currentOffset);
+      currentOffset += 1;
+
+      return {
+        term: Type.port(nodeResult.term, [id, creation]),
+        newOffset: currentOffset,
+      };
+    };
+
+    const decodeNewPort = (dataView, bytes, offset) => {
+      let currentOffset = offset;
+
+      const nodeResult = decodeTerm(dataView, bytes, currentOffset);
+      currentOffset = nodeResult.newOffset;
+
+      // Read ID (4 bytes), Creation (4 bytes)
+      const id = dataView.getUint32(currentOffset);
+      currentOffset += 4;
+
+      const creation = dataView.getUint32(currentOffset);
+      currentOffset += 4;
+
+      return {
+        term: Type.port(nodeResult.term, [id, creation]),
+        newOffset: currentOffset,
+      };
+    };
+
+    const decodeV4Port = (dataView, bytes, offset) => {
+      let currentOffset = offset;
+
+      const nodeResult = decodeTerm(dataView, bytes, currentOffset);
+      currentOffset = nodeResult.newOffset;
+
+      // Read ID (8 bytes as BigUint64), Creation (4 bytes)
+      const id = dataView.getBigUint64(currentOffset);
+      currentOffset += 8;
+
+      const creation = dataView.getUint32(currentOffset);
+      currentOffset += 4;
+
+      return {
+        term: Type.port(nodeResult.term, [id, creation]),
+        newOffset: currentOffset,
+      };
+    };
+
+    const decodeExport = (dataView, bytes, offset) => {
+      let currentOffset = offset;
+
+      const moduleResult = decodeTerm(dataView, bytes, currentOffset);
+      currentOffset = moduleResult.newOffset;
+
+      const functionResult = decodeTerm(dataView, bytes, currentOffset);
+      currentOffset = functionResult.newOffset;
+
+      const arityResult = decodeTerm(dataView, bytes, currentOffset);
+      currentOffset = arityResult.newOffset;
+
+      // Spec: Module and Function must be atoms, Arity must be an integer.
+      // OTP raises badarg when any component has the wrong shape; without
+      // this check we'd reach .value on the wrong term and either throw
+      // (relabelled by the outer wrapper) or build a malformed function.
+      if (
+        !Type.isAtom(moduleResult.term) ||
+        !Type.isAtom(functionResult.term) ||
+        !Type.isInteger(arityResult.term)
+      ) {
+        raiseInvalid();
+      }
+
+      const context = Interpreter.buildContext();
+
+      const arity = Number(arityResult.term.value);
+
+      return {
+        term: Type.functionCapture(
+          moduleResult.term.value,
+          functionResult.term.value,
+          arity,
+          [],
+          context,
+        ),
+        newOffset: currentOffset,
+      };
+    };
+
+    try {
+      Bitstring.maybeSetBytesFromText(binary);
+
+      const bytes = binary.bytes;
+
+      const dataView = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+      if (dataView.getUint8(0) !== VERSION_MAGIC) raiseInvalid();
+
+      // COMPRESSED is only valid immediately after the version byte. OTP
+      // rejects nested COMPRESSED tags, so handling it here (rather than as
+      // a case in decodeTerm's switch) keeps the recursive decoder sync.
+      // Format: 80 | UncompressedSize (uint32 BE) | zlib-compressed payload.
+      if (dataView.getUint8(1) === COMPRESSED) {
+        if (bytes.length < 6) raiseInvalid();
+
+        const uncompressedSize = dataView.getUint32(2, false);
+        const compressedData = bytes.slice(6);
+
+        let decompressed;
+        try {
+          decompressed = await zlibInflate(compressedData);
+        } catch {
+          raiseInvalid();
+        }
+
+        if (decompressed.length !== uncompressedSize) raiseInvalid();
+
+        const decompressedView = new DataView(
+          decompressed.buffer,
+          decompressed.byteOffset,
+          decompressed.byteLength,
+        );
+
+        const innerResult = decodeTerm(decompressedView, decompressed, 0);
+
+        // Trailing bytes inside the decompressed payload are rejected by
+        // OTP (the outer binary may have trailing bytes; the decompressed
+        // term cannot).
+        if (innerResult.newOffset !== decompressed.length) raiseInvalid();
+
+        return innerResult.term;
+      }
+
+      // OTP's binary_to_term/1 silently ignores any bytes past the first
+      // term: term_to_binary(42) <> "garbage" decodes to 42.
+      return decodeTerm(dataView, bytes, 1).term;
+    } catch (err) {
+      // RangeError is the only generic signal for malformed input we accept
+      // here: DataView.getXxx throws it when reading past the end of the
+      // buffer, which any decoder can hit on truncated input. Everything
+      // else - TypeError, HologramInterpreterError, etc. - is treated as a
+      // real bug and bubbles up. Decoder helpers that have other legitimate
+      // failure modes (e.g. invalid UTF-8 in atom names) raise ArgumentError
+      // at the call site instead of relying on this wrapper.
+      if (err instanceof RangeError) raiseInvalid();
+      throw err;
+    }
+  },
+  // End binary_to_term/1
+  // Deps: []
+
+  // Start bit_size/1
+  "bit_size/1": (term) => {
+    if (!Type.isBitstring(term)) {
+      Interpreter.raiseBifError("badarg", "erlang", "bit_size", [term]);
+    }
+
+    return Type.integer(Bitstring.calculateBitCount(term));
+  },
+  // End bit_size/1
+  // Deps: []
+
+  // Start bnot/1
+  "bnot/1": (integer) => {
+    if (!Type.isInteger(integer)) {
+      Interpreter.raiseBifError("badarith", "erlang", "bnot", [integer]);
+    }
+
+    return Type.integer(~integer.value);
+  },
+  // End bnot/1
+  // Deps: []
+
+  // Start bor/2
+  "bor/2": (integer1, integer2) => {
+    if (!Type.isInteger(integer1) || !Type.isInteger(integer2)) {
+      Interpreter.raiseBifError("badarith", "erlang", "bor", [integer1, integer2]);
+    }
+
+    return Type.integer(integer1.value | integer2.value);
+  },
+  // End bor/2
+  // Deps: []
+
+  // Start bsl/2
+  "bsl/2": (integer, shift) => {
+    if (!Type.isInteger(integer) || !Type.isInteger(shift)) {
+      Interpreter.raiseBifError("badarith", "erlang", "bsl", [integer, shift]);
+    }
+
+    const integerValue = integer.value;
+    const shiftValue = shift.value;
+
+    if (shiftValue < 0n) {
+      // Erlang's bsl with negative shift is equivalent to bsr with positive shift
+      return Type.integer(integerValue >> -shiftValue);
+    } else {
+      return Type.integer(integerValue << shiftValue);
+    }
+  },
+  // End bsl/2
+  // Deps: []
+
+  // Start bsr/2
+  "bsr/2": (integer, shift) => {
+    if (!Type.isInteger(integer) || !Type.isInteger(shift)) {
+      Interpreter.raiseBifError("badarith", "erlang", "bsr", [integer, shift]);
+    }
+
+    const integerValue = integer.value;
+    const shiftValue = shift.value;
+
+    if (shiftValue < 0n) {
+      // Erlang's bsr with negative shift is equivalent to bsl with positive shift
+      return Type.integer(integerValue << -shiftValue);
+    } else {
+      return Type.integer(integerValue >> shiftValue);
+    }
+  },
+  // End bsr/2
+  // Deps: []
+
+  // Start bxor/2
+  "bxor/2": (integer1, integer2) => {
+    if (!Type.isInteger(integer1) || !Type.isInteger(integer2)) {
+      Interpreter.raiseBifError("badarith", "erlang", "bxor", [integer1, integer2]);
+    }
+
+    return Type.integer(integer1.value ^ integer2.value);
+  },
+  // End bxor/2
+  // Deps: []
+
+  // Start byte_size/1
+  "byte_size/1": (bitstring) => {
+    if (!Type.isBitstring(bitstring)) {
+      Interpreter.raiseBifError("badarg", "erlang", "byte_size", [bitstring]);
+    }
+
+    Bitstring.maybeSetBytesFromText(bitstring);
+
+    return Type.integer(bitstring.bytes.length);
+  },
+  // End byte_size/1
+  // Deps: []
+
+  // Start ceil/1
+  "ceil/1": (number) => {
+    if (!Type.isNumber(number)) {
+      Interpreter.raiseBifError("badarg", "erlang", "ceil", [number]);
+    }
+
+    if (Type.isInteger(number)) {
+      return number;
+    }
+
+    return Type.integer(Math.ceil(number.value));
+  },
+  // End ceil/1
+  // Deps: []
+
+  // Start convert_time_unit/3
+  // See: docs/erlang_time_functions_porting_strategy.md
+  "convert_time_unit/3": (time, fromUnit, toUnit) => {
+    // :native and :perf_counter are technically platform-dependent in Erlang/OTP,
+    // but in practice they're nanoseconds on all major platforms (Linux, macOS, Windows).
+    // We standardize on nanoseconds to match typical Erlang behavior while keeping
+    // JS behavior predictable.
+    const NATIVE_TIME_UNIT = 1_000_000_000n;
+    const PERF_COUNTER_TIME_UNIT = 1_000_000_000n;
+
+    const resolveTimeUnit = (unit) => {
+      switch (unit.value) {
+        case "nanosecond":
+        case "nano_seconds":
+          return 1_000_000_000n;
+
+        case "microsecond":
+        case "micro_seconds":
+          return 1_000_000n;
+
+        case "millisecond":
+        case "milli_seconds":
+          return 1_000n;
+
+        case "second":
+        case "seconds":
+          return 1n;
+
+        case "native":
+          return NATIVE_TIME_UNIT;
+
+        case "perf_counter":
+          return PERF_COUNTER_TIME_UNIT;
+
+        // integer
+        default:
+          return unit.value;
+      }
+    };
+
+    if (
+      !Type.isInteger(time) ||
+      !Erlang["_is_valid_time_unit/1"](fromUnit) ||
+      !Erlang["_is_valid_time_unit/1"](toUnit)
+    ) {
+      Interpreter.raiseBifError("badarg", "erlang", "convert_time_unit", [time, fromUnit, toUnit]);
+    }
+
+    const fromUnitValue = resolveTimeUnit(fromUnit);
+    const toUnitValue = resolveTimeUnit(toUnit);
+    const numerator = toUnitValue * time.value;
+
+    const adjustedNumerator = time.value < 0n ? numerator - (fromUnitValue - 1n) : numerator;
+
+    const result = adjustedNumerator / fromUnitValue;
+
+    return Type.integer(result);
+  },
+  // End convert_time_unit/3
+  // Deps: [:erlang._is_valid_time_unit/1]
+
+  // Start delete_element/2
+  "delete_element/2": (index, tuple) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "delete_element", [index, tuple]);
+    };
+
+    if (!Type.isInteger(index)) {
+      raiseBadarg();
+    }
+
+    if (!Type.isTuple(tuple)) {
+      raiseBadarg();
+    }
+
+    if (index.value > tuple.data.length || index.value < 1) {
+      raiseBadarg();
+    }
+
+    const data = tuple.data.toSpliced(Number(index.value) - 1, 1);
+
+    return Type.tuple(data);
+  },
+  // End delete_element/2
+  // Deps: []
+
+  // Start div/2
+  "div/2": (integer1, integer2) => {
+    if (!Type.isInteger(integer1) || !Type.isInteger(integer2) || integer2.value === 0n) {
+      Interpreter.raiseBifError("badarith", "erlang", "div", [integer1, integer2]);
+    }
+
+    // TODO: support integers outside Number range
+    return Type.integer(Math.trunc(Number(integer1.value) / Number(integer2.value)));
+  },
+  // End div/2
+  // Deps: []
+
+  // Start element/2
+  "element/2": (index, tuple) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "element", [index, tuple]);
+    };
+
+    if (!Type.isInteger(index)) {
+      raiseBadarg();
+    }
+
+    if (!Type.isTuple(tuple)) {
+      raiseBadarg();
+    }
+
+    if (index.value > tuple.data.length || index.value < 1) {
+      raiseBadarg();
+    }
+
+    return tuple.data[Number(index.value) - 1];
+  },
+  // End element/2
+  // Deps: []
+
+  // Start error/1
+  "error/1": (reason) => {
+    Erlang["error/3"](reason, Type.atom("none"), Type.list());
+  },
+  // End error/1
+  // Deps: [:erlang.error/3]
+
+  // Start error/2
+  "error/2": (reason, args) => {
+    Erlang["error/3"](reason, args, Type.list());
+  },
+  // End error/2
+  // Deps: [:erlang.error/3]
+
+  // Start error/3
+  "error/3": (reason, args, options) => {
+    // Options that are not a list and options other than {:error_info, map}
+    // are ignored, mirroring the BEAM.
+    let errorInfo = null;
+
+    if (Type.isList(options)) {
+      for (const option of options.data) {
+        if (
+          Type.isTuple(option) &&
+          option.data.length === 2 &&
+          Type.isAtom(option.data[0]) &&
+          option.data[0].value === "error_info"
+        ) {
+          errorInfo = option.data[1];
+        }
+      }
+    }
+
+    const error = new HologramBoxedError(reason);
+
+    // The constructor snapshot still contains the dispatch frames of
+    // :erlang.error itself - the BEAM never shows erlang:error in a trace.
+    const frames = error.stacktrace;
+
+    let callerIndex = 0;
+
+    while (
+      callerIndex < frames.length &&
+      frames[callerIndex].module === "erlang" &&
+      frames[callerIndex].function === "error"
+    ) {
+      ++callerIndex;
+    }
+
+    const callerFrame = frames[callerIndex] ?? null;
+
+    // The raising frame is attached unconditionally - message derivation
+    // reads args and error_info from it in every environment. It is a copy,
+    // because the caller's live frame must not be mutated: the caller may
+    // rescue this error and keep executing.
+    const raisingFrame = {
+      module: callerFrame?.module ?? null,
+      function: callerFrame?.function ?? null,
+      // A list (proper or improper) replaces the caller's arity, any other
+      // term (including :none) keeps it, mirroring the BEAM.
+      arityOrArgs: Type.isList(args) ? args : (callerFrame?.arityOrArgs ?? null),
+      file: callerFrame?.file ?? null,
+      line: callerFrame?.line ?? null,
+      errorInfo,
+    };
+
+    error.stacktrace = [raisingFrame, ...frames.slice(callerIndex + 1)];
+
+    // Message derivation may read args and error_info from the raising
+    // frame, so the struct and message re-derive against the fixed trace.
+    error.rederive(Type.list(error.stacktrace.map(ERTS.callStack.boxFrame)));
+
+    throw error;
+  },
+  // End error/3
+  // Deps: []
+
+  // Start exit/1
+  "exit/1": (reason) => {
+    throw new HologramBoxedError(reason, Type.atom("exit"));
+  },
+  // End exit/1
+  // Deps: []
+
+  // Start float/1
+  "float/1": (number) => {
+    if (Type.isInteger(number)) {
+      return Type.float(Number(number.value));
+    } else if (Type.isFloat(number)) {
+      return number;
+    }
+
+    Interpreter.raiseBifError("badarg", "erlang", "float", [number]);
+  },
+  // End float/1
+  // Deps: []
+
+  // Start float_to_list/2
+  "float_to_list/2": (float, opts) => {
+    try {
+      return Bitstring.toCodepoints(Erlang["float_to_binary/2"](float, opts));
+    } catch (error) {
+      if (error.struct) {
+        // Re-raise with this function's own identity - the BEAM reports the
+        // called function's frame, not the delegate's.
+        Interpreter.raiseBifError("badarg", "erlang", "float_to_list", [float, opts]);
+      }
+
+      throw error;
+    }
+  },
+  // End float_to_list/2
+  // Deps: [:erlang.float_to_binary/2]
+
+  // Start float_to_binary/2
+  "float_to_binary/2": (float, opts) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "float_to_binary", [float, opts]);
+    };
+
+    if (!Type.isFloat(float)) {
+      raiseBadarg();
+    }
+
+    if (!Type.isList(opts)) {
+      raiseBadarg();
+    }
+
+    if (!Type.isProperList(opts)) {
+      raiseBadarg();
+    }
+
+    const SHORT_EXPONENTIAL_THRESHOLD = 9_007_199_254_740_992.0; // 2^53 - Erlang always uses exponential notation at this boundary
+    const JS_PRECISION_LIMIT = 100; // Max precision for toFixed() and toExponential()
+    const ERLANG_BUFFER_LIMIT = 256;
+    const ERLANG_DEFAULT_SCIENTIFIC = 20;
+    const FIXED_PRECISION_FOR_NEGATIVE = 6;
+
+    let decimals = null;
+    let scientific = ERLANG_DEFAULT_SCIENTIFIC;
+    let isCompact = false;
+    let isShort = false;
+    let lastOpt = null;
+
+    // Parse options
+    for (const opt of opts.data) {
+      if (Interpreter.isStrictlyEqual(opt, Type.atom("short"))) {
+        isShort = true;
+        lastOpt = "short";
+        continue;
+      }
+
+      if (Interpreter.isStrictlyEqual(opt, Type.atom("compact"))) {
+        isCompact = true;
+        continue;
+      }
+
+      if (!Type.isTuple(opt) || opt.data.length !== 2) {
+        raiseBadarg();
+      }
+
+      const [key, value] = opt.data;
+
+      if (
+        Interpreter.isStrictlyEqual(key, Type.atom("decimals")) &&
+        Type.isInteger(value) &&
+        value.value >= 0n &&
+        value.value <= 253n
+      ) {
+        decimals = Number(value.value);
+        lastOpt = "decimals";
+      } else if (
+        Interpreter.isStrictlyEqual(key, Type.atom("scientific")) &&
+        Type.isInteger(value) &&
+        value.value <= 249n
+      ) {
+        scientific = Number(value.value);
+        lastOpt = "scientific";
+      } else {
+        raiseBadarg();
+      }
+    }
+
+    // Only keep the last formatting option, reset others to defaults
+    if (lastOpt === "short") {
+      decimals = null;
+      scientific = ERLANG_DEFAULT_SCIENTIFIC;
+    } else if (lastOpt === "decimals") {
+      isShort = false;
+      scientific = ERLANG_DEFAULT_SCIENTIFIC;
+    } else if (lastOpt === "scientific") {
+      isShort = false;
+      decimals = null;
+    }
+
+    // Check if we have negative zero (JavaScript preserves signed zero)
+    const isNegativeZero = Object.is(float.value, -0);
+
+    let result;
+
+    if (isShort) {
+      const absVal = Math.abs(float.value);
+
+      if (absVal >= SHORT_EXPONENTIAL_THRESHOLD) {
+        // For values >= 2^53, always use exponential notation per Erlang spec
+        result = float.value.toExponential();
+      } else {
+        // For values < 2^53, compare character counts of decimal vs exponential
+        // and choose the shorter representation (decimal wins ties per Erlang spec)
+
+        let decimalResult = float.value.toString();
+
+        // Ensure decimal point exists for proper float format
+        if (decimalResult === "0") {
+          decimalResult = "0.0";
+        } else if (absVal >= 1 && !decimalResult.includes(".") && !decimalResult.includes("e")) {
+          decimalResult += ".0";
+        }
+
+        let expResult = float.value.toExponential();
+
+        // Ensure mantissa has at least one decimal digit (e.g., "9e-4" → "9.0e-4")
+        if (!expResult.includes(".")) {
+          expResult = expResult.replace(/e/, ".0e");
+        }
+
+        // Choose the representation with fewer characters (decimal wins ties)
+        result = expResult.length < decimalResult.length ? expResult : decimalResult;
+      }
+
+      // Format exponent: remove + sign (e.g., e+15 → e15), keep - sign as-is
+      if (result.includes("e")) {
+        result = result.replace(/e\+/, "e");
+      }
+    } else if (decimals !== null) {
+      // JavaScript's toFixed() has a limit of 100, but Erlang allows up to 253.
+      // For values > 100, we use toFixed(100) and manually pad with zeros.
+      if (decimals > JS_PRECISION_LIMIT) {
+        result = float.value.toFixed(JS_PRECISION_LIMIT);
+        const additionalZeros = decimals - JS_PRECISION_LIMIT;
+        result = result + "0".repeat(additionalZeros);
+      } else {
+        result = float.value.toFixed(decimals);
+      }
+
+      if (isCompact && decimals > 0) {
+        result = result.replace(/0+$/, "").replace(/\.$/, ".0");
+      }
+    } else {
+      // For negative scientific, Erlang uses fixed precision of 6 decimal places
+      const precision = scientific < 0 ? FIXED_PRECISION_FOR_NEGATIVE : scientific;
+
+      // JavaScript's toExponential() has a limit of 100, but Erlang allows up to 249.
+      // For values > 100, we use toExponential(100) and manually pad with zeros.
+      if (precision > JS_PRECISION_LIMIT) {
+        result = float.value.toExponential(JS_PRECISION_LIMIT);
+        const [mantissa, exponent] = result.split("e");
+        const currentDigits = mantissa.split(".")[1].length;
+        const additionalZeros = precision - currentDigits;
+        result = mantissa + "0".repeat(additionalZeros) + "e" + exponent;
+      } else {
+        result = float.value.toExponential(precision);
+      }
+
+      // Erlang format uses zero-padded exponents (e.g., e+00, e-04)
+      result = result.replace(/e([+-])(\d)$/, "e$10$2");
+    }
+
+    // Preserve negative zero sign if needed
+    // JavaScript's toString/toFixed/toExponential lose the sign of -0, so we restore it
+    if (isNegativeZero && !result.startsWith("-")) {
+      result = "-" + result;
+    }
+
+    // Erlang enforces a 256-byte buffer limit for the result
+    if (result.length >= ERLANG_BUFFER_LIMIT) {
+      raiseBadarg();
+    }
+
+    return Type.bitstring(result);
+  },
+  // End float_to_binary/2
+  // Deps: []
+
+  // Start floor/1
+  "floor/1": (number) => {
+    if (!Type.isNumber(number)) {
+      Interpreter.raiseBifError("badarg", "erlang", "floor", [number]);
+    }
+
+    if (Type.isInteger(number)) {
+      return number;
+    }
+
+    return Type.integer(Math.floor(number.value));
+  },
+  // End floor/1
+  // Deps: []
+
+  // Start fun_info/1
+  "fun_info/1": (fun) => {
+    if (!Type.isAnonymousFunction(fun)) {
+      Interpreter.raiseBifError("badarg", "erlang", "fun_info", [fun]);
+    }
+
+    const arity = Type.integer(fun.arity);
+
+    const isExternal = fun.capturedModule !== null;
+
+    if (isExternal) {
+      // Erlang modules are prefixed with ":" (e.g. ":erlang"), Elixir modules are not
+      const isErlangModule = fun.capturedModule.startsWith(":");
+
+      const module = isErlangModule
+        ? Type.atom(fun.capturedModule.slice(1))
+        : Type.alias(fun.capturedModule);
+
+      const env = Type.list();
+      const name = Type.atom(fun.capturedFunction);
+      const type = Type.atom("external");
+
+      return Type.list([
+        Type.tuple([Type.atom("module"), module]),
+        Type.tuple([Type.atom("name"), name]),
+        Type.tuple([Type.atom("arity"), arity]),
+        Type.tuple([Type.atom("env"), env]),
+        Type.tuple([Type.atom("type"), type]),
+      ]);
+    }
+
+    // Local fun
+
+    const env = Type.list(Object.values(fun.context.vars));
+    const module = fun.context.module;
+    const type = Type.atom("local");
+
+    // fun.uniq is a unique integer for this fun (from ERTS.funSequence).
+    // We derive index, new_index, uniq, and new_uniq from it.
+    // In Erlang, index/new_index are per-module indices into the fun table,
+    // and uniq/new_uniq are calculated from compiled code.
+    // TODO: When hot code reloading is implemented, index/new_index should be
+    // per-module indices, and uniq/new_uniq should be based on compiled code hash.
+    const index = Type.integer(fun.uniq);
+    const newIndex = Type.integer(fun.uniq);
+    const uniq = Type.integer(fun.uniq);
+
+    // Generate new_uniq as a 16-byte (128-bit) binary derived from fun.uniq
+    const newUniq = Type.bitstring([
+      Type.bitstringSegment(Type.integer(fun.uniq), {
+        type: "integer",
+        size: Type.integer(128),
+      }),
+    ]);
+
+    // A fun defined outside of any function definition carries no name.
+    const name = Type.atom(fun.name ?? "");
+    const pid = ERTS.INIT_PID;
+
+    return Type.list([
+      Type.tuple([Type.atom("pid"), pid]),
+      Type.tuple([Type.atom("module"), module]),
+      Type.tuple([Type.atom("new_index"), newIndex]),
+      Type.tuple([Type.atom("new_uniq"), newUniq]),
+      Type.tuple([Type.atom("index"), index]),
+      Type.tuple([Type.atom("uniq"), uniq]),
+      Type.tuple([Type.atom("name"), name]),
+      Type.tuple([Type.atom("arity"), arity]),
+      Type.tuple([Type.atom("env"), env]),
+      Type.tuple([Type.atom("type"), type]),
+    ]);
+  },
+  // End fun_info/1
+  // Deps: []
+
+  // Start fun_info/2
+  "fun_info/2": (fun, item) => {
+    const validItems = new Set([
+      "arity",
+      "env",
+      "index",
+      "module",
+      "name",
+      "new_index",
+      "new_uniq",
+      "pid",
+      "type",
+      "uniq",
+    ]);
+
+    // Both raises name the same pair of arguments, and the message blames the
+    // first one whenever it isn't a fun - so reading the item first still
+    // reports a bad fun the way the BEAM does, without building the info list.
+    if (!Type.isAtom(item) || !validItems.has(item.value)) {
+      Interpreter.raiseBifError("badarg", "erlang", "fun_info", [fun, item]);
+    }
+
+    let info;
+
+    try {
+      info = Erlang["fun_info/1"](fun);
+    } catch (error) {
+      if (error.struct) {
+        // Re-raise with this function's own identity - the BEAM reports the
+        // called function's frame, not the delegate's.
+        Interpreter.raiseBifError("badarg", "erlang", "fun_info", [fun, item]);
+      }
+
+      throw error;
+    }
+
+    const result = info.data.find((tuple) => tuple.data[0].value === item.value);
+
+    if (result === undefined) {
+      return Type.tuple([item, Type.atom("undefined")]);
+    }
+
+    return result;
+  },
+  // End fun_info/2
+  // Deps: [:erlang.fun_info/1]
+
+  // Start function_exported/3
+  "function_exported/3": (module, functionName, arity) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "function_exported", [
+        module,
+        functionName,
+        arity,
+      ]);
+    };
+
+    if (!Type.isAtom(module)) {
+      raiseBadarg();
+    }
+
+    if (!Type.isAtom(functionName)) {
+      raiseBadarg();
+    }
+
+    if (!Type.isInteger(arity)) {
+      raiseBadarg();
+    }
+
+    const moduleProxy = Interpreter.moduleProxy(module);
+
+    if (typeof moduleProxy === "undefined") {
+      return Type.boolean(false);
+    }
+
+    const functionArityStr = `${functionName.value}/${arity.value}`;
+
+    return Type.boolean(moduleProxy.__exports__.has(functionArityStr));
+  },
+  // End function_exported/3
+  // Deps: []
+
+  // Start hd/1
+  "hd/1": (list) => {
+    if (!Type.isList(list) || list.data.length === 0) {
+      Interpreter.raiseBifError("badarg", "erlang", "hd", [list]);
+    }
+
+    return list.data[0];
+  },
+  // End hd/1
+  // Deps: []
+
+  // Start insert_element/3
+  "insert_element/3": (index, tuple, value) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "insert_element", [index, tuple, value]);
+    };
+
+    if (!Type.isInteger(index)) {
+      raiseBadarg();
+    }
+
+    if (!Type.isTuple(tuple)) {
+      raiseBadarg();
+    }
+
+    if (index.value <= 0n || index.value > tuple.data.length + 1) {
+      raiseBadarg();
+    }
+
+    // The tuple index is one-based, so we need to compensate
+    const data = tuple.data.toSpliced(Number(index.value) - 1, 0, value);
+    return Type.tuple(data);
+  },
+  // End insert_element/3
+  // Deps: []
+
+  // Start integer_to_binary/1
+  "integer_to_binary/1": (integer) => {
+    try {
+      return Erlang["integer_to_binary/2"](integer, Type.integer(10));
+    } catch (error) {
+      if (error.struct) {
+        // Re-raise with this function's own identity - the BEAM reports the
+        // called function's frame, not the delegate's.
+        Interpreter.raiseBifError("badarg", "erlang", "integer_to_binary", [integer]);
+      }
+
+      throw error;
+    }
+  },
+  // End integer_to_binary/1
+  // Deps: [:erlang.integer_to_binary/2]
+
+  // Start integer_to_binary/2
+  "integer_to_binary/2": (integer, base) => {
+    if (!Type.isInteger(integer) || !Type.isInteger(base) || base.value < 2n || base.value > 36n) {
+      Interpreter.raiseBifError("badarg", "erlang", "integer_to_binary", [integer, base]);
+    }
+
+    const str = integer.value.toString(Number(base.value)).toUpperCase();
+
+    return Type.bitstring(str);
+  },
+  // End integer_to_binary/2
+  // Deps: []
+
+  // Start integer_to_list/1
+  "integer_to_list/1": (integer) => {
+    try {
+      return Erlang["integer_to_list/2"](integer, Type.integer(10));
+    } catch (error) {
+      if (error.struct) {
+        // Re-raise with this function's own identity - the BEAM reports the
+        // called function's frame, not the delegate's.
+        Interpreter.raiseBifError("badarg", "erlang", "integer_to_list", [integer]);
+      }
+
+      throw error;
+    }
+  },
+  // End integer_to_list/1
+  // Deps: [:erlang.integer_to_list/2]
+
+  // Start integer_to_list/2
+  "integer_to_list/2": (integer, base) => {
+    if (!Type.isInteger(integer) || !Type.isInteger(base) || base.value < 2n || base.value > 36n) {
+      Interpreter.raiseBifError("badarg", "erlang", "integer_to_list", [integer, base]);
+    }
+
+    const text = integer.value.toString(Number(base.value)).toUpperCase();
+
+    return Bitstring.toCodepoints(Type.bitstring(text));
+  },
+  // End integer_to_list/2
+  // Deps: []
+
+  // Start iolist_to_binary/1
+  "iolist_to_binary/1": (ioListOrBinary) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "iolist_to_binary", [ioListOrBinary]);
+    };
+
+    if (Type.isBinary(ioListOrBinary)) {
+      return ioListOrBinary;
+    }
+
+    if (!Type.isList(ioListOrBinary)) {
+      raiseBadarg();
+    }
+
+    // :erlang.list_to_binary/1 raises ArgumentError "not an iolist term" on invalid input.
+    // Remap to "not an iodata term" to match OTP's iolist_to_binary/1 behavior.
+    try {
+      return Erlang["list_to_binary/1"](ioListOrBinary);
+    } catch {
+      raiseBadarg();
+    }
+  },
+  // End iolist_to_binary/1
+  // Deps: [:erlang.list_to_binary/1]
+
+  // Start is_atom/1
+  "is_atom/1": (term) => {
+    return Type.boolean(Type.isAtom(term));
+  },
+  // End is_atom/1
+  // Deps: []
+
+  // Start is_binary/1
+  "is_binary/1": (term) => {
+    return Type.boolean(Type.isBinary(term));
+  },
+  // End is_binary/1
+  // Deps: []
+
+  // Start is_bitstring/1
+  "is_bitstring/1": (term) => {
+    return Type.boolean(Type.isBitstring(term));
+  },
+  // End is_bitstring/1
+  // Deps: []
+
+  // Start is_boolean/1
+  "is_boolean/1": (term) => {
+    return Type.boolean(Type.isBoolean(term));
+  },
+  // End is_boolean/1
+  // Deps: []
+
+  // Start is_float/1
+  "is_float/1": (term) => {
+    return Type.boolean(Type.isFloat(term));
+  },
+  // End is_float/1
+  // Deps: []
+
+  // Start is_function/1
+  "is_function/1": (term) => {
+    return Type.boolean(Type.isAnonymousFunction(term));
+  },
+  // End is_function/1
+  // Deps: []
+
+  // Start is_function/2
+  "is_function/2": (term, arity) => {
+    return Type.boolean(Type.isAnonymousFunction(term) && term.arity === Number(arity.value));
+  },
+  // End is_function/2
+  // Deps: []
+
+  // Start is_integer/1
+  "is_integer/1": (term) => {
+    return Type.boolean(Type.isInteger(term));
+  },
+  // End is_integer/1
+  // Deps: []
+
+  // Start is_list/1
+  "is_list/1": (term) => {
+    return Type.boolean(Type.isList(term));
+  },
+  // End is_list/1
+  // Deps: []
+
+  // Start is_map/1
+  "is_map/1": (term) => {
+    return Type.boolean(Type.isMap(term));
+  },
+  // End is_map/1
+  // Deps: []
+
+  // Start is_map_key/2
+  "is_map_key/2": (key, map) => {
+    return Erlang_Maps["is_key/2"](key, map);
+  },
+  // End is_map_key/2
+  // Deps: [:maps.is_key/2]
+
+  // Start is_number/1
+  "is_number/1": (term) => {
+    return Type.boolean(Type.isNumber(term));
+  },
+  // End is_number/1
+  // Deps: []
+
+  // Start is_pid/1
+  "is_pid/1": (term) => {
+    return Type.boolean(Type.isPid(term));
+  },
+  // End is_pid/1
+  // Deps: []
+
+  // Start is_port/1
+  "is_port/1": (term) => {
+    return Type.boolean(Type.isPort(term));
+  },
+  // End is_port/1
+  // Deps: []
+
+  // Start is_reference/1
+  "is_reference/1": (term) => {
+    return Type.boolean(Type.isReference(term));
+  },
+  // End is_reference/1
+  // Deps: []
+
+  // Start is_tuple/1
+  "is_tuple/1": (term) => {
+    return Type.boolean(Type.isTuple(term));
+  },
+  // End is_tuple/1
+  // Deps: []
+
+  // Start length/1
+  "length/1": (list) => {
+    if (!Type.isProperList(list)) {
+      Interpreter.raiseBifError("badarg", "erlang", "length", [list]);
+    }
+
+    return Type.integer(list.data.length);
+  },
+  // End length/1
+  // Deps: []
+
+  // Start list_to_atom/1
+  "list_to_atom/1": (codePoints) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "list_to_atom", [codePoints]);
+    };
+
+    if (!Type.isList(codePoints)) {
+      raiseBadarg();
+    }
+
+    if (!Type.isProperList(codePoints)) {
+      raiseBadarg();
+    }
+
+    const areCodePointsValid = codePoints.data.every(
+      (item) => Type.isInteger(item) && Bitstring.validateCodePoint(item.value),
+    );
+
+    if (!areCodePointsValid) {
+      raiseBadarg();
+    }
+
+    const text = String.fromCodePoint(
+      ...codePoints.data.map((codePoint) => Number(codePoint.value)),
+    );
+
+    return Type.atom(text);
+  },
+  // End list_to_atom/1
+  // Deps: []
+
+  // Start list_to_binary/1
+  "list_to_binary/1": (ioList) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "list_to_binary", [ioList]);
+    };
+
+    if (!Type.isList(ioList)) {
+      raiseBadarg();
+    }
+
+    const chunks = [];
+
+    const collect = (list) => {
+      const data = list.data;
+      const len = data.length;
+      const elemCount = list.isProper ? len : len - 1;
+
+      for (let i = 0; i < elemCount; i++) {
+        const item = data[i];
+
+        if (Type.isInteger(item)) {
+          if (item.value < 0n || item.value > 255n) {
+            raiseBadarg();
+          }
+
+          const segment = Type.bitstringSegment(item, {
+            type: "integer",
+            size: Type.integer(8),
+            unit: 1n,
+            endianness: "big",
+          });
+
+          chunks.push(Bitstring.fromSegmentWithIntegerValue(segment));
+        } else if (Type.isBinary(item)) {
+          chunks.push(item);
+        } else if (Type.isList(item)) {
+          collect(item);
+        } else {
+          raiseBadarg();
+        }
+      }
+
+      if (!list.isProper) {
+        const tail = data[len - 1];
+
+        if (Type.isBinary(tail)) {
+          chunks.push(tail);
+        } else if (Type.isList(tail)) {
+          collect(tail);
+        } else {
+          raiseBadarg();
+        }
+      }
+    };
+
+    collect(ioList);
+
+    return Bitstring.concat(chunks);
+  },
+  // End list_to_binary/1
+  // Deps: []
+
+  // Note: due to practical reasons the behaviour of the client version is inconsistent with the server version.
+  // The client version works exactly the same as list_to_atom/1.
+  // Start list_to_existing_atom/1
+  "list_to_existing_atom/1": (codePoints) => {
+    try {
+      return Erlang["list_to_atom/1"](codePoints);
+    } catch (error) {
+      if (error.struct) {
+        // Re-raise with this function's own identity - the BEAM reports the
+        // called function's frame, not the delegate's.
+        Interpreter.raiseBifError("badarg", "erlang", "list_to_existing_atom", [codePoints]);
+      }
+
+      throw error;
+    }
+  },
+  // End list_to_existing_atom/1
+  // Deps: [:erlang.list_to_atom/1]
+
+  // Start list_to_float/1
+  "list_to_float/1": (list) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "list_to_float", [list]);
+    };
+
+    if (!Type.isProperList(list)) {
+      raiseBadarg();
+    }
+
+    const codes = [];
+
+    for (const code of list.data) {
+      if (!Type.isInteger(code)) {
+        raiseBadarg();
+      }
+
+      codes.push(Number(code.value));
+    }
+
+    const text = String.fromCharCode(...codes);
+    const floatRegex = /^[+-]?\d+\.\d+([eE][+-]?\d+)?$/;
+
+    if (!floatRegex.test(text)) {
+      raiseBadarg();
+    }
+
+    return Type.float(Number(text));
+  },
+  // End list_to_float/1
+  // Deps: []
+
+  // Start list_to_integer/1
+  "list_to_integer/1": (list) => {
+    try {
+      return Erlang["list_to_integer/2"](list, Type.integer(10n));
+    } catch (error) {
+      if (error.struct) {
+        // Re-raise with this function's own identity - the BEAM reports the
+        // called function's frame, not the delegate's.
+        Interpreter.raiseBifError("badarg", "erlang", "list_to_integer", [list]);
+      }
+
+      throw error;
+    }
+  },
+  // End list_to_integer/1
+  // Deps: [:erlang.list_to_integer/2]
+
+  // Start list_to_integer/2
+  "list_to_integer/2": (list, base) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "list_to_integer", [list, base]);
+    };
+
+    if (!Type.isList(list)) {
+      raiseBadarg();
+    }
+
+    if (!Type.isProperList(list)) {
+      raiseBadarg();
+    }
+
+    if (!Type.isInteger(base) || base.value < 2n || base.value > 36n) {
+      raiseBadarg();
+    }
+
+    if (list.data.length === 0) {
+      raiseBadarg();
+    }
+
+    const codes = [];
+
+    // TODO: consider - use isCharlist() helper instead when it's implemented
+    for (const code of list.data) {
+      if (!Type.isInteger(code)) {
+        raiseBadarg();
+      }
+
+      codes.push(Number(code.value));
+    }
+
+    const str = String.fromCharCode(...codes);
+    const baseNum = Number(base.value);
+    const strLower = str.toLowerCase();
+    let validPattern;
+
+    if (baseNum <= 10) {
+      const maxDigit = baseNum - 1;
+      validPattern = new RegExp(`^[+-]?[0-${maxDigit}]+$`);
+    } else {
+      const maxLetter = String.fromCharCode(97 + baseNum - 11);
+      validPattern = new RegExp(`^[+-]?[0-9a-${maxLetter}]+$`);
+    }
+
+    if (!validPattern.test(strLower)) {
+      raiseBadarg();
+    }
+
+    // Parse the string to BigInt manually to avoid precision loss with parseInt
+    const bigBase = BigInt(baseNum);
+    let result = 0n;
+    let sign = 1n;
+    let startIndex = 0;
+
+    if (strLower[0] === "-") {
+      sign = -1n;
+      startIndex = 1;
+    } else if (strLower[0] === "+") {
+      startIndex = 1;
+    }
+
+    for (let i = startIndex; i < strLower.length; i++) {
+      const char = strLower[i];
+
+      const digitValue =
+        char >= "0" && char <= "9"
+          ? BigInt(char.charCodeAt(0) - 48) // '0' is 48, so '0' becomes 0
+          : BigInt(char.charCodeAt(0) - 87); // 'a' is 97, so 'a' becomes 10
+
+      result = result * bigBase + digitValue;
+    }
+
+    return Type.integer(sign * result);
+  },
+  // End list_to_integer/2
+  // Deps: []
+
+  // Start list_to_pid/1
+  "list_to_pid/1": (codePoints) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "list_to_pid", [codePoints]);
+    };
+
+    if (!Type.isList(codePoints)) {
+      raiseBadarg();
+    }
+
+    const areCodePointsValid = codePoints.data.every(
+      (item) => Type.isInteger(item) && Bitstring.validateCodePoint(item.value),
+    );
+
+    if (!areCodePointsValid) {
+      raiseBadarg();
+    }
+
+    const segments = codePoints.data.map((codePoint) =>
+      Type.bitstringSegment(codePoint, {type: "utf8"}),
+    );
+
+    const regex = /^<([0-9]+)\.([0-9]+)\.([0-9]+)>$/;
+    const matches = Bitstring.toText(Type.bitstring(segments)).match(regex);
+
+    if (matches === null) {
+      raiseBadarg();
+    }
+
+    return Type.pid(
+      "client",
+      [Number(matches[1]), Number(matches[2]), Number(matches[3])],
+      "client",
+    );
+  },
+  // End list_to_pid/1
+  // Deps: []
+
+  // Start list_to_ref/1
+  "list_to_ref/1": (codePoints) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "list_to_ref", [codePoints]);
+    };
+
+    if (!Type.isProperList(codePoints)) {
+      raiseBadarg();
+    }
+
+    const areCodePointsValid = codePoints.data.every(
+      (item) => Type.isInteger(item) && Bitstring.validateCodePoint(item.value),
+    );
+
+    if (!areCodePointsValid) {
+      raiseBadarg();
+    }
+
+    const segments = codePoints.data.map((codePoint) =>
+      Type.bitstringSegment(codePoint, {type: "utf8"}),
+    );
+
+    const regex = /^#Ref<([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)>$/;
+    const matches = Bitstring.toText(Type.bitstring(segments)).match(regex);
+
+    if (matches === null) {
+      raiseBadarg();
+    }
+
+    const localIncarnationId = Number(matches[1]);
+
+    // The idWords in the string representation are in reversed order
+    const idWords = [Number(matches[4]), Number(matches[3]), Number(matches[2])];
+
+    const refInfo = ERTS.nodeTable.getNodeAndCreation(localIncarnationId);
+
+    if (refInfo === null) {
+      raiseBadarg();
+    }
+
+    return Type.reference(refInfo.node, refInfo.creation, idWords);
+  },
+  // End list_to_ref/1
+  // Deps: []
+
+  // Start list_to_tuple/1
+  "list_to_tuple/1": (list) => {
+    if (!Type.isProperList(list)) {
+      Interpreter.raiseBifError("badarg", "erlang", "list_to_tuple", [list]);
+    }
+    return Type.tuple(list.data);
+  },
+  // End list_to_tuple/1
+  // Deps: []
+
+  // Start localtime/0
+  // See: docs/erlang_time_functions_porting_strategy.md
+  "localtime/0": () => {
+    const now = new Date();
+
+    const year = now.getFullYear();
+    const month = now.getMonth() + 1; // JavaScript months are 0-indexed
+    const day = now.getDate();
+
+    const hour = now.getHours();
+    const minute = now.getMinutes();
+    const second = now.getSeconds();
+
+    const date = Type.tuple([Type.integer(year), Type.integer(month), Type.integer(day)]);
+
+    const time = Type.tuple([Type.integer(hour), Type.integer(minute), Type.integer(second)]);
+
+    return Type.tuple([date, time]);
+  },
+  // End localtime/0
+  // Deps: []
+
+  // Start make_fun/3
+  "make_fun/3": (module, functionName, arity) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "make_fun", [module, functionName, arity]);
+    };
+
+    if (!Type.isAtom(module)) {
+      raiseBadarg();
+    }
+
+    if (!Type.isAtom(functionName)) {
+      raiseBadarg();
+    }
+
+    if (!Type.isInteger(arity)) {
+      raiseBadarg();
+    }
+
+    if (arity.value < 0n) {
+      raiseBadarg();
+    }
+
+    if (arity.value > 255n) {
+      raiseBadarg();
+    }
+
+    const arityValue = Number(arity.value);
+    const functionNameText = functionName.value;
+
+    const paramNames = Array.from({length: arityValue}, (_elem, index) => `$${index + 1}`);
+
+    const clauses = [
+      {
+        params: (_context) => paramNames.map((name) => Type.variablePattern(name)),
+        guards: [],
+        body: (context) => {
+          const args = Type.list(paramNames.map((name) => context.vars[name]));
+
+          return Interpreter.callNamedFunction(module, functionName, args, context);
+        },
+      },
+    ];
+
+    const capturedModule = module.value.startsWith("Elixir.")
+      ? Interpreter.moduleExName(module)
+      : `:${module.value}`;
+
+    const context = Interpreter.buildContext({module: Type.nil()});
+
+    return Type.functionCapture(capturedModule, functionNameText, arityValue, clauses, context);
+  },
+  // End make_fun/3
+  // Deps: []
+
+  // Start make_ref/0
+  "make_ref/0": () => {
+    return ERTS.uniqueReference();
+  },
+  // End make_ref/0
+  // Deps: []
+
+  // Start make_tuple/2
+  "make_tuple/2": (arity, value) => {
+    // The Erlang implementation says that the index is out of range even when it is not an integer
+    if (!Type.isInteger(arity) || arity.value < 0n) {
+      Interpreter.raiseBifError("badarg", "erlang", "make_tuple", [arity, value]);
+    }
+
+    const data = Array(Number(arity.value)).fill(value);
+
+    return Type.tuple(data);
+  },
+  // End make_tuple/2
+  // Deps: []
+
+  // Start map_get/2
+  "map_get/2": (key, map) => {
+    return Erlang_Maps["get/2"](key, map);
+  },
+  // End map_get/2
+  // Deps: [:maps.get/2]
+
+  // Start map_size/1
+  "map_size/1": (map) => {
+    if (!Type.isMap(map)) {
+      Interpreter.raiseBadMapError(map);
+    }
+
+    return Type.integer(Object.keys(map.data).length);
+  },
+  // End map_size/1
+  // Deps: []
+
+  // TODO: test
+  // Start max/2
+  "max/2": (term1, term2) => {
+    switch (Interpreter.compareTerms(term1, term2)) {
+      case -1:
+        return term2;
+
+      case 0:
+        return term1;
+
+      case 1:
+        return term1;
+    }
+  },
+  // End max/2
+  // Deps: []
+
+  // TODO: test
+  // Start min/2
+  "min/2": (term1, term2) => {
+    switch (Interpreter.compareTerms(term1, term2)) {
+      case -1:
+        return term1;
+
+      case 0:
+        return term1;
+
+      case 1:
+        return term2;
+    }
+  },
+  // End min/2
+  // Deps: []
+
+  // Start monotonic_time/0
+  // See: docs/erlang_time_functions_porting_strategy.md
+  "monotonic_time/0": () => {
+    // performance.now() returns milliseconds with sub-ms precision.
+    // We convert to nanoseconds (multiply by 1_000_000).
+    //
+    // MAX_SAFE_INTEGER == 9_007_199_254_740_991
+    // MAX_SAFE_INTEGER / 1_000_000 ≈ 9_007_199_254 ms ≈ 104 days.
+    // Beyond that, ms * 1_000_000 exceeds MAX_SAFE_INTEGER and loses precision.
+    //
+    // Fast path: direct multiplication when safely within bounds.
+    // Safe path: split whole/fractional parts to avoid large float multiplication.
+    const ms = performance.now();
+
+    if (ms < 9_007_199_254) {
+      return Type.integer(BigInt(Math.round(ms * 1_000_000)));
+    }
+
+    const msWhole = Math.trunc(ms);
+
+    return Type.integer(
+      BigInt(msWhole) * 1_000_000n + BigInt(Math.round((ms - msWhole) * 1_000_000)),
+    );
+  },
+  // End monotonic_time/0
+  // Deps: []
+
+  // Start monotonic_time/1
+  // See: docs/erlang_time_functions_porting_strategy.md
+  "monotonic_time/1": (unit) => {
+    // TODO: unit is validated twice - here (for correct arg index in error message)
+    // and in convert_time_unit/3. This could be optimized in the future.
+    if (!Erlang["_is_valid_time_unit/1"](unit)) {
+      Interpreter.raiseBifError("badarg", "erlang", "monotonic_time", [unit]);
+    }
+    const nativeTime = Erlang["monotonic_time/0"]();
+
+    return Erlang["convert_time_unit/3"](nativeTime, Type.atom("native"), unit);
+  },
+  // End monotonic_time/1
+  // Deps: [:erlang._is_valid_time_unit/1, :erlang.convert_time_unit/3, :erlang.monotonic_time/0]
+
+  // Start node/0
+  "node/0": () => {
+    return Type.atom(ERTS.nodeTable.CLIENT_NODE);
+  },
+  // End node/0
+  // Deps: []
+
+  // Start not/1
+  "not/1": (term) => {
+    if (!Type.isBoolean(term)) {
+      Interpreter.raiseBifError("badarg", "erlang", "not", [term]);
+    }
+
+    return Type.boolean(term.value == "true" ? false : true);
+  },
+  // End not/1
+  // Deps: []
+
+  // Start pid_to_list/1
+  "pid_to_list/1": (pid) => {
+    if (!Type.isPid(pid)) {
+      Interpreter.raiseBifError("badarg", "erlang", "pid_to_list", [pid]);
+    }
+
+    const pidText = `<${pid.segments.join(".")}>`;
+
+    return Bitstring.toCodepoints(Type.bitstring(pidText));
+  },
+  // End pid_to_list/1
+  // Deps: []
+
+  // Start raise/3
+  "raise/3": (kind, reason, stacktrace) => {
+    if (!Type.isAtom(kind) || !["error", "exit", "throw"].includes(kind.value)) {
+      return Type.atom("badarg");
+    }
+
+    // A stacktrace entry is either {module, function, arity_or_args, location}
+    // with atom module and function, or {fun, arity_or_args, location}. Only
+    // these shapes are validated - the arity_or_args slot and the location's
+    // content are accepted as given, mirroring the BEAM.
+    const isValidEntry = (entry) => {
+      if (!Type.isTuple(entry)) {
+        return false;
+      }
+
+      const elems = entry.data;
+
+      if (elems.length === 4) {
+        return Type.isAtom(elems[0]) && Type.isAtom(elems[1]) && Type.isList(elems[3]);
+      }
+
+      if (elems.length === 3) {
+        return Type.isAnonymousFunction(elems[0]) && Type.isList(elems[2]);
+      }
+
+      return false;
+    };
+
+    if (!Type.isProperList(stacktrace) || !stacktrace.data.every(isValidEntry)) {
+      return Type.atom("badarg");
+    }
+
+    const error = new HologramBoxedError(reason, kind);
+
+    // The given boxed trace replaces the construction-time snapshot verbatim,
+    // matching the BEAM - this is what makes reraise preserve traces.
+    error.stacktrace = stacktrace;
+
+    throw error;
+  },
+  // End raise/3
+  // Deps: []
+
+  // Start ref_to_list/1
+  "ref_to_list/1": (reference) => {
+    if (!Type.isReference(reference)) {
+      Interpreter.raiseBifError("badarg", "erlang", "ref_to_list", [reference]);
+    }
+
+    const localIncarnationId = ERTS.nodeTable.getLocalIncarnationId(
+      reference.node,
+      reference.creation,
+    );
+
+    return Type.charlist(`#Ref<${localIncarnationId}.${reference.idWords.toReversed().join(".")}>`);
+  },
+  // End ref_to_list/1
+  // Deps: []
+
+  // Start rem/2
+  "rem/2": (integer1, integer2) => {
+    if (!Type.isInteger(integer1) || !Type.isInteger(integer2) || integer2.value === 0n) {
+      Interpreter.raiseBifError("badarith", "erlang", "rem", [integer1, integer2]);
+    }
+
+    // JavaScript's % operator on BigInt has the same sign behavior as Erlang's rem
+    // The result has the same sign as the dividend (integer1)
+    return Type.integer(integer1.value % integer2.value);
+  },
+  // End rem/2
+  // Deps: []
+
+  // Start round/1
+  "round/1": (number) => {
+    if (!Type.isNumber(number)) {
+      Interpreter.raiseBifError("badarg", "erlang", "round", [number]);
+    }
+
+    if (Type.isInteger(number)) {
+      return number;
+    }
+
+    // Erlang rounds half away from zero (5.5 -> 6, -5.5 -> -6)
+    // JavaScript Math.round rounds half toward positive infinity (5.5 -> 6, -5.5 -> -5)
+    // Use sign * round(abs) to get correct behavior
+    // Adding 0 converts -0 to 0
+    const value = number.value;
+    return Type.integer(Math.sign(value) * Math.round(Math.abs(value)) + 0);
+  },
+  // End round/1
+  // Deps: []
+
+  // Start setelement/3
+  "setelement/3": (index, tuple, value) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "setelement", [index, tuple, value]);
+    };
+
+    if (!Type.isInteger(index)) {
+      raiseBadarg();
+    }
+
+    if (!Type.isTuple(tuple)) {
+      raiseBadarg();
+    }
+
+    if (index.value <= 0n || index.value > tuple.data.length) {
+      raiseBadarg();
+    }
+
+    const data = [...tuple.data];
+    // The tuple index is one-based, so we need to compensate
+    data[Number(index.value) - 1] = value;
+
+    return Type.tuple(data);
+  },
+  // End setelement/3
+  // Deps: []
+
+  // Start split_binary/2
+  "split_binary/2": (binary, position) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "split_binary", [binary, position]);
+    };
+
+    if (!Type.isBinary(binary)) {
+      raiseBadarg();
+    }
+
+    if (!Type.isInteger(position)) {
+      raiseBadarg();
+    }
+
+    if (position.value < 0n) {
+      raiseBadarg();
+    }
+
+    const pos = Number(position.value);
+    const totalBytes = Number(Erlang["byte_size/1"](binary).value);
+
+    if (pos > totalBytes) {
+      raiseBadarg();
+    }
+
+    // If position is 0, first part is empty binary
+    if (pos === 0) {
+      return Type.tuple([Type.bitstring(""), binary]);
+    }
+
+    // If position equals total size, second part is empty binary
+    if (pos === totalBytes) {
+      return Type.tuple([binary, Type.bitstring("")]);
+    }
+
+    // Split the binary using takeChunk
+    // First part: from start to position (pos bytes)
+    const firstPart = Bitstring.takeChunk(binary, 0, pos * 8);
+
+    // Second part: from position to end
+    const secondPart = Bitstring.takeChunk(binary, pos * 8, (totalBytes - pos) * 8);
+
+    return Type.tuple([firstPart, secondPart]);
+  },
+  // End split_binary/2
+  // Deps: [:erlang.byte_size/1]
+
+  // Start system_info/1
+  // TODO: support the remaining system info items.
+  "system_info/1": (item) => {
+    if (Type.isAtom(item)) {
+      switch (item.value) {
+        // Byte order of JS typed arrays on all supported platforms
+        case "endian":
+          return Type.atom("little");
+
+        // The newest Erlang/OTP release the client runtime emulates
+        case "otp_release":
+          return Type.charlist("29");
+      }
+
+      throw new HologramInterpreterError(
+        `the ${Interpreter.inspect(item)} system info item is not yet implemented in Hologram`,
+      );
+    }
+
+    Interpreter.raiseBifError("badarg", "erlang", "system_info", [item]);
+  },
+  // End system_info/1
+  // Deps: []
+
+  // Start system_time/0
+  // See: docs/erlang_time_functions_porting_strategy.md
+  "system_time/0": () => {
+    // Delegates to :os.system_time/0 because in our JS environment there is no
+    // Erlang time correction, so OS system time and Erlang system time are identical.
+    return Erlang_Os["system_time/0"]();
+  },
+  // End system_time/0
+  // Deps: [:os.system_time/0]
+
+  // Start system_time/1
+  // See: docs/erlang_time_functions_porting_strategy.md
+  "system_time/1": (unit) => {
+    // Delegates to :os.system_time/1 because in our JS environment there is no
+    // Erlang time correction, so OS system time and Erlang system time are identical.
+    return Erlang_Os["system_time/1"](unit);
+  },
+  // End system_time/1
+  // Deps: [:os.system_time/1]
+
+  // Start throw/1
+  "throw/1": (value) => {
+    throw new HologramBoxedError(value, Type.atom("throw"));
+  },
+  // End throw/1
+  // Deps: []
+
+  // Start time_offset/0
+  // See: docs/erlang_time_functions_porting_strategy.md
+  "time_offset/0": () => {
+    // Uses :os.system_time/0 directly because in our JS environment there is no
+    // Erlang time correction, so OS system time and Erlang system time are identical.
+    const systemTime = Erlang_Os["system_time/0"]();
+
+    const monotonicTime = Erlang["monotonic_time/0"]();
+
+    return Type.integer(systemTime.value - monotonicTime.value);
+  },
+  // End time_offset/0
+  // Deps: [:erlang.monotonic_time/0, :os.system_time/0]
+
+  // Start time_offset/1
+  // See: docs/erlang_time_functions_porting_strategy.md
+  "time_offset/1": (unit) => {
+    // TODO: unit is validated twice - here (for correct arg index in error message)
+    // and in convert_time_unit/3. This could be optimized in the future.
+    if (!Erlang["_is_valid_time_unit/1"](unit)) {
+      Interpreter.raiseBifError("badarg", "erlang", "time_offset", [unit]);
+    }
+    const nativeTime = Erlang["time_offset/0"]();
+
+    return Erlang["convert_time_unit/3"](nativeTime, Type.atom("native"), unit);
+  },
+  // End time_offset/1
+  // Deps: [:erlang._is_valid_time_unit/1, :erlang.convert_time_unit/3, :erlang.time_offset/0]
+
+  // Start tl/1
+  "tl/1": (list) => {
+    if (!Type.isList(list) || list.data.length === 0) {
+      Interpreter.raiseBifError("badarg", "erlang", "tl", [list]);
+    }
+
+    const length = list.data.length;
+
+    if (length === 1) {
+      return Type.list();
+    }
+
+    const isProper = Type.isProperList(list);
+
+    if (length === 2 && !isProper) {
+      return list.data[1];
+    }
+
+    const data = list.data.slice(1);
+
+    return isProper ? Type.list(data) : Type.improperList(data);
+  },
+  // End tl/1
+  // Deps: []
+
+  // Start trunc/1
+  "trunc/1": (number) => {
+    if (!Type.isNumber(number)) {
+      Interpreter.raiseBifError("badarg", "erlang", "trunc", [number]);
+    }
+
+    if (Type.isFloat(number)) {
+      // Erlang :erlang.trunc/1 converts -0 to 0 while JavaScript Math.trunc() does not
+      return Type.integer(Math.trunc(number.value) + 0);
+    }
+
+    return number;
+  },
+  // End trunc/1
+  // Deps: []
+
+  // Start tuple_size/1
+  "tuple_size/1": (tuple) => {
+    if (!Type.isTuple(tuple)) {
+      Interpreter.raiseBifError("badarg", "erlang", "tuple_size", [tuple]);
+    }
+
+    return Type.integer(tuple.data.length);
+  },
+  // End tuple_size/1
+  // Deps: []
+
+  // Start tuple_to_list/1
+  "tuple_to_list/1": (tuple) => {
+    if (!Type.isTuple(tuple)) {
+      Interpreter.raiseBifError("badarg", "erlang", "tuple_to_list", [tuple]);
+    }
+
+    return Type.list(tuple.data);
+  },
+  // End tuple_to_list/1
+  // Deps: []
+
+  // Start unique_integer/0
+  "unique_integer/0": () => {
+    return Type.integer(ERTS.uniqueIntegerSequence.next());
+  },
+  // End unique_integer/0
+  // Deps: []
+
+  // Start unique_integer/1
+  // Simplified: always returns monotonic, positive integers regardless of modifiers.
+  "unique_integer/1": (modifierList) => {
+    const raiseBadarg = () => {
+      Interpreter.raiseBifError("badarg", "erlang", "unique_integer", [modifierList]);
+    };
+
+    if (!Type.isList(modifierList)) {
+      raiseBadarg();
+    }
+
+    if (!Type.isProperList(modifierList)) {
+      raiseBadarg();
+    }
+
+    const validModifiers = ["monotonic", "positive"];
+
+    for (const modifier of modifierList.data) {
+      if (!Type.isAtom(modifier) || !validModifiers.includes(modifier.value)) {
+        raiseBadarg();
+      }
+    }
+
+    return Erlang["unique_integer/0"]();
+  },
+  // End unique_integer/1
+  // Deps: [:erlang.unique_integer/0]
+
+  // Start xor/2
+  "xor/2": (left, right) => {
+    if (!Type.isBoolean(left) || !Type.isBoolean(right)) {
+      Interpreter.raiseBifError("badarg", "erlang", "xor", [left, right]);
+    }
+
+    return Type.boolean(left.value != right.value);
+  },
+  // End xor/2
+  // Deps: []
+};
+
+export default Erlang;
