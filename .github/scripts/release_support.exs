@@ -133,7 +133,12 @@ defmodule ReleaseSupport do
         do: raise("original release gate did not pass: #{name}")
     end
 
-    native = Enum.filter(jobs, &String.starts_with?(&1["name"], "native / "))
+    # Keep recovery of historical matrix runs and the split target workflows.
+    native =
+      Enum.filter(jobs, fn job ->
+        (String.starts_with?(job["name"], "native / ") or
+           String.starts_with?(job["name"], "native-")) and job["conclusion"] != "skipped"
+      end)
 
     unless length(native) == 47 and
              length(Enum.uniq_by(native, & &1["name"])) == 47 and

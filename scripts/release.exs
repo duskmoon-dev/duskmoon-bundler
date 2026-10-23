@@ -16,15 +16,14 @@ defmodule BundlerRelease do
       package_order: ReleaseSupport.dependency_order!(manifests),
       native_contract: %{rust_crates: 5, rust_targets: 8, quickbeam_targets: 7, total_assets: 47},
       steps: [
-        "source tests",
-        "pinned candidate UI source integration",
+        "prior CI and test.yml gates at the exact source/UI SHAs",
         "47 native artifacts",
         "checksums from final files",
-        "stage and isolated consumer",
+        "stage exact package tarballs",
         "public immutable assets",
         "9 Hex packages",
-        "registry glibc/musl consumers",
-        "one pinned UI upgrade PR"
+        "independent test.yml package/registry consumers",
+        "one pinned UI upgrade PR after published tests"
       ]
     }
   end

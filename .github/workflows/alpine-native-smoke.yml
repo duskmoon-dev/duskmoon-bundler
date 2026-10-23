@@ -19,6 +19,9 @@ on:
         type: string
 permissions:
   contents: read
+concurrency:
+  group: toolchain-alpine-${{ inputs.version }}-${{ github.run_id }}
+  cancel-in-progress: false
 jobs:
   musl:
     runs-on: ${{ matrix.runner }}
@@ -26,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+        runner: [ubuntu-26.04, ubuntu-26.04-arm]
     steps:
       - uses: actions/checkout@v7
         with:

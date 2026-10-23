@@ -89,6 +89,12 @@ DUSKMOON_NATIVE_MODE=source mix duskmoon_bundler.js.format duskmoon_hologram
 DUSKMOON_NATIVE_MODE=source mix duskmoon_bundler.js.check duskmoon_hologram
 ```
 
+The root `ci.yml` checks formatting, linting and compilation. `test.yml` runs the
+Elixir and JavaScript suites, including asset dependency installation before
+the Elixir tests. Release checks prior successful results for its exact source
+and pinned UI revisions; it builds and publishes without rerunning these tests.
+Published-package consumer checks run afterward in `test.yml`.
+
 `mix test.js` runs the existing Mocha + jsdom suite through Bun, using
 `bun --bun run mocha` to force the Bun runtime. It does not use `bun test`.
 

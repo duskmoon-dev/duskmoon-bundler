@@ -1,0 +1,303 @@
+name: Toolchain Tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ui_sha:
+        description: Immutable UI SHA to validate before release
+        required: false
+        type: string
+  workflow_run:
+    workflows: [Toolchain Release]
+    types: [completed]
+  workflow_call:
+    inputs:
+      version:
+        description: Already-published stable cohort to test
+        required: true
+        type: string
+      source_sha:
+        description: Immutable artifact source SHA
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: toolchain-tests-${{ github.event_name }}-${{ github.event.workflow_run.id || inputs.version || github.ref }}-${{ inputs.ui_sha || '' }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_run' && github.event_name != 'workflow_call' }}
+jobs:
+  test:
+    if: github.event_name != 'workflow_run' && inputs.version == ''
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    env:
+      DUSKMOON_NATIVE_MODE: source
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-toolchain
+      - uses: browser-actions/setup-chrome@v2
+        id: chrome
+      - name: Release, package, workflow and native-policy contracts
+        run: |
+          elixir .github/scripts/release_test.exs
+          elixir .github/scripts/workflow_checks_test.exs
+          elixir scripts/upgrade-ui-test.exs
+          elixir scripts/package-stage-test.exs
+          elixir scripts/native-policy-test.exs
+      - run: elixir scripts/native-download-failure-test.exs
+      - name: Hologram Mocha suite under Bun and asset dependency setup
+        run: MIX_ENV=dev mix test.js
+      - name: All sub-app Elixir tests including Hologram
+        env:
+          CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
+          MIX_ENV: test
+        run: mix test --timeout 300000
+      - run: bun test test/js
+  candidate-ui:
+    name: candidate-ui / ${{ inputs.ui_sha }}
+    if: github.event_name == 'workflow_dispatch' && inputs.ui_sha != ''
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    env:
+      DUSKMOON_NATIVE_MODE: source
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: toolchain
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.18'
+          otp-version: '28'
+      - name: Require an immutable UI integration revision
+        env:
+          UI_SHA: ${{ inputs.ui_sha }}
+        run: elixir -r toolchain/.github/scripts/release_support.exs -e 'ReleaseSupport.sha!(System.fetch_env!("UI_SHA"))'
+      - uses: actions/checkout@v7
+        with:
+          repository: duskmoon-dev/phoenix-duskmoon-ui
+          ref: ${{ inputs.ui_sha }}
+          path: ui
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - uses: browser-actions/setup-chrome@v2
+        id: chrome
+      - name: Candidate closure with isolated native sources
+        env:
+          CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
+        working-directory: ui
+        run: scripts/candidate-integration.sh "$GITHUB_WORKSPACE/toolchain"
+  published-context:
+    if: inputs.version != '' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.context.outputs.version }}
+      source_sha: ${{ steps.context.outputs.source_sha }}
+      current_cohort: ${{ steps.context.outputs.current_cohort }}
+      release_run: ${{ steps.context.outputs.release_run }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.18'
+          otp-version: '28'
+      - name: Resolve the successful publication or explicit verification request
+        id: context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: elixir .github/scripts/test_release_context.exs
+  public-artifacts:
+    defaults:
+      run:
+        working-directory: source
+    env:
+      DUSKMOON_NATIVE_MODE: precompiled
+    needs: published-context
+    if: needs.published-context.outputs.version != ''
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.published-context.outputs.source_sha }}
+          path: source
+      - uses: actions/checkout@v7
+        with:
+          path: validation
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.18'
+          otp-version: '28'
+      - name: Download and hash the complete public native cohort
+        id: reuse
+        env:
+          VERSION: ${{ needs.published-context.outputs.version }}
+          SOURCE_SHA: ${{ needs.published-context.outputs.source_sha }}
+        run: elixir "$GITHUB_WORKSPACE/validation/.github/scripts/reuse_release.exs" "$VERSION" "$SOURCE_SHA" "$RUNNER_TEMP/verified-native-assets"
+      - name: Reject unpublished or incomplete native artifacts
+        env:
+          REUSABLE: ${{ steps.reuse.outputs.reusable }}
+        run: test "$REUSABLE" = true
+      - name: Verify public provenance and every release Hex tarball
+        env:
+          VERSION: ${{ needs.published-context.outputs.version }}
+          SOURCE_SHA: ${{ needs.published-context.outputs.source_sha }}
+        run: |
+          cat > "$RUNNER_TEMP/verify-public-packages.exs" <<'ELIXIR'
+          version = ReleaseSupport.stable!(System.fetch_env!("VERSION"))
+          sha = ReleaseSupport.checked_head!(System.fetch_env!("SOURCE_SHA"))
+          cohort = ReleaseSupport.cohort(version)
+          ReleaseSupport.manifests!("apps", cohort, version)
+          output = Path.join(System.fetch_env!("RUNNER_TEMP"), "verified-hex-packages")
+          File.mkdir!(output)
+          provenance = Path.join(output, "release-provenance.json")
+          ReleaseSupport.http!(
+            "https://github.com/duskmoon-dev/duskmoon-bundler/releases/download/v#{version}/release-provenance.json",
+            provenance
+          )
+          state = JSON.decode!(File.read!(provenance))
+          for {key, expected} <- [
+                {"version", version}, {"source_sha", sha},
+                {"mix_lock_sha256", ReleaseSupport.digest("mix.lock")},
+                {"bun_lock_sha256", ReleaseSupport.digest("bun.lock")}
+              ] do
+            unless Map.fetch!(state, key) == expected,
+              do: raise("public provenance mismatch: #{key}")
+          end
+          unless ReleaseSupport.reusable_native?(state),
+            do: raise("public provenance lacks all 47 native artifacts")
+          tarballs = Map.fetch!(state, "package_tarballs")
+          unless Enum.sort(Map.keys(tarballs)) == Enum.sort(cohort) and
+                   Enum.sort(Map.fetch!(state, "package_order")) == Enum.sort(cohort),
+            do: raise("public provenance package cohort mismatch")
+          for app <- cohort do
+            expected = Map.fetch!(tarballs, app)
+            unless is_binary(expected) and expected =~ ~r/^[a-f0-9]{64}$/,
+              do: raise("invalid published package digest: #{app}")
+            File.mkdir_p!(Path.join(output, app))
+            tarball = Path.join([output, app, "#{app}-#{version}.tar"])
+            ReleaseSupport.http!("https://repo.hex.pm/tarballs/#{app}-#{version}.tar", tarball)
+            ReleaseSupport.immutable_action(ReleaseSupport.digest(tarball), expected)
+          end
+          File.write!(Path.join(output, "manifest.json"), JSON.encode!(%{version: version, source_sha: sha, packages: Enum.map(cohort, &%{name: &1})}))
+          IO.puts("Verified all #{length(cohort)} public Hex package bytes for #{version} at #{sha}")
+          ELIXIR
+          elixir -r "$GITHUB_WORKSPACE/validation/.github/scripts/release_support.exs" "$RUNNER_TEMP/verify-public-packages.exs"
+      - name: Exact published tarball consumer and runtime-only regression
+        if: needs.published-context.outputs.current_cohort == 'true'
+        env:
+          VERSION: ${{ needs.published-context.outputs.version }}
+          MIX_ENV: test
+        run: |
+          elixir "$GITHUB_WORKSPACE/validation/.github/scripts/prepare_tar_consumer.exs" "$RUNNER_TEMP/verified-hex-packages" "$RUNNER_TEMP/consumer-packages"
+          elixir "$GITHUB_WORKSPACE/validation/scripts/package-consumer-smoke.exs" --stage "$RUNNER_TEMP/consumer-packages" --mode precompiled
+          elixir "$GITHUB_WORKSPACE/validation/.github/scripts/runtime_consumer.exs" "$VERSION" "$RUNNER_TEMP/consumer-packages"
+  registry:
+    needs: published-context
+    if: needs.published-context.outputs.version != ''
+    runs-on: ubuntu-26.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - name: Cold registry glibc consumer without source compilers
+        env:
+          VERSION: ${{ needs.published-context.outputs.version }}
+        run: |
+          docker run --rm --volume "$PWD/.github/scripts:/validation:ro" \
+            elixir:1.18-otp-28-slim sh /validation/alpine_native_smoke.sh "$VERSION"
+  musl:
+    needs: published-context
+    if: needs.published-context.outputs.version != ''
+    uses: ./.github/workflows/alpine-native-smoke.yml
+    with:
+      version: ${{ needs.published-context.outputs.version }}
+      source_sha: ${{ github.sha }}
+  upgrade:
+    needs: [published-context, public-artifacts, registry, musl]
+    if: needs.published-context.outputs.version != ''
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: toolchain
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.18'
+          otp-version: '28'
+      - name: Record full verified release gates for automatic or manual adoption
+        working-directory: toolchain
+        env:
+          VERSION: ${{ needs.published-context.outputs.version }}
+          SOURCE_SHA: ${{ needs.published-context.outputs.source_sha }}
+          VALIDATION_SHA: ${{ github.sha }}
+          RELEASE_RUN: ${{ needs.published-context.outputs.release_run }}
+          VERIFICATION_RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          elixir -r .github/scripts/release_support.exs -e 'File.write!("verified-release.json", JSON.encode!(%{version: System.fetch_env!("VERSION"), source_sha: System.fetch_env!("SOURCE_SHA"), validation_sha: System.fetch_env!("VALIDATION_SHA"), release_run: System.fetch_env!("RELEASE_RUN"), verification_run: System.fetch_env!("VERIFICATION_RUN"), packages: ReleaseSupport.cohort(System.fetch_env!("VERSION")), public_assets_verified: true, registry_consumer_verified: true, musl_amd64_verified: true, musl_arm64_verified: true}))'
+      - uses: actions/upload-artifact@v6
+        with:
+          name: verified-toolchain-release-v${{ needs.published-context.outputs.version }}
+          path: toolchain/verified-release.json
+          overwrite: true
+      - name: Detect cross-repository configuration
+        id: configured
+        env:
+          APP_ID: ${{ vars.UI_UPGRADE_APP_ID }}
+          APP_KEY: ${{ secrets.UI_UPGRADE_APP_PRIVATE_KEY }}
+          FALLBACK: ${{ secrets.UI_UPGRADE_TOKEN }}
+        run: |
+          if [ -n "$APP_ID" ] && [ -n "$APP_KEY" ]; then
+            echo 'use_app=true' >> "$GITHUB_OUTPUT"
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          elif [ -n "$FALLBACK" ]; then
+            echo 'use_app=false' >> "$GITHUB_OUTPUT"
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo 'B release verified; UI coordination is unconfigured. Follow docs/upgrade-ui.md.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/create-github-app-token@v3
+        if: steps.configured.outputs.use_app == 'true'
+        id: app
+        with:
+          app-id: ${{ vars.UI_UPGRADE_APP_ID }}
+          private-key: ${{ secrets.UI_UPGRADE_APP_PRIVATE_KEY }}
+          owner: duskmoon-dev
+          repositories: phoenix-duskmoon-ui
+          permission-contents: write
+          permission-pull-requests: write
+      - uses: actions/checkout@v7
+        if: steps.configured.outputs.enabled == 'true'
+        with:
+          repository: duskmoon-dev/phoenix-duskmoon-ui
+          ref: main
+          path: ui
+          token: ${{ steps.app.outputs.token || secrets.UI_UPGRADE_TOKEN }}
+      - name: Record verified gates and create/reuse one pinned upgrade PR
+        if: steps.configured.outputs.enabled == 'true'
+        working-directory: toolchain
+        env:
+          VERSION: ${{ needs.published-context.outputs.version }}
+          SOURCE_SHA: ${{ needs.published-context.outputs.source_sha }}
+          GH_TOKEN: ${{ steps.app.outputs.token || secrets.UI_UPGRADE_TOKEN }}
+        run: |
+          elixir scripts/upgrade-ui.exs --push "$VERSION" "$SOURCE_SHA" "$GITHUB_WORKSPACE/ui" verified-release.json

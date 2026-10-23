@@ -90,8 +90,12 @@ scope of imported benchmark reports.
 ## CI and releases
 
 The root [CI workflow](../../.github/workflows/ci.yml) checks Elixir formatting,
-warnings-as-errors compilation, the full umbrella/Elixir test suite, native OXC
-checks, and the JavaScript suite under Bun. It supports push, pull requests, and
-manual runs. The shared [release workflow](../../.github/workflows/release.yml)
-uses the same version for all nine packages and publishes Hologram after its
-toolchain dependencies. See the [release runbook](../../docs/releasing.md).
+warnings-as-errors compilation and native OXC formatting/linting. The separate
+[test workflow](../../.github/workflows/test.yml) runs the full umbrella/Elixir
+suite, Hologram Mocha under Bun and generic JavaScript tests. A manual test run
+also accepts an immutable UI SHA for candidate integration. The shared
+[release workflow](../../.github/workflows/release.yml) requires successful checks
+for the exact source/UI SHAs, builds NIFs through eight target workflows, and
+publishes Hologram after its toolchain dependencies without rerunning tests.
+Published-package tests run afterward in `test.yml` and gate UI adoption.
+See the [release runbook](../../docs/releasing.md).

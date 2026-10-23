@@ -1,0 +1,25 @@
+name: Native aarch64-apple-darwin
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      source_sha:
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: native-target-aarch64-apple-darwin-${{ inputs.version }}-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  build:
+    uses: ./.github/workflows/native-prebuild.yml
+    with:
+      version: ${{ inputs.version }}
+      source_sha: ${{ inputs.source_sha }}
+      target: aarch64-apple-darwin
+      runner: macos-26
+      use_cross: false
+      quickbeam_target: 'aarch64-macos-none'

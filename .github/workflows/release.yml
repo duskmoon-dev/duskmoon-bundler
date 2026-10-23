@@ -21,6 +21,7 @@ on:
         default: false
 permissions:
   contents: read
+  actions: read
 concurrency:
   # The called verifier holds the cohort lock; its caller must use a separate lock.
   group: toolchain-release-${{ inputs.version }}${{ inputs.verify_published && '-verification-dispatch' || '' }}
@@ -35,12 +36,13 @@ jobs:
     secrets: inherit
   validate:
     if: ${{ !inputs.verify_published }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     env:
       DUSKMOON_NATIVE_MODE: source
     outputs:
       reuse_native: ${{ steps.reuse.outputs.reusable }}
+      test_run: ${{ steps.checks.outputs.test_run }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -49,17 +51,13 @@ jobs:
         with:
           elixir-version: '1.18'
           otp-version: '28'
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-      - uses: goto-bus-stop/setup-zig@v2
-        with:
-          version: 0.16.0
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.0
-      - uses: browser-actions/setup-chrome@v2
-        id: chrome
+      - name: Require prior CI, source tests and pinned UI integration
+        id: checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          UI_SHA: ${{ inputs.ui_sha }}
+        run: elixir .github/scripts/check_workflow_runs.exs "$SOURCE_SHA" "$UI_SHA"
       - name: Immutable complete release plan
         env:
           VERSION: ${{ inputs.version }}
@@ -84,70 +82,77 @@ jobs:
           name: native-reused
           path: ${{ runner.temp }}/reused-native-assets/*.tar.gz
           if-no-files-found: error
-      - name: Standalone source, packaging and policy checks
-        run: |
-          mix deps.get --check-locked
-          bun install --frozen-lockfile
-          elixir .github/scripts/release_test.exs
-          elixir scripts/upgrade-ui-test.exs
-          elixir scripts/package-stage-test.exs
-          elixir scripts/native-policy-test.exs
-          mix compile --warnings-as-errors
-          elixir scripts/native-download-failure-test.exs
-      # Installs Hologram's asset dependencies before the Elixir helper and compiler tests.
-      - uses: ./.github/actions/hologram-checks
-      - name: All sub-app Elixir tests and generic JavaScript regressions
-        env:
-          CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
-        run: |
-          mix test --timeout 300000
-          bun test test/js
+          overwrite: true
   candidate-ui:
     needs: validate
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.source_sha }}
-          path: toolchain
-      - uses: actions/checkout@v7
-        with:
-          repository: duskmoon-dev/phoenix-duskmoon-ui
-          ref: ${{ inputs.ui_sha }}
-          path: ui
-          persist-credentials: false
-      - uses: erlef/setup-beam@v1
-        with:
-          elixir-version: '1.18'
-          otp-version: '28'
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-      - uses: goto-bus-stop/setup-zig@v2
-        with:
-          version: 0.16.0
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.0
-      - uses: browser-actions/setup-chrome@v2
-        id: chrome
-      - name: Exercise the complete candidate closure with candidate native sources
+      - name: Record the previously passed pinned UI gate
         env:
-          CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
-        working-directory: ui
-        run: scripts/candidate-integration.sh "$GITHUB_WORKSPACE/toolchain"
-  native:
+          TEST_RUN: ${{ needs.validate.outputs.test_run }}
+          UI_SHA: ${{ inputs.ui_sha }}
+        run: echo "Pinned UI $UI_SHA passed in test workflow run $TEST_RUN" >> "$GITHUB_STEP_SUMMARY"
+  native-aarch64-apple-darwin:
     needs: [validate, candidate-ui]
     if: needs.validate.outputs.reuse_native != 'true'
-    uses: ./.github/workflows/native-prebuild.yml
+    uses: ./.github/workflows/native-aarch64-apple-darwin.yml
+    with:
+      version: ${{ inputs.version }}
+      source_sha: ${{ inputs.source_sha }}
+  native-x86_64-apple-darwin:
+    needs: [validate, candidate-ui]
+    if: needs.validate.outputs.reuse_native != 'true'
+    uses: ./.github/workflows/native-x86_64-apple-darwin.yml
+    with:
+      version: ${{ inputs.version }}
+      source_sha: ${{ inputs.source_sha }}
+  native-aarch64-unknown-linux-gnu:
+    needs: [validate, candidate-ui]
+    if: needs.validate.outputs.reuse_native != 'true'
+    uses: ./.github/workflows/native-aarch64-unknown-linux-gnu.yml
+    with:
+      version: ${{ inputs.version }}
+      source_sha: ${{ inputs.source_sha }}
+  native-aarch64-unknown-linux-musl:
+    needs: [validate, candidate-ui]
+    if: needs.validate.outputs.reuse_native != 'true'
+    uses: ./.github/workflows/native-aarch64-unknown-linux-musl.yml
+    with:
+      version: ${{ inputs.version }}
+      source_sha: ${{ inputs.source_sha }}
+  native-x86_64-unknown-linux-gnu:
+    needs: [validate, candidate-ui]
+    if: needs.validate.outputs.reuse_native != 'true'
+    uses: ./.github/workflows/native-x86_64-unknown-linux-gnu.yml
+    with:
+      version: ${{ inputs.version }}
+      source_sha: ${{ inputs.source_sha }}
+  native-x86_64-unknown-linux-musl:
+    needs: [validate, candidate-ui]
+    if: needs.validate.outputs.reuse_native != 'true'
+    uses: ./.github/workflows/native-x86_64-unknown-linux-musl.yml
+    with:
+      version: ${{ inputs.version }}
+      source_sha: ${{ inputs.source_sha }}
+  native-x86_64-unknown-freebsd:
+    needs: [validate, candidate-ui]
+    if: needs.validate.outputs.reuse_native != 'true'
+    uses: ./.github/workflows/native-x86_64-unknown-freebsd.yml
+    with:
+      version: ${{ inputs.version }}
+      source_sha: ${{ inputs.source_sha }}
+  native-x86_64-pc-windows-gnu:
+    needs: [validate, candidate-ui]
+    if: needs.validate.outputs.reuse_native != 'true'
+    uses: ./.github/workflows/native-x86_64-pc-windows-gnu.yml
     with:
       version: ${{ inputs.version }}
       source_sha: ${{ inputs.source_sha }}
   stage:
-    needs: [validate, candidate-ui, native]
-    if: ${{ always() && needs.validate.result == 'success' && needs.candidate-ui.result == 'success' && (needs.native.result == 'success' || (needs.validate.outputs.reuse_native == 'true' && needs.native.result == 'skipped')) }}
-    runs-on: ubuntu-latest
+    needs: [validate, candidate-ui, native-aarch64-apple-darwin, native-x86_64-apple-darwin, native-aarch64-unknown-linux-gnu, native-aarch64-unknown-linux-musl, native-x86_64-unknown-linux-gnu, native-x86_64-unknown-linux-musl, native-x86_64-unknown-freebsd, native-x86_64-pc-windows-gnu]
+    if: ${{ always() && needs.validate.result == 'success' && needs.candidate-ui.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (needs.validate.outputs.reuse_native == 'true' || !contains(needs.*.result, 'skipped')) }}
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -167,17 +172,16 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           elixir scripts/release.exs prepare "$VERSION" "$SOURCE_SHA" "$RUNNER_TEMP/native-assets" "$RUNNER_TEMP/packages"
-          elixir scripts/package-stage-test.exs
-          elixir .github/scripts/runtime_consumer.exs "$VERSION" "$RUNNER_TEMP/packages"
       - uses: actions/upload-artifact@v6
         with:
           name: exact-publish-packages
           path: ${{ runner.temp }}/packages
           include-hidden-files: true
+          overwrite: true
   publish:
     needs: stage
     environment: release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     env:
@@ -206,10 +210,6 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
           GH_TOKEN: ${{ github.token }}
         run: elixir scripts/release.exs publish-assets "$VERSION" "$SOURCE_SHA" "$RUNNER_TEMP/native-assets" "$RUNNER_TEMP/packages"
-      - name: Exact staged packages outside either repository using final precompiled artifacts
-        run: |
-          elixir .github/scripts/prepare_tar_consumer.exs "$RUNNER_TEMP/packages" "$RUNNER_TEMP/consumer-packages"
-          elixir scripts/package-consumer-smoke.exs --stage "$RUNNER_TEMP/consumer-packages" --mode precompiled
       - name: Publish Hex packages in derived manifest order
         env:
           VERSION: ${{ inputs.version }}
@@ -217,92 +217,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
         run: elixir scripts/release.exs publish-packages "$VERSION" "$SOURCE_SHA" "$RUNNER_TEMP/native-assets" "$RUNNER_TEMP/packages"
-  registry:
-    needs: publish
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.source_sha }}
-      - name: Cold registry glibc consumer without source compilers
-        env:
-          VERSION: ${{ inputs.version }}
-        run: |
-          docker run --rm --volume "$PWD/.github/scripts:/validation:ro" \
-            elixir:1.18-otp-28-slim sh /validation/alpine_native_smoke.sh "$VERSION"
-  musl:
-    needs: publish
-    uses: ./.github/workflows/alpine-native-smoke.yml
-    with:
-      version: ${{ inputs.version }}
-      source_sha: ${{ inputs.source_sha }}
-  upgrade:
-    needs: [publish, registry, musl]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.source_sha }}
-          path: toolchain
-      - uses: erlef/setup-beam@v1
-        with:
-          elixir-version: '1.18'
-          otp-version: '28'
-      - name: Record full verified release gates for automatic or manual adoption
-        working-directory: toolchain
+      - name: Record the published cohort for the independent test workflow
         env:
           VERSION: ${{ inputs.version }}
           SOURCE_SHA: ${{ inputs.source_sha }}
-          RELEASE_RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          UI_SHA: ${{ inputs.ui_sha }}
         run: |
-          elixir -r .github/scripts/release_support.exs -e 'File.write!("verified-release.json", JSON.encode!(%{version: System.fetch_env!("VERSION"), source_sha: System.fetch_env!("SOURCE_SHA"), release_run: System.fetch_env!("RELEASE_RUN"), packages: ReleaseSupport.cohort(), public_assets_verified: true, registry_consumer_verified: true, musl_amd64_verified: true, musl_arm64_verified: true}))'
+          elixir -e 'File.write!(Path.join(System.fetch_env!("RUNNER_TEMP"), "release-request.json"), JSON.encode!(%{version: System.fetch_env!("VERSION"), source_sha: System.fetch_env!("SOURCE_SHA"), ui_sha: System.fetch_env!("UI_SHA")}))'
       - uses: actions/upload-artifact@v6
         with:
-          name: verified-toolchain-release-v${{ inputs.version }}
-          path: toolchain/verified-release.json
-      - name: Detect cross-repository configuration
-        id: configured
-        env:
-          APP_ID: ${{ vars.UI_UPGRADE_APP_ID }}
-          APP_KEY: ${{ secrets.UI_UPGRADE_APP_PRIVATE_KEY }}
-          FALLBACK: ${{ secrets.UI_UPGRADE_TOKEN }}
-        run: |
-          if [ -n "$APP_ID" ] && [ -n "$APP_KEY" ]; then
-            echo 'use_app=true' >> "$GITHUB_OUTPUT"
-            echo 'enabled=true' >> "$GITHUB_OUTPUT"
-          elif [ -n "$FALLBACK" ]; then
-            echo 'use_app=false' >> "$GITHUB_OUTPUT"
-            echo 'enabled=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'enabled=false' >> "$GITHUB_OUTPUT"
-            echo 'B release verified; UI coordination is unconfigured. Follow docs/upgrade-ui.md.' >> "$GITHUB_STEP_SUMMARY"
-          fi
-      - uses: actions/create-github-app-token@v3
-        if: steps.configured.outputs.use_app == 'true'
-        id: app
-        with:
-          app-id: ${{ vars.UI_UPGRADE_APP_ID }}
-          private-key: ${{ secrets.UI_UPGRADE_APP_PRIVATE_KEY }}
-          owner: duskmoon-dev
-          repositories: phoenix-duskmoon-ui
-          permission-contents: write
-          permission-pull-requests: write
-      - uses: actions/checkout@v7
-        if: steps.configured.outputs.enabled == 'true'
-        with:
-          repository: duskmoon-dev/phoenix-duskmoon-ui
-          ref: main
-          path: ui
-          token: ${{ steps.app.outputs.token || secrets.UI_UPGRADE_TOKEN }}
-      - name: Record verified gates and create/reuse one pinned upgrade PR
-        if: steps.configured.outputs.enabled == 'true'
-        working-directory: toolchain
-        env:
-          VERSION: ${{ inputs.version }}
-          SOURCE_SHA: ${{ inputs.source_sha }}
-          GH_TOKEN: ${{ steps.app.outputs.token || secrets.UI_UPGRADE_TOKEN }}
-        run: |
-          elixir scripts/upgrade-ui.exs --push "$VERSION" "$SOURCE_SHA" "$GITHUB_WORKSPACE/ui" verified-release.json
+          name: release-request
+          path: ${{ runner.temp }}/release-request.json
+          if-no-files-found: error
+          overwrite: true

@@ -17,9 +17,12 @@ on:
 permissions:
   contents: read
   actions: read
+concurrency:
+  group: toolchain-resume-${{ inputs.version }}
+  cancel-in-progress: false
 jobs:
   resume:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     environment: release
     # Release this lock before the reusable verifier takes the same cohort lock.

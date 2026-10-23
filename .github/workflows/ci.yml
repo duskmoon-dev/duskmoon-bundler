@@ -6,93 +6,18 @@ on:
   workflow_call:
 permissions:
   contents: read
+concurrency:
+  group: toolchain-ci-${{ github.ref }}
+  cancel-in-progress: true
 env:
   DUSKMOON_NATIVE_MODE: source
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        otp: ['28']
     steps:
       - uses: actions/checkout@v7
-      - uses: erlef/setup-beam@v1
-        with:
-          elixir-version: '1.18'
-          otp-version: ${{ matrix.otp }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-      - uses: goto-bus-stop/setup-zig@v2
-        with:
-          version: 0.16.0
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.0
-      - name: Verify Bun Unicode semantics
-        run: |
-          bun -e 'if (!/[f-m]/iu.test("K") || String.fromCodePoint(68976).toUpperCase() !== String.fromCodePoint(68944)) throw new Error("Bun must support Unicode range case folding and Garay casing")'
-      - uses: browser-actions/setup-chrome@v2
-        id: chrome
-      - uses: actions/cache@v6
-        with:
-          path: deps
-          key: ${{ github.repository }}-${{ runner.os }}-${{ runner.arch }}-glibc-source-elixir1.18-otp${{ matrix.otp }}-rust-stable-zig0.16-${{ hashFiles('mix.lock', '**/Cargo.lock') }}
-      - name: Fingerprint native build toolchain
-        id: native-toolchain
-        shell: bash
-        run: |
-          fingerprint=$(
-            {
-              rustc --version --verbose
-              cargo --version
-              zig version
-              elixir --version
-              cc --version
-              ldd --version
-              printf '%s\n' "$ImageOS" "$ImageVersion"
-            } | sha256sum | cut -d ' ' -f 1
-          )
-          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
-      - name: Cache native compilation
-        uses: actions/cache@v6
-        with:
-          path: |
-            apps/*/target
-            apps/*/native/*/target
-            _build/*/zig-cache
-            ~/.cache/zig
-            ~/.cargo/registry
-            ~/.cargo/git
-          # Cache compiler-owned artifacts, not BEAM files or test results.
-          # Native input changes create a new cache; the compatible fallback
-          # lets Cargo/Zig rebuild only invalidated units rather than all deps.
-          key: ${{ github.repository }}-native-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native-toolchain.outputs.fingerprint }}-${{ hashFiles('mix.exs', 'mix.lock', 'config/**', '.github/workflows/ci.yml', '.cargo/**', 'apps/*/.cargo/**', 'apps/*/mix.exs', 'apps/*/Cargo.*', 'apps/*/native/**', 'apps/*/lib/**/native*.ex', 'apps/duskmoon_quickbeam/lib/**', 'apps/duskmoon_quickbeam/priv/c_src/**', '!**/target/**') }}
-          restore-keys: |
-            ${{ github.repository }}-native-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native-toolchain.outputs.fingerprint }}-
-      - uses: actions/cache@v6
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ github.repository }}-bun1.4.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock') }}
-      - name: Install locked toolchain dependencies
-        run: |
-          mix deps.get --check-locked
-          bun install --frozen-lockfile
-      - name: Pure release, package and native-policy contracts
-        run: |
-          elixir .github/scripts/release_test.exs
-          elixir scripts/upgrade-ui-test.exs
-          elixir scripts/package-stage-test.exs
-          elixir scripts/native-policy-test.exs
+      - uses: ./.github/actions/setup-toolchain
       - run: mix format --check-formatted
       - run: mix compile --warnings-as-errors
       - uses: ./.github/actions/hologram-checks
-      - run: elixir scripts/native-download-failure-test.exs
-      - name: All sub-apps including Hologram Elixir tests and generic integration regressions
-        env:
-          CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
-          MIX_ENV: test
-        run: mix test --timeout 300000
-      - run: bun test test/js

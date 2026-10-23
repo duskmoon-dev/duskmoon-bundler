@@ -20,12 +20,19 @@ UI repository tags remain the source for earlier toolchains.
 
 1. Review and merge destination extraction. Keep any already-verified B0 UI
    consumer operational until a new destination B is published and installed.
-2. Run pure release/staging/native-policy checks, all nine source tests and
-   source-mode candidate integration against an explicitly pinned compatible UI
-   SHA. That lane uses all candidate packages and their native sources, isolated
-   from B0 and the normal UI lock/build/deps state.
-3. Build the existing five Rust crates across eight targets, then QuickBEAM's
-   seven targets. The historical Rust-to-QuickBEAM dependency barrier remains.
+2. Run `ci.yml` for format/lint/compilation and `test.yml` for pure release,
+   staging and native-policy contracts, all nine source test suites, Bun tests
+   and pinned UI source integration. Before release, manually dispatch `test.yml`
+   at the toolchain source SHA with the intended `ui_sha`. Release checks the
+   latest CI and test runs at that exact source SHA and the successful UI job
+   named with that exact UI SHA; it never executes those tests again. PR checks
+   and post-release checks cannot substitute for these source gates. Candidate
+   integration uses the UI's isolated candidate closure and native sources.
+3. Release calls eight independent `native-<rust-target>.yml` workflows. Each
+   delegates to `native-prebuild.yml` for five Rust crates and, except Windows,
+   one QuickBEAM target. Rust and QuickBEAM builds are independent, so one target
+   never waits for an unrelated target's Rust builds. Builds start without any
+   restored compilation cache; CI/test retain their shared native cache.
    Preserve NIF 2.15, musl shared-library checks, portable x86_64 CPU checks, Rust
    and Zig 0.16.0 requirements. Native jobs only upload workflow artifacts.
 4. Collect exactly 47 final archives. Generate checksums directly from those
@@ -34,22 +41,26 @@ UI repository tags remain the source for earlier toolchains.
    hashes in `release-provenance.json`. No extra native compile generates hashes.
 5. Create/reuse vB pointing at the immutable SHA and upload missing assets only.
    Validate existing digests and anonymously download every final asset. A draft
-   or authenticated download is insufficient. Run staged package consumers
-   outside both repositories using strict precompiled mode and those public
-   artifacts. The consumer inputs are extracted from the exact Hex tarballs into
-   a disposable cohort, so downloaded/generated NIF resources never modify the
-   verified publish stage. Only then publish the nine registry packages in
-   dependency order.
-6. Run cold installed-registry native/bundling/Tailwind smoke checks on glibc and
-   Alpine amd64/arm64, with no Rust/Zig compiler. The runtime-only manifest-v1
-   consumer regression also checks that build modules remain absent.
-7. Only success of every preceding gate enables a single pinned UI upgrade PR.
+   or authenticated download is insufficient. Publish the nine exact tarballs
+   in dependency order, then upload `release-request` with the immutable B/SHA.
+   The normal release ends here and contains no source or consumer tests.
+6. A successful **Toolchain Release** automatically starts **Toolchain Tests**
+   through `workflow_run`. It validates the publication request against the
+   original successful run, verifies all public bytes, extracts the exact Hex
+   tarballs outside both checkouts, and runs strict precompiled consumers and
+   the runtime-only manifest regression. It also runs cold registry smoke checks
+   on glibc and Alpine amd64/arm64, with no Rust/Zig compiler in those containers.
+   These tests run after publication; a consumer failure blocks adoption but
+   does not roll back already published packages.
+7. Only successful published-artifact, registry and platform tests in `test.yml`
+   enable a single pinned UI upgrade PR and its verified-release record.
    Partial publication or a failed platform consumer cannot start adoption.
 
 Commands with **no publishing side effects** (substitute real B/SHA):
 
 ```sh
 elixir .github/scripts/release_test.exs
+elixir .github/scripts/workflow_checks_test.exs
 elixir scripts/package-stage-test.exs
 elixir scripts/native-policy-test.exs
 elixir scripts/release.exs plan B FULL_TOOLCHAIN_SHA
@@ -64,7 +75,21 @@ release validation. Its output directory must not exist. `publish-assets` and
 `publish-packages` are side-effecting release operations and require explicit
 operational authorization outside this implementation task. `publish-packages`
 rechecks public artifacts rather than assuming a preceding upload succeeded.
-The complete release workflow must be rerun to include all acceptance gates.
+For the source/UI gate, run this before the release dispatch:
+
+```sh
+gh workflow run test.yml --repo duskmoon-dev/duskmoon-bundler \
+  --ref FULL_TOOLCHAIN_SHA -f ui_sha=FULL_UI_SHA
+```
+
+Wait for that run and `ci.yml` at the same source SHA to succeed. A new failed,
+cancelled or unfinished source run blocks release instead of reusing older green
+results. After publication, wait for the separate **Toolchain Tests** run before
+considering the cohort verified for UI adoption.
+
+Hosted runners use `ubuntu-26.04`, `ubuntu-26.04-arm`, `macos-26`,
+`macos-26-intel` and `windows-2025`. Linux GNU Rust builds use cross containers
+so upgrading the host image does not raise the target's glibc requirement.
 
 Publication uploads the verified tarballs directly through Hex's package API
 with replacement disabled. It does not resolve optional source dependencies or
@@ -85,9 +110,24 @@ See `upgrade-ui.md` for the separately scoped cross-repository GitHub App/token.
 Preserve the failed run's native/package workflow artifacts and public
 `release-provenance.json`. For a partial run before a complete public provenance
 record exists, use `gh run rerun FAILED_RUN_ID --failed --repo duskmoon-dev/duskmoon-bundler`
-so successful native matrix outputs are retained. A new formal dispatch with a
-complete public record downloads and verifies all47 immutable native assets and
-skips the matrix explicitly; staging/publication still revalidate exact hashes.
+so successful native target outputs are retained. The eight called target
+workflows share the original release run's artifact store, so staging collects
+successful artifacts from earlier attempts together with the retried artifacts.
+Use the failed job's **Re-run job** control to retry one build and its dependents.
+For the CLI, use the job's `databaseId` rather than the number in its browser URL:
+
+```sh
+gh run view RELEASE_RUN_ID --repo duskmoon-dev/duskmoon-bundler \
+  --json jobs --jq '.jobs[] | {name, databaseId, conclusion}'
+gh run rerun --repo duskmoon-dev/duskmoon-bundler --job FAILED_JOB_DATABASE_ID
+```
+
+Do not choose **Re-run all jobs** or create a
+new release dispatch to retry a single failed architecture. The native artifact
+uploads permit replacement within that same run; published bytes remain immutable.
+A new formal dispatch with a complete public record downloads and verifies all
+47 immutable native assets and skips the native target workflows explicitly;
+staging/publication still revalidate exact hashes.
 Retry the same B/SHA only with identical outputs;
 existing matching tags/assets/registry tarballs are reused. Existing conflicting
 bytes fail clearly. There is no `--replace`, asset clobber, moving a tag, registry
@@ -96,9 +136,9 @@ usually a new B; do not relabel historical binaries. Rerun missing gates before
 adoption. If B succeeds and UI fails, retain B and repair/review the pending UI
 upgrade; do not bounce release workflows between repositories.
 
-If the complete GitHub release is already public but the exact-package consumer
-fails before Hex publication, preserve the original tag, provenance, native files
-and package archives. A consumer-script fix must not rebuild packages under that
+For historical runs where the complete GitHub release is already public but the
+exact-package consumer failed before Hex publication, preserve the original tag,
+provenance, native files and package archives. A consumer-script fix must not rebuild packages under that
 same version. Dispatch **Resume Exact Hex Publication** from the corrected
 validation revision, supplying the original source SHA and release run:
 
@@ -108,8 +148,11 @@ gh workflow run resume-hex-publication.yml --repo duskmoon-dev/duskmoon-bundler 
   -f release_run=ORIGINAL_RELEASE_RUN_ID
 ```
 
-Recovery requires the original run's successful source, pinned UI, all 47 native
-builds and staging jobs, and its retained `exact-publish-packages` artifact. It
+Recovery requires the original run's successful source/UI gates, all 47 native
+builds and staging jobs, and its retained `exact-publish-packages` artifact. Source
+and UI gates in new releases refer to the prior successful CI/test run. Recovery
+accepts historical matrix job names and the split target workflows, and checks
+the latest execution of each job across partial reruns. It
 downloads and checks the public native bytes, extracts the original tarballs into
 a fresh consumer, and runs the corrected strict precompiled checks. Before any
 Hex upload it verifies the original checkout/locks, tag, provenance, all source
@@ -137,7 +180,7 @@ gh workflow run release.yml --repo duskmoon-dev/duskmoon-bundler \
 
 This mode calls the published-release verifier, checks all 47 public native
 archives and nine Hex tarballs against original provenance, then runs the cold
-glibc and both Alpine consumers before recording the verified gates. Build,
+`test.yml` public-artifact, glibc and both Alpine consumers before recording the verified gates. Build,
 staging and publication jobs are skipped; no artifacts, packages or tags change.
 `ui_sha` is required only for normal publication. The record keeps artifact
 `source_sha` separate from `validation_sha`. See `upgrade-ui.md` for coordination
@@ -156,8 +199,10 @@ or public consumer installation. Those remain actual release-run evidence.
 From 10.0.3, `duskmoon_hologram` uses the same B version as the eight existing
 packages. The manifest-derived publish order places it after `duskmoon_npm`
 and `duskmoon_bundler`. The native artifact matrix remains 47 archives.
-CI and release validation run its full Elixir suite and the Mocha + jsdom
-suite under Bun through `duskmoon_npm`, plus native OXC format/lint checks.
+`ci.yml` runs native OXC format/lint checks. `test.yml` runs its full Elixir suite
+and the Mocha + jsdom suite under Bun through `duskmoon_npm`, installing Hologram's
+asset dependencies before the Elixir compiler/helper tests. Release checks those
+successful source/UI results and builds/packages without rerunning the suites.
 The staged package includes its local docs and preserves upstream/vendor licenses.
 The production source/tar/registry consumers also load Hologram. Consumers that
 start Hologram register `Mix.compilers() ++ [:hologram]`, so its
@@ -181,6 +226,7 @@ and host-package checks. No publication, tag, PR, secrets or settings changed.
 
 The pure release helper is intentionally duplicated in the UI repository so each
 checkout is independent. Normal CI caches dependency downloads with repository,
-locks, platform/libc, Elixir/OTP and source-mode/toolchain keys; release jobs retain
+locks, platform/libc, Elixir/OTP and source-mode/toolchain keys through the shared
+`setup-toolchain` action; release jobs retain
 cold target builds. A bootstrap candidate UI SHA must include the migration's
 `scripts/candidate-integration.sh`, not the old pre-extraction main commit.

@@ -4,8 +4,11 @@ This directory documents the local `:duskmoon_hologram` fork. Start with the
 [README](../README.md) for installation and development commands and
 [UPSTREAM.md](../UPSTREAM.md) for provenance and compatibility details.
 
-The fork shares version 10.0.3 and the root CI/release workflow with the other
-eight toolchain packages; see the [release runbook](../../../docs/releasing.md).
+The fork shares version 10.0.3 and the root workflows with the other eight
+toolchain packages. `ci.yml` runs formatting, linting and compilation; `test.yml`
+runs Elixir and Bun suites, pinned UI integration, and published-package checks.
+Release reuses successful checks at the exact source/UI SHAs and calls separate
+NIF target workflows. See the [release runbook](../../../docs/releasing.md).
 
 ## Fork conventions
 

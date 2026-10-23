@@ -1,0 +1,25 @@
+name: Native x86_64-unknown-freebsd
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      source_sha:
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: native-target-x86_64-unknown-freebsd-${{ inputs.version }}-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  build:
+    uses: ./.github/workflows/native-prebuild.yml
+    with:
+      version: ${{ inputs.version }}
+      source_sha: ${{ inputs.source_sha }}
+      target: x86_64-unknown-freebsd
+      runner: ubuntu-26.04
+      use_cross: true
+      quickbeam_target: 'x86_64-freebsd-none'

@@ -1,6 +1,6 @@
 # One-way pinned UI upgrade
 
-The successful formal B release waits for every package, public artifact,
+The post-release `test.yml` run waits for every package, public artifact,
 installed glibc consumer and both Alpine consumers before the upgrade job runs.
 It targets only `duskmoon-dev/phoenix-duskmoon-ui`, branch `deps/bundler-vB`, base
 `main`. It pins `BUNDLER_VERSION`, runs real `mix deps.get`, validates all eight
@@ -35,16 +35,18 @@ in its summary; it does not claim a PR was created.
 
 If a published B cohort needs its final consumer gates rerun after a validation
 script fix, dispatch `verify-published-release.yml` from the corrected validation
-revision with `version` and the original artifact `source_sha`. This workflow
-downloads and hashes all 47 public native artifacts and all nine release Hex
+revision with `version` and the original artifact `source_sha`. This entry point
+calls the published-release jobs in `test.yml`, which
+download and hash all 47 public native artifacts and all nine release Hex
 tarballs against release provenance, then runs a cold glibc consumer and both
 Alpine consumers. It does not rebuild or publish packages, change release assets
 or move the release tag. The artifact source SHA remains unchanged.
 
 Only after all three jobs pass does it upload `verified-toolchain-release-vB`
 and run the same configured UI upgrade coordination. Its `verified-release.json`
-records the original artifact `source_sha`, the separate `validation_sha`, all
-nine release package names and every consumer gate. Without UI credentials it reports
+records the original artifact `source_sha`, the separate `validation_sha`,
+publication and test run URLs, all nine release package names and every consumer gate.
+Without UI credentials it reports
 **UI coordination unconfigured** and retains the record for manual adoption.
 
 ```sh
@@ -54,14 +56,15 @@ gh workflow run verify-published-release.yml --repo duskmoon-dev/duskmoon-bundle
 
 ## Manual fallback
 
-After the formal release or published-release verification workflow's glibc and
+After the post-release tests or published-release verification workflow's glibc and
 both Alpine consumer jobs passed, retain a
 verification record (B, source SHA, all nine release package names and the four gate
 booleans `public_assets_verified`, `registry_consumer_verified`,
 `musl_amd64_verified`, `musl_arm64_verified`). Do not mark unrun checks true.
 The successful gated upgrade job uploads `verified-release.json` as workflow
 artifact `verified-toolchain-release-vB` even when cross-repository credentials
-are absent. With a clean existing UI checkout:
+are absent. Use the successful **Toolchain Tests** run ID for the download below.
+With a clean existing UI checkout:
 
 ```sh
 gh run download SUCCESSFUL_RUN_ID --repo duskmoon-dev/duskmoon-bundler \

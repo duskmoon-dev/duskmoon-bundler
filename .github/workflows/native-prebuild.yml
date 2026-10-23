@@ -1,4 +1,4 @@
-name: Bundler Native Prebuild
+name: Build one native target
 on:
   workflow_call:
     inputs:
@@ -8,14 +8,30 @@ on:
       source_sha:
         required: true
         type: string
+      target:
+        required: true
+        type: string
+      runner:
+        required: true
+        type: string
+      use_cross:
+        required: true
+        type: boolean
+      quickbeam_target:
+        required: false
+        type: string
+        default: ''
 permissions:
   contents: read
+concurrency:
+  group: native-build-${{ inputs.target }}-${{ inputs.version }}-${{ github.run_id }}
+  cancel-in-progress: false
 env:
   DUSKMOON_NATIVE_MODE: source
 jobs:
   rust-nifs:
-    name: ${{ matrix.crate.app }} / ${{ matrix.crate.name }} / ${{ matrix.target.target }}
-    runs-on: ${{ matrix.target.os }}
+    name: ${{ matrix.crate.app }} / ${{ matrix.crate.name }} / ${{ inputs.target }}
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -36,31 +52,6 @@ jobs:
           - app: duskmoon_vize
             name: vize_ex_nif
             project-dir: apps/duskmoon_vize/native/vize_ex_nif
-        target:
-          - target: aarch64-apple-darwin
-            os: macos-15
-            use-cross: false
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-22.04
-            use-cross: true
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-22.04
-            use-cross: true
-          - target: x86_64-apple-darwin
-            os: macos-15-intel
-            use-cross: false
-          - target: x86_64-pc-windows-gnu
-            os: windows-2022
-            use-cross: false
-          - target: x86_64-unknown-freebsd
-            os: ubuntu-22.04
-            use-cross: true
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-22.04
-            use-cross: false
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-22.04
-            use-cross: true
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -71,7 +62,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-          target: ${{ matrix.target.target }}
+          target: ${{ inputs.target }}
 
       - name: Build Rust NIF
         id: build-crate
@@ -85,14 +76,14 @@ jobs:
         with:
           project-name: ${{ matrix.crate.name }}
           project-version: ${{ inputs.version }}
-          target: ${{ matrix.target.target }}
+          target: ${{ inputs.target }}
           nif-version: '2.15'
-          use-cross: ${{ matrix.target.use-cross }}
+          use-cross: ${{ inputs.use_cross }}
           cross-version: from-source
           project-dir: ${{ matrix.crate.project-dir }}
 
       - name: Verify musl shared library
-        if: endsWith(matrix.target.target, '-linux-musl')
+        if: endsWith(inputs.target, '-linux-musl')
         env:
           ARTIFACT: ${{ steps.build-crate.outputs.file-path }}
         run: |
@@ -112,34 +103,16 @@ jobs:
 
       - uses: actions/upload-artifact@v6
         with:
-          name: native-${{ matrix.crate.name }}-${{ matrix.target.target }}
+          name: native-${{ matrix.crate.name }}-${{ inputs.target }}
           path: ${{ steps.build-crate.outputs.file-path }}
           if-no-files-found: error
+          overwrite: true
 
   quickbeam-nif:
-    name: duskmoon_quickbeam / ${{ matrix.target.target }}
-    needs: rust-nifs
-    runs-on: ${{ matrix.target.os }}
+    name: duskmoon_quickbeam / ${{ inputs.quickbeam_target }}
+    if: inputs.quickbeam_target != ''
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - target: aarch64-linux-gnu
-            os: ubuntu-22.04
-          - target: aarch64-linux-musl
-            os: ubuntu-22.04
-          - target: aarch64-macos-none
-            os: macos-15
-          - target: x86_64-freebsd-none
-            os: ubuntu-22.04
-          - target: x86_64-linux-gnu
-            os: ubuntu-22.04
-          - target: x86_64-linux-musl
-            os: ubuntu-22.04
-          - target: x86_64-macos-none
-            os: macos-15-intel
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -163,7 +136,7 @@ jobs:
           toolchain: stable
 
       - name: Install Elixir dependencies
-        run: mix deps.get
+        run: mix deps.get --check-locked
 
       - name: Build QuickBEAM NIF
         working-directory: apps/duskmoon_quickbeam
@@ -174,26 +147,26 @@ jobs:
           # Keep the same-host Linux build from inheriting the runner's CPU
           # features. Cross-target builds must let Zigler perform host sema
           # before it applies the requested target to the final artifact.
-          if [[ "${{ matrix.target.target }}" == "x86_64-linux-gnu" ]]; then
+          if [[ "${{ inputs.quickbeam_target }}" == "x86_64-linux-gnu" ]]; then
             export TARGET_ARCH=x86_64
             export TARGET_OS=linux
             export TARGET_ABI=gnu
           fi
 
           mix zigler_precompiled.build lib/quickbeam/native.ex \
-            --target ${{ matrix.target.target }} \
+            --target ${{ inputs.quickbeam_target }} \
             --version ${{ inputs.version }} \
             --out ../../artifacts
 
       - name: Verify portable x86_64 instruction baseline
-        if: startsWith(matrix.target.target, 'x86_64-linux-')
+        if: startsWith(inputs.quickbeam_target, 'x86_64-linux-')
         run: |
           set -euo pipefail
 
           inspect_dir="$(mktemp -d)"
           trap 'rm -rf "${inspect_dir}"' EXIT
 
-          tar xzf artifacts/Elixir.QuickBEAM.Native-v${{ inputs.version }}-${{ matrix.target.target }}.so.tar.gz \
+          tar xzf artifacts/Elixir.QuickBEAM.Native-v${{ inputs.version }}-${{ inputs.quickbeam_target }}.so.tar.gz \
             -C "${inspect_dir}"
           native_libraries=("${inspect_dir}"/Elixir.QuickBEAM.Native*.so)
           if [[ "${#native_libraries[@]}" -ne 1 || ! -f "${native_libraries[0]}" ]]; then
@@ -209,6 +182,7 @@ jobs:
 
       - uses: actions/upload-artifact@v6
         with:
-          name: native-quickbeam-${{ matrix.target.target }}
+          name: native-quickbeam-${{ inputs.quickbeam_target }}
           path: artifacts/*.tar.gz
           if-no-files-found: error
+          overwrite: true

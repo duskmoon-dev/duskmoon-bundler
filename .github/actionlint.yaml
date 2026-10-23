@@ -1,0 +1,7 @@
+# Official hosted labels newer than actionlint's bundled runner catalog.
+# https://github.com/actions/runner-images#available-images
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
+    - ubuntu-26.04-arm
+    - macos-26-intel

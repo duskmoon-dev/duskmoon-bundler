@@ -128,6 +128,34 @@ defmodule ReleaseRecoveryContractTest do
     assert_raise RuntimeError, fn -> ReleaseSupport.recovery_run!(run(), duplicate, @sha) end
   end
 
+  test "recovery also accepts independently rerun target workflows" do
+    split =
+      Enum.map(jobs(), fn job ->
+        Map.update!(
+          job,
+          "name",
+          &String.replace_prefix(&1, "native / ", "native-target / build / ")
+        )
+      end)
+
+    # Windows has no QuickBEAM target; its shared workflow skips that job.
+    skipped = %{
+      "name" => "native-x86_64-pc-windows-gnu / build / duskmoon_quickbeam / ",
+      "conclusion" => "skipped"
+    }
+
+    assert :ok = ReleaseSupport.recovery_run!(run(), split ++ [skipped], @sha)
+
+    failed =
+      Enum.map(split, fn job ->
+        if job["name"] == "native-target / build / 47",
+          do: Map.put(job, "conclusion", "failure"),
+          else: job
+      end)
+
+    assert_raise RuntimeError, fn -> ReleaseSupport.recovery_run!(run(), failed, @sha) end
+  end
+
   for scenario <- ~w(matching altered_provenance altered_tar wrong_source incomplete_cohort) do
     test "public package verification: #{scenario}", %{tmp_dir: tmp_dir} do
       scenario = unquote(scenario)
