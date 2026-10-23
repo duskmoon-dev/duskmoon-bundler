@@ -30,7 +30,10 @@ jobs:
           version: 0.16.0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.13
+          bun-version: 1.4.0
+      - name: Verify Bun Unicode semantics
+        run: |
+          bun -e 'if (!/[f-m]/iu.test("K") || String.fromCodePoint(68976).toUpperCase() !== String.fromCodePoint(68944)) throw new Error("Bun must support Unicode range case folding and Garay casing")'
       - uses: browser-actions/setup-chrome@v2
         id: chrome
       - uses: actions/cache@v6
@@ -40,7 +43,7 @@ jobs:
       - uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
-          key: ${{ github.repository }}-bun1.3.13-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock') }}
+          key: ${{ github.repository }}-bun1.4.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock') }}
       - name: Install locked toolchain dependencies
         run: |
           mix deps.get --check-locked

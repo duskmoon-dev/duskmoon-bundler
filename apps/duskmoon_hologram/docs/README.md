@@ -10,7 +10,7 @@ eight toolchain packages; see the [release runbook](../../../docs/releasing.md).
 ## Fork conventions
 
 - Elixir >= 1.18.0 and Erlang/OTP >= 28 are required. JavaScript tests run
-  Mocha + jsdom under Bun (CI: 1.3.13), without Node.js or npm CLI.
+  Mocha + jsdom under Bun (CI: 1.4.0), without Node.js or npm CLI.
 - Dependencies and configuration use `:duskmoon_hologram`; public modules remain
   `Hologram.*`, the compiler remains `:hologram`, and routes remain `/hologram/`.
 - JavaScript dependencies use `duskmoon_npm`; compilation uses

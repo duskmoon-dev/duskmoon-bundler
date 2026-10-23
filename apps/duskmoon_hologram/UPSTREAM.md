@@ -17,7 +17,7 @@ The upstream Apache-2.0 license and attribution are preserved in `LICENSE`.
 - JavaScript installation uses `duskmoon_npm` (`NPM.install/1`); builds use
   `DuskmoonBundler.Builder.build/1`. No npm CLI or esbuild binary is required.
   Bun runs the imported Mocha + jsdom JavaScript suite; Node.js is not needed.
-  CI pins Bun 1.3.13 and the scripts force its runtime with `bun --bun`.
+  CI pins Bun 1.4.0 and the scripts force its runtime with `bun --bun`.
 - Bundles remain standalone IIFEs with linked source maps and content hashes.
   Hashes use Duskmoon Bundler's eight lowercase hexadecimal characters. Asset
   discovery also accepts historical Hologram base32 hashes.

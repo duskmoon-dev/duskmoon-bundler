@@ -3,6 +3,10 @@ description: Native format/lint and the Mocha suite under Bun, using duskmoon_np
 runs:
   using: composite
   steps:
+    - name: Verify Bun Unicode semantics required by Hologram
+      shell: bash
+      run: |
+        bun -e 'if (!/[f-m]/iu.test("K") || String.fromCodePoint(68976).toUpperCase() !== String.fromCodePoint(68944)) throw new Error("Bun must support Unicode range case folding and Garay casing")'
     - name: Check Hologram JavaScript with Duskmoon tooling
       shell: bash
       run: mix duskmoon_bundler.js.check duskmoon_hologram

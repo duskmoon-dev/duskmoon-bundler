@@ -42,7 +42,7 @@ The action runs in the browser, so the count updates instantly with no server ro
 ## Requirements and installation
 
 Requires Elixir >= 1.18.0 and Erlang/OTP >= 28. Bun is used to run the
-JavaScript test suite (CI pins Bun 1.3.13); Node.js and the npm CLI are not
+JavaScript test suite (CI pins Bun 1.4.0); Node.js and the npm CLI are not
 required. Asset builds, formatting, and linting use native tools.
 
 In another application in this umbrella, add:

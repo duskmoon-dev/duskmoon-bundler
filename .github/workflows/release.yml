@@ -57,7 +57,7 @@ jobs:
           version: 0.16.0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.13
+          bun-version: 1.4.0
       - uses: browser-actions/setup-chrome@v2
         id: chrome
       - name: Immutable complete release plan
@@ -126,7 +126,7 @@ jobs:
           version: 0.16.0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.13
+          bun-version: 1.4.0
       - uses: browser-actions/setup-chrome@v2
         id: chrome
       - name: Exercise the complete candidate closure with candidate native sources
