@@ -5,16 +5,22 @@ system_arch = :erlang.system_info(:system_architecture) |> List.to_string()
 if System.get_env("REQUIRE_MUSL") == "1" and not (system_arch =~ "musl"),
   do: raise("Expected Alpine musl, got #{system_arch}")
 
-for module <- [
-      HexSolver,
-      NPM,
-      OXC,
-      Vize,
-      Oxide,
-      QuickBEAM,
-      DuskmoonBundler,
-      DuskmoonBundlerRuntime
-    ] do
+hologram =
+  if Version.compare(System.fetch_env!("DUSKMOON_RELEASE_VERSION"), "10.0.3") == :lt,
+    do: [],
+    else: [Hologram, Hologram.Bundler]
+
+for module <-
+      [
+        HexSolver,
+        NPM,
+        OXC,
+        Vize,
+        Oxide,
+        QuickBEAM,
+        DuskmoonBundler,
+        DuskmoonBundlerRuntime
+      ] ++ hologram do
   unless Code.ensure_loaded?(module), do: raise("cohort module missing: #{inspect(module)}")
 end
 
@@ -61,5 +67,14 @@ bundle_code = File.read!(bundle.js.path)
 unless css =~ ".flex" and css =~ ".items-center" and css =~ ".p-4" and
          css =~ ".text-blue-500",
        do: raise("Tailwind did not generate the scanned utilities")
+
+if hologram != [] do
+  File.write!("assets/hologram.js", "globalThis.hologramAnswer = 42;")
+  {path, [_ | _]} = Hologram.Bundler.build!("assets/hologram.js", "hologram", "hologram-dist", [])
+  {:ok, runtime} = QuickBEAM.start()
+  {:ok, _} = QuickBEAM.eval(runtime, File.read!(path))
+  {:ok, 42} = QuickBEAM.eval(runtime, "globalThis.hologramAnswer")
+  :ok = QuickBEAM.stop(runtime)
+end
 
 IO.puts("Alpine precompiled NIFs, production bundling and Tailwind passed on #{system_arch}")

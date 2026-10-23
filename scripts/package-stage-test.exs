@@ -28,7 +28,7 @@ defmodule PackageStageTest do
     refute result =~ "../../"
   end
 
-  test "all eight package sources stage without changing checked-out manifests" do
+  test "all nine package sources stage without changing checked-out manifests" do
     root = Path.expand("..", __DIR__)
     output = Path.join(System.tmp_dir!(), "duskmoon-stage-#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf!(output) end)
@@ -39,7 +39,7 @@ defmodule PackageStageTest do
           do: {app, File.read!(Path.join([root, "apps", to_string(app), "mix.exs"]))}
 
     manifest = DuskmoonToolchain.PackageStage.stage!(root, output, "9.16.17")
-    assert length(manifest.packages) == 8
+    assert length(manifest.packages) == 9
 
     for {app, source} <- before do
       assert File.read!(Path.join([root, "apps", to_string(app), "mix.exs"])) == source
@@ -50,6 +50,14 @@ defmodule PackageStageTest do
     assert File.exists?(Path.join([output, "duskmoon_oxc", "native/oxc_ex_nif/src/lib.rs"]))
     assert File.exists?(Path.join([output, "duskmoon_bundler", "priv/ts/dev/hmr-client.ts"]))
     assert File.exists?(Path.join([output, "duskmoon_bundler_runtime", "LICENSE"]))
+    hologram = Path.join(output, "duskmoon_hologram")
+    assert File.regular?(Path.join(hologram, "docs/README.md"))
+    assert File.regular?(Path.join(hologram, "assets/js/vendor/snabbdom/LICENSE"))
+
+    assert File.read!(Path.join(hologram, "mix.exs")) =~
+             ~s({:duskmoon_bundler, "== 9.16.17", runtime: false})
+
+    refute File.exists?(Path.join(hologram, "assets/node_modules"))
   end
 
   test "staging without an explicit version uses the current toolchain cohort" do

@@ -1,6 +1,6 @@
 defmodule DuskmoonToolchain.PackageStage do
   @moduledoc "Stages the synchronized Hex cohort outside the checkout without editing source files."
-  @apps ~w(duskmoon_bundler duskmoon_bundler_runtime duskmoon_oxc duskmoon_oxide duskmoon_vize duskmoon_quickbeam duskmoon_npm duskmoon_hex_solver)a
+  @apps ~w(duskmoon_bundler duskmoon_bundler_runtime duskmoon_oxc duskmoon_oxide duskmoon_vize duskmoon_quickbeam duskmoon_npm duskmoon_hex_solver duskmoon_hologram)a
   @root_keys [:build_path, :config_path, :deps_path, :lockfile]
 
   def apps, do: @apps
@@ -85,11 +85,7 @@ defmodule DuskmoonToolchain.PackageStage do
     paths =
       (patterns ++ ["native", ".cargo"])
       |> Enum.flat_map(&Path.wildcard(Path.join(source, &1), match_dot: true))
-      |> Enum.flat_map(fn path ->
-        if File.dir?(path),
-          do: Path.wildcard(Path.join(path, "**/*"), match_dot: true),
-          else: [path]
-      end)
+      |> Enum.flat_map(&package_files/1)
       |> Enum.filter(&File.regular?/1)
       |> Enum.reject(fn path ->
         Enum.any?(
@@ -130,6 +126,21 @@ defmodule DuskmoonToolchain.PackageStage do
       end
 
     %{name: to_string(app), version: version, dependencies: dependencies, files: hashes}
+  end
+
+  # Prune build/dependency directories before walking native trees. Release
+  # validation has already compiled them; globbing first can traverse gigabytes.
+  defp package_files(path) do
+    cond do
+      Path.basename(path) in ["target", "node_modules", "_build", "deps"] ->
+        []
+
+      File.dir?(path) ->
+        path |> File.ls!() |> Enum.flat_map(&package_files(Path.join(path, &1)))
+
+      true ->
+        [path]
+    end
   end
 
   defp validate_manifest!(path) do

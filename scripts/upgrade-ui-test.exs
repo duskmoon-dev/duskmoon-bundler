@@ -4,7 +4,7 @@ ExUnit.start()
 defmodule UpgradeUIRetryTest do
   use ExUnit.Case, async: true
   @moduletag :tmp_dir
-  @version "9.16.17"
+  @version "10.0.3"
   @sha String.duplicate("a", 40)
 
   setup %{tmp_dir: tmp_dir} do
@@ -26,7 +26,7 @@ defmodule UpgradeUIRetryTest do
     File.write!(metadata_path, JSON.encode!(metadata) <> "\n")
 
     lock =
-      Map.new(ReleaseSupport.cohort(), fn app ->
+      Map.new(ReleaseSupport.ui_cohort(), fn app ->
         package = String.to_atom(app)
         {package, {:hex, package, @version, "checksum", [:mix], [], "hexpm", "outer"}}
       end)
@@ -82,10 +82,10 @@ defmodule UpgradeUIRetryTest do
       esac
     done
     case "$url" in
-      https://hex.pm/api/packages/*/releases/9.16.17) ;;
-      https://github.com/duskmoon-dev/duskmoon-bundler/releases/download/v9.16.17/release-provenance.json)
+      https://hex.pm/api/packages/*/releases/10.0.3) ;;
+      https://github.com/duskmoon-dev/duskmoon-bundler/releases/download/v10.0.3/release-provenance.json)
         cp "$UPGRADE_TEST_PROVENANCE" "$output" ;;
-      https://repo.hex.pm/tarballs/*-9.16.17.tar) cp "$UPGRADE_TEST_TAR" "$output" ;;
+      https://repo.hex.pm/tarballs/*-10.0.3.tar) cp "$UPGRADE_TEST_TAR" "$output" ;;
       *) exit 91 ;;
     esac
     printf 200

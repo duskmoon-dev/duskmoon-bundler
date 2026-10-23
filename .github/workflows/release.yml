@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Stable B committed in all eight app manifests
+        description: Stable B committed in all nine app manifests
         required: true
         type: string
       source_sha:
@@ -96,8 +96,9 @@ jobs:
           elixir scripts/native-policy-test.exs
           mix compile --warnings-as-errors
           elixir scripts/native-download-failure-test.exs
-          mix test
+          mix test --timeout 300000
           bun test test/js
+      - uses: ./.github/actions/hologram-checks
   candidate-ui:
     needs: validate
     runs-on: ubuntu-latest

@@ -1,6 +1,6 @@
 # Toolchain release runbook
 
-All eight Hex applications share stable **B**. UI **U** is independently released
+All nine Hex applications share stable **B**. UI **U** is independently released
 by `phoenix-duskmoon-ui`. No packages are published on pushes, pull requests or
 arbitrary repository dispatches. Only **Toolchain Release**, with an approved
 `release` environment and explicit stable B, immutable toolchain SHA and pinned
@@ -18,7 +18,7 @@ UI repository tags remain the source for earlier toolchains.
 
 1. Review and merge destination extraction. Keep any already-verified B0 UI
    consumer operational until a new destination B is published and installed.
-2. Run pure release/staging/native-policy checks, all eight source tests and
+2. Run pure release/staging/native-policy checks, all nine source tests and
    source-mode candidate integration against an explicitly pinned compatible UI
    SHA. That lane uses all candidate packages and their native sources, isolated
    from B0 and the normal UI lock/build/deps state.
@@ -36,7 +36,7 @@ UI repository tags remain the source for earlier toolchains.
    outside both repositories using strict precompiled mode and those public
    artifacts. The consumer inputs are extracted from the exact Hex tarballs into
    a disposable cohort, so downloaded/generated NIF resources never modify the
-   verified publish stage. Only then publish the eight registry packages in
+   verified publish stage. Only then publish the nine registry packages in
    dependency order.
 6. Run cold installed-registry native/bundling/Tailwind smoke checks on glibc and
    Alpine amd64/arm64, with no Rust/Zig compiler. The runtime-only manifest-v1
@@ -70,7 +70,7 @@ rebuild package contents; the registry downloads must match those exact bytes.
 
 ## Credentials and permissions
 
-Configure destination-owned `HEX_API_KEY` with ownership of all eight existing
+Configure destination-owned `HEX_API_KEY` with ownership of all nine
 Hex packages and a protected `release` environment. This repository needs no UI
 npm publishing key. `contents: write` is limited to the publication job; normal
 CI/native jobs have read-only contents permission. No historical secrets are
@@ -105,7 +105,7 @@ gh workflow run release.yml --repo duskmoon-dev/duskmoon-bundler \
 ```
 
 This mode calls the published-release verifier, checks all 47 public native
-archives and eight Hex tarballs against original provenance, then runs the cold
+archives and nine Hex tarballs against original provenance, then runs the cold
 glibc and both Alpine consumers before recording the verified gates. Build,
 staging and publication jobs are skipped; no artifacts, packages or tags change.
 `ui_sha` is required only for normal publication. The record keeps artifact
@@ -119,6 +119,18 @@ result remains in history; the corrected dispatch supplies new verification.
 Workflow definitions specify cross-platform coverage but local script validation
 alone does not prove those target builds, publication, remote credential setup
 or public consumer installation. Those remain actual release-run evidence.
+
+## Hologram in the synchronized cohort
+
+From 10.0.3, `duskmoon_hologram` uses the same B version as the eight existing
+packages. The manifest-derived publish order places it after `duskmoon_npm`
+and `duskmoon_bundler`. The native artifact matrix remains 47 archives.
+CI and release validation run its full Elixir suite and the Mocha + jsdom
+suite under Bun through `duskmoon_npm`, plus native OXC format/lint checks.
+The staged package includes its local docs and preserves upstream/vendor licenses.
+The production source/tar/registry consumers also load Hologram. UI candidate
+validation and upgrade locks cover the eight asset dependencies actually used
+by the UI; release provenance and registry verification cover all nine packages.
 
 ## Local automation verification
 

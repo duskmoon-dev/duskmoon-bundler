@@ -1,7 +1,14 @@
 defmodule ReleaseSupport do
   @moduledoc false
-  @cohort ~w(duskmoon_bundler duskmoon_bundler_runtime duskmoon_oxc duskmoon_oxide duskmoon_vize duskmoon_quickbeam duskmoon_npm duskmoon_hex_solver)
-  def cohort, do: @cohort
+  @cohort ~w(duskmoon_bundler duskmoon_bundler_runtime duskmoon_oxc duskmoon_oxide duskmoon_vize duskmoon_quickbeam duskmoon_npm duskmoon_hex_solver duskmoon_hologram)
+  def cohort(version \\ nil) do
+    if version && Version.compare(version, "10.0.3") == :lt,
+      do: ui_cohort(),
+      else: @cohort
+  end
+
+  # The UI consumes the asset toolchain, not the Hologram framework.
+  def ui_cohort, do: Enum.reject(@cohort, &(&1 == "duskmoon_hologram"))
 
   def stable!(value) do
     unless value =~ ~r/^\d+\.\d+\.\d+$/,
@@ -101,7 +108,7 @@ defmodule ReleaseSupport do
   def adoption_ready?(state) do
     state["public_assets_verified"] == true and state["registry_consumer_verified"] == true and
       state["musl_amd64_verified"] == true and state["musl_arm64_verified"] == true and
-      Enum.sort(state["packages"] || []) == Enum.sort(@cohort)
+      Enum.sort(state["packages"] || []) == Enum.sort(cohort(state["version"]))
   end
 
   def reusable_native?(state) do

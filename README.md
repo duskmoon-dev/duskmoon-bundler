@@ -1,8 +1,12 @@
 # Duskmoon Bundler
 
-Independent Elixir toolchain for frontend assets, native JS/CSS compilers, and the QuickBEAM runtime. The eight Hex packages retain their existing names and namespaces: `duskmoon_bundler`, `duskmoon_bundler_runtime`, `duskmoon_oxc`, `duskmoon_oxide`, `duskmoon_vize`, `duskmoon_quickbeam`, `duskmoon_npm`, and `duskmoon_hex_solver`.
+Independent Elixir toolchain for frontend assets, native JS/CSS compilers, and the QuickBEAM runtime. The nine Hex packages retain their existing names and namespaces: `duskmoon_bundler`, `duskmoon_bundler_runtime`, `duskmoon_oxc`, `duskmoon_oxide`, `duskmoon_vize`, `duskmoon_quickbeam`, `duskmoon_npm`, `duskmoon_hex_solver`, and `duskmoon_hologram`.
 
-The synchronized toolchain version is **10.0.2**. All eight packages and their native artifacts are released from this repository. Earlier packages retain their native downloads from historical UI releases. UI version U is maintained independently in `phoenix-duskmoon-ui`.
+The synchronized toolchain version is **10.0.3**. All nine packages and their native artifacts are released from this repository. Earlier packages retain their native downloads from historical UI releases. UI version U is maintained independently in `phoenix-duskmoon-ui`.
+
+## Hologram sub-application
+
+`apps/duskmoon_hologram` vendors [Hologram](https://github.com/bartblast/hologram) as the OTP application `:duskmoon_hologram`. It joins the synchronized release cohort at version 10.0.3; its upstream source provenance remains Hologram 0.12.2. See its [integration notes](apps/duskmoon_hologram/UPSTREAM.md).
 
 ## Development
 
@@ -26,11 +30,11 @@ Runtime-only Phoenix applications can use `duskmoon_bundler_runtime` without the
 ## Package staging
 
 ```sh
-elixir scripts/stage-packages.exs --version 10.0.2 --output /tmp/bundler-packages
+elixir scripts/stage-packages.exs --version 10.0.3 --output /tmp/bundler-packages
 elixir scripts/package-consumer-smoke.exs --stage /tmp/bundler-packages --mode source
 ```
 
-Staging refuses existing output directories and outputs inside this checkout. Each app becomes a standalone source package with local umbrella paths removed and internal requirements pinned to `== B`; optional/runtime/environment flags are retained. `manifest.json` records source commit/tree, dirty-state marker, lock hashes, package dependency graph and every staged file SHA-256. The isolated smoke consumer uses explicit path overrides for the complete eight-package candidate cohort and separate build/deps state. This source check is not proof of registry/precompiled installation. Use the strict lane only after native assets and matching checksums exist.
+Staging refuses existing output directories and outputs inside this checkout. Each app becomes a standalone source package with local umbrella paths removed and internal requirements pinned to `== B`; optional/runtime/environment flags are retained. `manifest.json` records source commit/tree, dirty-state marker, lock hashes, package dependency graph and every staged file SHA-256. The isolated smoke consumer uses explicit path overrides for the complete nine-package candidate cohort and separate build/deps state. This source check is not proof of registry/precompiled installation. Use the strict lane only after native assets and matching checksums exist.
 
 Historical assets must remain untouched. Future native URLs use `https://github.com/duskmoon-dev/duskmoon-bundler/releases/download/vB`. Checksum files are generated from final native artifacts by release automation; candidate source staging deliberately does not fabricate them.
 

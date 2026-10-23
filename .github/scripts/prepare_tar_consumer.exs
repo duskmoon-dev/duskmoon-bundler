@@ -21,4 +21,4 @@ for app <- ReleaseSupport.cohort() do
 end
 
 File.cp!(Path.join(stage, "manifest.json"), Path.join(output, "manifest.json"))
-IO.puts("Exact eight-package Hex archive cohort extracted outside publish state")
+IO.puts("Exact nine-package Hex archive cohort extracted outside publish state")

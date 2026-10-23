@@ -10,7 +10,7 @@ checkouts and mismatching publication provenance. Retries reuse matching branche
 and PRs, including closed/merged PRs, without force pushes or duplicate commits.
 Conflicting outputs stop. The workflow never writes directly to main or merges.
 When main has already adopted B and its upgrade branch was deleted, a retry
-verifies the existing pin, matching release metadata and all eight actual Hex
+verifies the existing pin, matching release metadata and the eight UI dependency Hex
 lock entries before any branch operation. It completes without a new branch,
 commit, push or PR. Missing, stale or non-Hex cohort entries fail instead of
 accepting the pin alone.
@@ -36,7 +36,7 @@ in its summary; it does not claim a PR was created.
 If a published B cohort needs its final consumer gates rerun after a validation
 script fix, dispatch `verify-published-release.yml` from the corrected validation
 revision with `version` and the original artifact `source_sha`. This workflow
-downloads and hashes all 47 public native artifacts and all eight actual Hex
+downloads and hashes all 47 public native artifacts and all nine release Hex
 tarballs against release provenance, then runs a cold glibc consumer and both
 Alpine consumers. It does not rebuild or publish packages, change release assets
 or move the release tag. The artifact source SHA remains unchanged.
@@ -44,7 +44,7 @@ or move the release tag. The artifact source SHA remains unchanged.
 Only after all three jobs pass does it upload `verified-toolchain-release-vB`
 and run the same configured UI upgrade coordination. Its `verified-release.json`
 records the original artifact `source_sha`, the separate `validation_sha`, all
-eight package names and every consumer gate. Without UI credentials it reports
+nine release package names and every consumer gate. Without UI credentials it reports
 **UI coordination unconfigured** and retains the record for manual adoption.
 
 ```sh
@@ -56,7 +56,7 @@ gh workflow run verify-published-release.yml --repo duskmoon-dev/duskmoon-bundle
 
 After the formal release or published-release verification workflow's glibc and
 both Alpine consumer jobs passed, retain a
-verification record (B, source SHA, all eight package names and the four gate
+verification record (B, source SHA, all nine release package names and the four gate
 booleans `public_assets_verified`, `registry_consumer_verified`,
 `musl_amd64_verified`, `musl_arm64_verified`). Do not mark unrun checks true.
 The successful gated upgrade job uploads `verified-release.json` as workflow
@@ -77,3 +77,7 @@ checks and production assets, inspect changes and use the reviewed PR workflow.
 with authorized operational credentials. U remains untouched until a separately
 reviewed UI version change and UI Release dispatch. No reverse trigger starts
 another B release when the UI changes or fails.
+
+From B=10.0.3, release provenance includes `duskmoon_hologram` as a ninth
+package. The UI does not depend on Hologram: its lock checks still require only
+the eight asset toolchain packages, while adoption verifies every release package.

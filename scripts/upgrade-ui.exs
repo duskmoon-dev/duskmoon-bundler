@@ -16,7 +16,7 @@ defmodule UpgradeUI do
     ReleaseSupport.immutable_action(state["version"], version)
     ReleaseSupport.immutable_action(state["source_sha"], sha)
 
-    for app <- ReleaseSupport.cohort() do
+    for app <- ReleaseSupport.cohort(version) do
       unless ReleaseSupport.exists_hex?(app, version),
         do: raise("missing registry cohort member #{app} #{version}")
     end
@@ -34,7 +34,7 @@ defmodule UpgradeUI do
       ReleaseSupport.immutable_action(remote["source_sha"], sha)
       ReleaseSupport.immutable_action(remote["version"], version)
       # Independently check the entire immutable registry cohort against the release manifest.
-      for app <- ReleaseSupport.cohort() do
+      for app <- ReleaseSupport.cohort(version) do
         tar = provenance <> ".#{app}.tar"
 
         try do
@@ -111,7 +111,7 @@ defmodule UpgradeUI do
         {existing_lock, _} =
           ReleaseSupport.cmd!("git", ["show", "FETCH_HEAD:mix.lock"]) |> Code.eval_string()
 
-        for app <- ReleaseSupport.cohort() do
+        for app <- ReleaseSupport.ui_cohort() do
           case existing_lock[app] || existing_lock[String.to_atom(app)] do
             {:hex, _, ^version, _, _, _, _, _} -> :ok
             other -> raise("existing upgrade lock cohort mismatch #{app}: #{inspect(other)}")
@@ -157,7 +157,7 @@ defmodule UpgradeUI do
   end
 
   defp check_lock!(lock, version) do
-    for app <- ReleaseSupport.cohort() do
+    for app <- ReleaseSupport.ui_cohort() do
       package = String.to_atom(app)
 
       case lock[app] || lock[package] do
@@ -190,7 +190,7 @@ defmodule UpgradeUI do
         try do
           File.write!(
             body,
-            "Pins all eight toolchain packages to verified B=#{version}, with the real Hex lock cohort and release provenance. UI assets, native loading, hooks, component/browser regressions and Storybook release checks must pass before review and merge. U remains independent.\n"
+            "Pins the eight UI toolchain dependencies from the verified nine-package release to verified B=#{version}, with the real Hex lock cohort and release provenance. UI assets, native loading, hooks, component/browser regressions and Storybook release checks must pass before review and merge. U remains independent.\n"
           )
 
           ReleaseSupport.cmd!("gh", [

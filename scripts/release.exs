@@ -22,7 +22,7 @@ defmodule BundlerRelease do
         "checksums from final files",
         "stage and isolated consumer",
         "public immutable assets",
-        "8 Hex packages",
+        "9 Hex packages",
         "registry glibc/musl consumers",
         "one pinned UI upgrade PR"
       ]
@@ -80,7 +80,7 @@ defmodule BundlerRelease do
       end
     else
       IO.puts(
-        "All eight registry versions are unpublished; final immutable asset gates remain required"
+        "All nine registry versions are unpublished; final immutable asset gates remain required"
       )
     end
   end

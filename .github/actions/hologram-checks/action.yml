@@ -1,0 +1,12 @@
+name: Hologram JavaScript checks
+description: Native format/lint and the Mocha suite under Bun, using duskmoon_npm
+runs:
+  using: composite
+  steps:
+    - name: Check Hologram JavaScript with Duskmoon tooling
+      shell: bash
+      run: mix duskmoon_bundler.js.check duskmoon_hologram
+    - name: Test Hologram JavaScript with Bun via duskmoon_npm
+      shell: bash
+      # The task installs the app's dependencies through duskmoon_npm first.
+      run: MIX_ENV=dev mix test.js

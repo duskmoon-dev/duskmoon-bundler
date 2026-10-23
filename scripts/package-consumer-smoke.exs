@@ -55,6 +55,8 @@ end
 File.write!(Path.join(consumer, "mix.exs"), source)
 
 check = """
+Code.ensure_loaded!(Hologram)
+Code.ensure_loaded!(Hologram.Bundler)
 {:ok, _} = OXC.parse("export const answer = 42;", "entry.js")
 {:ok, _} = OXC.select("import value from 'value';", "entry.js", :import_specifiers)
 {:ok, _} = OXC.Format.run("const answer=42;", "entry.js")
@@ -64,7 +66,13 @@ check = """
 QuickBEAM.stop(runtime)
 {:ok, _} = Vize.parse_sfc("<template><div>candidate</div></template>")
 [_ | _] = Oxide.extract(~s(<div class="flex">), "html")
-IO.puts("Isolated staged toolchain native consumer passed")
+File.write!("hologram.js", "globalThis.hologramAnswer = 42;")
+{path, [_ | _]} = Hologram.Bundler.build!("hologram.js", "hologram", "hologram-dist", [])
+{:ok, runtime} = QuickBEAM.start()
+{:ok, _} = QuickBEAM.eval(runtime, File.read!(path))
+{:ok, 42} = QuickBEAM.eval(runtime, "globalThis.hologramAnswer")
+:ok = QuickBEAM.stop(runtime)
+IO.puts("Isolated staged toolchain and Hologram native consumer passed")
 """
 
 File.write!(Path.join(consumer, "smoke.exs"), check)

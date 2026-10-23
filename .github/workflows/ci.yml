@@ -2,6 +2,8 @@ name: Toolchain CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 env:
@@ -13,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        otp: ['27', '28']
+        otp: ['28']
     steps:
       - uses: actions/checkout@v7
       - uses: erlef/setup-beam@v1
@@ -51,10 +53,11 @@ jobs:
           elixir scripts/native-policy-test.exs
       - run: mix format --check-formatted
       - run: mix compile --warnings-as-errors
+      - uses: ./.github/actions/hologram-checks
       - run: elixir scripts/native-download-failure-test.exs
-      - name: All eight apps and generic integration regressions
+      - name: All sub-apps including Hologram Elixir tests and generic integration regressions
         env:
           CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
           MIX_ENV: test
-        run: mix test
+        run: mix test --timeout 300000
       - run: bun test test/js

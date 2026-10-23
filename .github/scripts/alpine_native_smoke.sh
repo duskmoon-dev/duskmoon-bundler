@@ -29,6 +29,7 @@ fi
 consumer_dir=$(mktemp -d)
 trap 'rm -rf "$consumer_dir"' EXIT
 cd "$consumer_dir"
+export DUSKMOON_RELEASE_VERSION="$version"
 export MIX_ENV=prod
 export DUSKMOON_NATIVE_MODE=precompiled
 mix local.hex --force
@@ -37,13 +38,14 @@ cat > mix.exs <<EOF
 defmodule AlpineNativeSmoke.MixProject do
   use Mix.Project
   def project do
+    hologram = if Version.compare("$version", "10.0.3") == :lt, do: [], else: [{:duskmoon_hologram, "== $version"}]
     [app: :alpine_native_smoke, version: "0.1.0", elixir: ">= 1.18.0",
      deps: [
        {:duskmoon_bundler, "== $version"},
        {:duskmoon_bundler_runtime, "== $version"},
        {:duskmoon_oxc, "== $version"}, {:duskmoon_oxide, "== $version"},
        {:duskmoon_vize, "== $version"}, {:duskmoon_quickbeam, "== $version"},
-       {:duskmoon_npm, "== $version"}, {:duskmoon_hex_solver, "== $version"}]]
+       {:duskmoon_npm, "== $version"}, {:duskmoon_hex_solver, "== $version"}] ++ hologram]
   end
   def application, do: [extra_applications: [:logger]]
 end

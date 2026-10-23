@@ -45,7 +45,7 @@ jobs:
         env:
           REUSABLE: ${{ steps.reuse.outputs.reusable }}
         run: test "$REUSABLE" = true
-      - name: Verify public provenance and all eight actual Hex tarballs
+      - name: Verify public provenance and every release Hex tarball
         env:
           VERSION: ${{ inputs.version }}
           SOURCE_SHA: ${{ inputs.source_sha }}
@@ -53,7 +53,7 @@ jobs:
           cat > "$RUNNER_TEMP/verify-public-packages.exs" <<'ELIXIR'
           version = ReleaseSupport.stable!(System.fetch_env!("VERSION"))
           sha = ReleaseSupport.checked_head!(System.fetch_env!("SOURCE_SHA"))
-          cohort = ReleaseSupport.cohort()
+          cohort = ReleaseSupport.cohort(version)
           ReleaseSupport.manifests!("apps", cohort, version)
           output = Path.join(System.fetch_env!("RUNNER_TEMP"), "verified-hex-packages")
           File.mkdir!(output)
@@ -85,7 +85,7 @@ jobs:
             ReleaseSupport.http!("https://repo.hex.pm/tarballs/#{app}-#{version}.tar", tarball)
             ReleaseSupport.immutable_action(ReleaseSupport.digest(tarball), expected)
           end
-          IO.puts("Verified all eight public Hex package bytes for #{version} at #{sha}")
+          IO.puts("Verified all #{length(cohort)} public Hex package bytes for #{version} at #{sha}")
           ELIXIR
           elixir -r .github/scripts/release_support.exs "$RUNNER_TEMP/verify-public-packages.exs"
   registry:
@@ -128,7 +128,7 @@ jobs:
           VALIDATION_SHA: ${{ github.sha }}
           RELEASE_RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          elixir -r .github/scripts/release_support.exs -e 'File.write!("verified-release.json", JSON.encode!(%{version: System.fetch_env!("VERSION"), source_sha: System.fetch_env!("SOURCE_SHA"), validation_sha: System.fetch_env!("VALIDATION_SHA"), release_run: System.fetch_env!("RELEASE_RUN"), packages: ReleaseSupport.cohort(), public_assets_verified: true, registry_consumer_verified: true, musl_amd64_verified: true, musl_arm64_verified: true}))'
+          elixir -r .github/scripts/release_support.exs -e 'File.write!("verified-release.json", JSON.encode!(%{version: System.fetch_env!("VERSION"), source_sha: System.fetch_env!("SOURCE_SHA"), validation_sha: System.fetch_env!("VALIDATION_SHA"), release_run: System.fetch_env!("RELEASE_RUN"), packages: ReleaseSupport.cohort(System.fetch_env!("VERSION")), public_assets_verified: true, registry_consumer_verified: true, musl_amd64_verified: true, musl_arm64_verified: true}))'
       - uses: actions/upload-artifact@v6
         with:
           name: verified-toolchain-release-v${{ inputs.version }}

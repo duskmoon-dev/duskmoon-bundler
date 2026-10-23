@@ -4,6 +4,25 @@ ExUnit.start()
 defmodule ReleasePlanningTest do
   use ExUnit.Case, async: true
 
+  test "Hologram joins the shared cohort without changing historical or UI dependencies" do
+    assert "duskmoon_hologram" in ReleaseSupport.cohort("10.0.3")
+    refute "duskmoon_hologram" in ReleaseSupport.cohort("10.0.2")
+    assert ReleaseSupport.cohort("10.0.2") == ReleaseSupport.ui_cohort()
+    assert ReleaseSupport.cohort() == ReleaseSupport.cohort("10.0.3")
+
+    state = %{
+      "version" => "10.0.3",
+      "packages" => ReleaseSupport.ui_cohort(),
+      "public_assets_verified" => true,
+      "registry_consumer_verified" => true,
+      "musl_amd64_verified" => true,
+      "musl_arm64_verified" => true
+    }
+
+    refute ReleaseSupport.adoption_ready?(state)
+    assert ReleaseSupport.adoption_ready?(Map.put(state, "version", "10.0.2"))
+  end
+
   test "stable versions and immutable refs reject arbitrary payloads" do
     assert "9.16.17" = ReleaseSupport.stable!("9.16.17")
     assert_raise RuntimeError, fn -> ReleaseSupport.stable!("9.16.17-dev") end
