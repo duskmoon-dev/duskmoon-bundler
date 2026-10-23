@@ -984,7 +984,13 @@ defmodule Hologram.ExJsConsistency.MatchOperatorTest do
     # their own unsorted order, so each side asserts against its own inspect.
     test "multiple variables with the same name being matched to a map and its superset" do
       right = [%{a: 1}, %{a: 1, b: 2}]
-      expected_msg = "no match of right hand side value:\n\n    #{inspect(right)}\n"
+
+      expected_msg =
+        if Version.match?(System.version(), ">= 1.19.0") do
+          "no match of right hand side value:\n\n    #{inspect(right)}\n"
+        else
+          "no match of right hand side value: #{inspect(right)}"
+        end
 
       assert_error MatchError, expected_msg, fn ->
         [x, x] = wrap_term(right)

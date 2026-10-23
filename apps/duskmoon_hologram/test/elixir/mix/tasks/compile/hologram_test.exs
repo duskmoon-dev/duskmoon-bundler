@@ -193,9 +193,7 @@ defmodule Mix.Tasks.Compile.HologramTest do
   defp defines_chunk_only_impl?(bundle_path) do
     bundle_path
     |> File.read!()
-    |> String.contains?(
-      ~s/defineElixirFunction("#{Reflection.module_name(@chunk_only_impl)}","to_string",1,/
-    )
+    |> then(&Regex.match?(function_definition_pattern(@chunk_only_impl, "to_string", 1), &1))
   end
 
   # Whether the bundle at the given path holds the given struct type's struct function of the given
@@ -203,9 +201,15 @@ defmodule Mix.Tasks.Compile.HologramTest do
   defp defines_struct_function?(bundle_path, type, arity) do
     bundle_path
     |> File.read!()
-    |> String.contains?(
-      ~s/defineElixirFunction("#{Reflection.module_name(type)}","__struct__",#{arity},/
-    )
+    |> then(&Regex.match?(function_definition_pattern(type, "__struct__", arity), &1))
+  end
+
+  # Native OXC and esbuild use different quote styles and whitespace around call arguments.
+  defp function_definition_pattern(module, function, arity) do
+    module_name = Regex.escape(Reflection.module_name(module))
+    function_name = Regex.escape(function)
+
+    ~r/defineElixirFunction\(\s*(["'`])#{module_name}\1\s*,\s*(["'`])#{function_name}\2\s*,\s*#{arity}\s*,/
   end
 
   # Fakes an edit of the module in the kept state: the compiler reports it, so its beam is read, and
@@ -2632,8 +2636,8 @@ defmodule Mix.Tasks.Compile.HologramTest do
         module_infos: module_infos
       } = cache_state()
 
-      # Only a beam a save can rewrite is rechecked, and of those the consolidated protocols belong
-      # to other applications.
+      # Sibling umbrella applications are editable too. Report the simulated compilation so
+      # ordinary modules, as well as consolidated protocols, are rechecked.
       other_app_module =
         Enum.find_value(module_infos, fn {module, _info} ->
           if MapSet.member?(editable_modules, module) and
@@ -2641,6 +2645,8 @@ defmodule Mix.Tasks.Compile.HologramTest do
              do: module
         end)
 
+      assert other_app_module
+      report_compiled(other_app_module)
       edited_info = %{module_infos[other_app_module] | digest: "edited", mtime: 0}
 
       put_kept_module_infos(

@@ -893,7 +893,8 @@ defmodule Hologram.ExJsConsistency.Erlang.MapsTest do
 
       top_frame =
         try do
-          :maps.put(:a, 1, map)
+          # Avoid compiler inlining: this test checks the remote maps.put frame.
+          wrap_term(:maps).put(:a, 1, map)
         rescue
           _error -> hd(wrap_term(__STACKTRACE__))
         end
