@@ -48,6 +48,10 @@ jobs:
           elixir scripts/upgrade-ui-test.exs
           elixir scripts/package-stage-test.exs
           elixir scripts/native-policy-test.exs
+      - name: Compile source dependencies for native download regressions
+        env:
+          MIX_ENV: dev
+        run: mix compile --warnings-as-errors
       - run: elixir scripts/native-download-failure-test.exs
       - name: Hologram Mocha suite under Bun and asset dependency setup
         run: MIX_ENV=dev mix test.js
