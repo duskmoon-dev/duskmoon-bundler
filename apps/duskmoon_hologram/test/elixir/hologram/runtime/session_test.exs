@@ -62,10 +62,8 @@ defmodule Hologram.Runtime.SessionTest do
     test "mints a UUIDv4 session ID when absent" do
       conn = init(conn_with_empty_session())
 
-      assert {:ok, _info} =
-               conn
-               |> Plug.Conn.get_session(@session_id_key)
-               |> UUID.info()
+      assert Plug.Conn.get_session(conn, @session_id_key) =~
+               ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/
     end
 
     test "is idempotent when a session ID is already present" do

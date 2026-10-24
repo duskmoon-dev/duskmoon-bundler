@@ -64,6 +64,7 @@ defmodule Hologram.ControllerTest do
 
   @csrf_token_session_key CSRFProtection.session_key()
   @hologram_session_id "test-session-id"
+  @uuid4_regex ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/
 
   @session %{
     @csrf_token_session_key => @unmasked_csrf_token,
@@ -911,7 +912,7 @@ defmodule Hologram.ControllerTest do
 
       session_id = Session.get_session_id(conn)
 
-      assert {:ok, _info} = UUID.info(session_id)
+      assert session_id =~ @uuid4_regex
     end
 
     test "exposes the target as server.cid for the command handler" do
@@ -2040,10 +2041,7 @@ defmodule Hologram.ControllerTest do
         |> Plug.Test.init_test_session(%{})
         |> handle_initial_page_request(Module5)
 
-      assert {:ok, _info} =
-               conn.resp_body
-               |> extract_instance_id()
-               |> UUID.info()
+      assert extract_instance_id(conn.resp_body) =~ @uuid4_regex
     end
 
     test "generates a fresh instance_id on each initial page request" do
@@ -2087,7 +2085,7 @@ defmodule Hologram.ControllerTest do
 
       session_id = Session.get_session_id(conn)
 
-      assert {:ok, _info} = UUID.info(session_id)
+      assert session_id =~ @uuid4_regex
     end
 
     test "updates Plug.Conn cookies" do
@@ -2484,7 +2482,7 @@ defmodule Hologram.ControllerTest do
       assert conn.status == 200
 
       assert {:ok, %{"handshakeId" => handshake_id}} = Jason.decode(conn.resp_body)
-      assert {:ok, _info} = UUID.info(handshake_id)
+      assert handshake_id =~ @uuid4_regex
     end
 
     test "returns the heartbeat interval the stream will use" do
@@ -2875,7 +2873,7 @@ defmodule Hologram.ControllerTest do
 
       session_id = Session.get_session_id(conn)
 
-      assert {:ok, _info} = UUID.info(session_id)
+      assert session_id =~ @uuid4_regex
     end
 
     test "decodes URL-encoded query params" do

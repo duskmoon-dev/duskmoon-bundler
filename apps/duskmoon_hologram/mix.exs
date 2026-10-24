@@ -33,7 +33,7 @@ defmodule DuskmoonHologram.MixProject do
   def application do
     [
       mod: {Hologram.Application, []},
-      extra_applications: [:logger]
+      extra_applications: [:crypto, :logger]
     ]
   end
 
@@ -74,7 +74,6 @@ defmodule DuskmoonHologram.MixProject do
       {:recode, "~> 0.7", only: :dev, runtime: false},
       {:sobelow, "~> 0.12", only: [:dev, :test], runtime: false},
       {:telemetry, "~> 1.0"},
-      {:uuid, "~> 1.0"},
       {:wallaby, "~> 0.30", only: [:dev, :test], runtime: false},
       {:websock_adapter, "~> 0.5"}
     ]

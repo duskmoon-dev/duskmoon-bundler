@@ -27,4 +27,19 @@ defmodule Hologram.Commons.CryptographicUtils do
     |> Base.encode16()
     |> String.downcase()
   end
+
+  @doc """
+  Generates a random UUID v4 in lowercase, hyphenated format.
+  """
+  @spec uuid4() :: String.t()
+  def uuid4 do
+    <<a::48, _version::4, b::12, _variant::2, c::62>> = :crypto.strong_rand_bytes(16)
+
+    <<part_1::binary-size(8), part_2::binary-size(4), part_3::binary-size(4),
+      part_4::binary-size(4),
+      part_5::binary-size(12)>> =
+      Base.encode16(<<a::48, 4::4, b::12, 2::2, c::62>>, case: :lower)
+
+    Enum.join([part_1, part_2, part_3, part_4, part_5], "-")
+  end
 end
