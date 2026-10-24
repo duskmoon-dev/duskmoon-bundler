@@ -20,6 +20,6 @@ jobs:
       version: ${{ inputs.version }}
       source_sha: ${{ inputs.source_sha }}
       target: aarch64-apple-darwin
-      runner: xcode-27
+      runner: macos-26
       use_cross: false
       quickbeam_target: 'aarch64-macos-none'

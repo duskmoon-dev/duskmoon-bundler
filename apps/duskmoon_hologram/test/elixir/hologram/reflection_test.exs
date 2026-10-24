@@ -1226,6 +1226,82 @@ defmodule Hologram.ReflectionTest do
       assert otp_app() == :duskmoon_hologram
     end
 
+    test "consumer Mix project before its application is loaded" do
+      app_dir = Path.join(@fixtures_dir, "umbrella/apps/app_a")
+      app = :otp_app_fixture_mix_consumer
+      assert Application.spec(app) == nil
+
+      result =
+        Mix.Project.in_project(
+          app,
+          app_dir,
+          [app: app, deps: [{:duskmoon_hologram, "~> 10.0"}]],
+          fn _module -> otp_app() end
+        )
+
+      assert result == app
+    end
+
+    test "unrelated active Mix project does not replace the loaded Hologram consumer" do
+      app_dir = Path.join(@fixtures_dir, "umbrella/apps/app_a")
+      load_app_depending_on_hologram(:otp_app_fixture_consumer)
+
+      result =
+        Mix.Project.in_project(:app_a, app_dir, fn _module -> otp_app() end)
+
+      assert result == :otp_app_fixture_consumer
+    end
+
+    test "an unrelated active Mix project's endpoint does not override the consumer endpoint" do
+      app_dir = Path.join(@fixtures_dir, "umbrella/apps/app_a")
+      load_app_depending_on_hologram(:otp_app_fixture_endpoint_consumer)
+      load_app_depending_on_hologram(:otp_app_fixture_other_consumer)
+      put_env_with_cleanup(:otp_app_fixture_endpoint_consumer, Module7, [])
+      put_env_with_cleanup(:app_a, Module7, [])
+
+      result =
+        Mix.Project.in_project(:app_a, app_dir, fn _module -> otp_app() end)
+
+      assert result == :otp_app_fixture_endpoint_consumer
+    end
+
+    @tag :tmp_dir
+    test "asset registry reload retains the consumer runtime under an unrelated active Mix project",
+         %{tmp_dir: tmp_dir} do
+      alias Hologram.Assets.PathRegistry, as: AssetPathRegistry
+
+      app = :otp_app_fixture_asset_consumer
+      app_dir = Path.join(@fixtures_dir, "umbrella/apps/app_a")
+      ebin_dir = Path.join([tmp_dir, Atom.to_string(app), "ebin"])
+      static_dir = Path.join([tmp_dir, Atom.to_string(app), "priv", "static"])
+      File.mkdir_p!(ebin_dir)
+      File.mkdir_p!(Path.join(static_dir, "hologram"))
+      File.write!(Path.join(static_dir, "hologram/runtime-abcdef12.js"), "runtime")
+      true = Code.prepend_path(ebin_dir)
+      on_exit(fn -> Code.delete_path(ebin_dir) end)
+      load_app_depending_on_hologram(app)
+      put_env_with_cleanup(:duskmoon_hologram, :asset_path_registry_impl, AssetPathRegistry)
+
+      Mix.Project.in_project(
+        app,
+        app_dir,
+        [app: app, deps: [{:duskmoon_hologram, "~> 10.0"}]],
+        fn _module ->
+          assert AssetPathRegistry.init(nil) == {:ok, nil}
+
+          assert AssetPathRegistry.lookup("hologram/runtime.js") ==
+                   {:ok, "/hologram/runtime-abcdef12.js"}
+        end
+      )
+
+      Mix.Project.in_project(:app_a, app_dir, fn _module ->
+        assert AssetPathRegistry.reload() == :ok
+
+        assert AssetPathRegistry.lookup("hologram/runtime.js") ==
+                 {:ok, "/hologram/runtime-abcdef12.js"}
+      end)
+    end
+
     # Mix.Project.in_project/4 injects its app atom as the :app config default when it
     # serves a cached project, but a real umbrella root project has no :app - the
     # [app: nil] post-config forces that value in every load path.
