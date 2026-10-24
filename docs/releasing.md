@@ -91,6 +91,15 @@ Hosted runners use `ubuntu-26.04`, `ubuntu-26.04-arm`, `macos-26`,
 `macos-26-intel` and `windows-2025`. Linux GNU Rust builds use cross containers
 so upgrading the host image does not raise the target's glibc requirement.
 
+The CI download regression additionally pins OTP `28.5.0.8` on the consumer
+images `ubuntu-22.04`, `ubuntu-24.04`, `ubuntu-22.04-arm` and `macos-15-intel`.
+It checks expanded redirect headers and the 64 KiB limit, then extracts verified
+10.0.3 Hex packages outside the checkout and overlays only the candidate URL
+callbacks and their call sites. Both builds use the original public native
+artifacts and checksum files with empty caches and compiler traps. This isolates
+download compatibility from source builds and from a not-yet-published cohort;
+the normal release still builds all 47 archives and tests the new exact packages.
+
 Publication uploads the verified tarballs directly through Hex's package API
 with replacement disabled. It does not resolve optional source dependencies or
 rebuild package contents; the registry downloads must match those exact bytes.

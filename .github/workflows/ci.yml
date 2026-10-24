@@ -21,3 +21,21 @@ jobs:
       - run: mix format --check-formatted
       - run: mix compile --warnings-as-errors
       - uses: ./.github/actions/hologram-checks
+  native-downloads:
+    name: native-downloads / ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-24.04, ubuntu-22.04-arm, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.18'
+          otp-version: '28.5.0.8'
+      - name: Redirect header regressions
+        run: elixir scripts/native-url-test.exs
+      - name: Cold published-native consumer with candidate download callbacks
+        run: elixir .github/scripts/native_download_probe.exs

@@ -138,8 +138,7 @@ defmodule QuickBEAM.Native do
 
   use ZiglerPrecompiled,
     otp_app: :duskmoon_quickbeam,
-    base_url:
-      "https://github.com/duskmoon-dev/duskmoon-bundler/releases/download/v#{@native_version}",
+    base_url: {QuickBEAM.NativeURL, :url},
     version: @native_version,
     force_build: @build_from_source,
     targets: ~w(

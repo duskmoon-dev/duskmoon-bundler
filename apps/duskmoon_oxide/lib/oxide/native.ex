@@ -14,8 +14,7 @@ defmodule Oxide.Native do
   use RustlerPrecompiled,
     otp_app: :duskmoon_oxide,
     crate: "oxide_ex_nif",
-    base_url:
-      "https://github.com/duskmoon-dev/duskmoon-bundler/releases/download/v#{native_version}",
+    base_url: {Oxide.NativeURL, :url},
     force_build: build_from_source,
     targets: ~w(
       aarch64-apple-darwin

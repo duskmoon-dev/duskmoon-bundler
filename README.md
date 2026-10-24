@@ -27,6 +27,8 @@ elixir scripts/native-download-failure-test.exs
 
 Runtime-only Phoenix applications can use `duskmoon_bundler_runtime` without the compiler family. The package preserves `manifest_version = 1` and historical manifest behavior.
 
+Native packages resolve GitHub release redirects with a bounded 64 KiB response-header budget before handing the signed asset URL to RustlerPrecompiled or ZiglerPrecompiled. This supports OTP 28.5.0.8, whose default cumulative 10 KiB budget is smaller than GitHub's release redirect headers. TLS verification, proxy settings, checksum verification and strict precompiled mode remain enforced.
+
 ## Package staging
 
 ```sh
