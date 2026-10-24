@@ -21,40 +21,45 @@ defmodule HologramFeatureTests.SSEResponseTest do
     Handshake.insert(handshake_id, [], {instance_id, session_id, nil}, expires_at)
 
     uri = URI.parse(Endpoint.url())
-    {scheme, protocol, connect_opts} = connection_for(uri.scheme)
-
-    {:ok, initial_conn} =
-      Mint.HTTP.connect(
-        scheme,
-        uri.host,
-        uri.port,
-        [mode: :passive, protocols: [protocol]] ++ connect_opts
-      )
-
-    assert Mint.HTTP.protocol(initial_conn) == protocol
-
+    {protocol, connect_opts} = connection_for(uri.scheme)
     request_path = "/hologram/sse?instance_id=#{instance_id}&handshake_id=#{handshake_id}"
 
-    {:ok, requested_conn, request_ref} =
-      Mint.HTTP.request(initial_conn, "GET", request_path, [{"cookie", cookie}], nil)
+    promise =
+      HTTP.fetch(
+        uri |> URI.merge(request_path) |> URI.to_string(),
+        [
+          headers: [{"cookie", cookie}],
+          http_version: protocol,
+          stream_response: true,
+          decode_body: false,
+          redirect: :manual,
+          timeout: @recv_timeout_ms,
+          connect_timeout: @recv_timeout_ms
+        ] ++ connect_opts
+      )
 
-    {final_conn, status, headers} = recv_response_head(requested_conn, request_ref)
-    Mint.HTTP.close(final_conn)
-
-    assert status == 200
-    assert List.keyfind(headers, "content-type", 0) == {"content-type", "text/event-stream"}
-    refute List.keymember?(headers, "connection", 0)
+    try do
+      assert %HTTP.Response{} = response = HTTP.Promise.await(promise)
+      assert response.http_version == protocol
+      assert response.status == 200
+      assert HTTP.Headers.get(response.headers, "content-type") == "text/event-stream"
+      refute HTTP.Headers.has?(response.headers, "connection")
+    after
+      # The SSE body stays open; cancel after inspecting the final response headers.
+      assert :ok = HTTP.RequestCompletion.abort_and_await(HTTP.Promise.completion(promise))
+    end
   end
 
-  # Over TLS Bandit offers HTTP/2 and Mint is told to accept nothing else, so a run that
+  # Over TLS the server offers HTTP/2 and the client accepts nothing else, so a run that
   # somehow negotiated HTTP/1.1 fails at the protocol assertion rather than passing on
   # the wrong protocol. The cert is the self-signed test pair, hence no verification.
   defp connection_for("https") do
-    {:https, :http2, [transport_opts: [verify: :verify_none]]}
+    {:http2, [ssl: [verify: :verify_none]]}
   end
 
   defp connection_for("http") do
-    {:http, :http1, []}
+    # Keep the request persistent rather than asking the server for Connection: close.
+    {:http1, [http1_reuse: true]}
   end
 
   # Mints a Hologram session the way a page visit does, by running one page request
@@ -69,33 +74,5 @@ defmodule HologramFeatureTests.SSEResponseTest do
     %{"phoenix_session" => %{value: cookie_value}} = conn.resp_cookies
 
     {Session.get_session_id(conn), "phoenix_session=#{cookie_value}"}
-  end
-
-  # Reads until the status and headers of the response have both arrived. The stream
-  # stays open after that, so the caller closes the connection rather than waiting for
-  # a `:done` that never comes.
-  defp recv_response_head(conn, request_ref, status \\ nil, headers \\ nil)
-
-  defp recv_response_head(conn, _request_ref, status, headers)
-       when status != nil and headers != nil do
-    {conn, status, headers}
-  end
-
-  defp recv_response_head(conn, request_ref, status, headers) do
-    {:ok, new_conn, entries} = Mint.HTTP.recv(conn, 0, @recv_timeout_ms)
-
-    {new_status, new_headers} =
-      Enum.reduce(entries, {status, headers}, fn
-        {:status, ^request_ref, entry_status}, {_status, acc_headers} ->
-          {entry_status, acc_headers}
-
-        {:headers, ^request_ref, entry_headers}, {acc_status, _headers} ->
-          {acc_status, entry_headers}
-
-        _entry, acc ->
-          acc
-      end)
-
-    recv_response_head(new_conn, request_ref, new_status, new_headers)
   end
 end

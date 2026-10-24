@@ -81,8 +81,8 @@ defmodule QuickBEAM.MixProject do
       {:http_fetch, "~> 0.20.0 or ~> 0.21.0"},
       {:http_event_source, "~> 0.20.0 or ~> 0.21.0"},
       {:http_web_socket, "~> 0.20.0 or ~> 0.21.0"},
-      {:bandit, "~> 1.0", only: :test},
-      {:websock_adapter, "~> 0.5", only: :test},
+      {:gaoxy_http, "~> 0.12.2", only: :test},
+      {:websock_adapter, "~> 0.12.2", hex: :gaoxy_websock_adapter, only: :test, override: true},
       {:nimble_pool, "~> 1.1"},
       {:ex_doc, "~> 0.40", runtime: false, override: true}
     ]

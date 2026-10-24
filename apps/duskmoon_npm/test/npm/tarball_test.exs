@@ -39,8 +39,8 @@ defmodule NPM.TarballTest do
 
     body = File.read!(archive)
     integrity = "sha512-" <> Base.encode64(:crypto.hash(:sha512, body))
-    server = start_supervised!({Bandit, plug: {Server, body}, ip: {127, 0, 0, 1}, port: 0})
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+    server = start_supervised!({Gaoxy.HTTP, plug: {Server, body}, ip: {127, 0, 0, 1}, port: 0})
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(server, :http)
     dest = Path.join(dir, "extracted")
 
     assert {:ok, 1} =

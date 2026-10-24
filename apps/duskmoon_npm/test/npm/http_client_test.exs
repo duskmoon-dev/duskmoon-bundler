@@ -92,8 +92,8 @@ defmodule NPM.HTTPClientTest do
   end
 
   setup do
-    server = start_supervised!({Bandit, plug: {Server, self()}, ip: {127, 0, 0, 1}, port: 0})
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+    server = start_supervised!({Gaoxy.HTTP, plug: {Server, self()}, ip: {127, 0, 0, 1}, port: 0})
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(server, :http)
     %{url: "http://127.0.0.1:#{port}"}
   end
 

@@ -15,7 +15,7 @@ defmodule DuskmoonBundler.Integration.CDPBrowser do
   defmodule Client do
     @moduledoc false
 
-    defstruct [:conn, :ws, :ref, next_id: 1, events: []]
+    defstruct [:ws, next_id: 1, events: []]
   end
 
   def start_link(opts \\ []) do
@@ -172,6 +172,24 @@ defmodule DuskmoonBundler.Integration.CDPBrowser do
   end
 
   @impl true
+  def handle_info(
+        {HTTP.WebSocket, socket, %HTTP.WebSocket.Event.Message{data: data}, ref},
+        %{client: %Client{ws: socket}} = state
+      ) do
+    HTTP.WebSocket.acknowledge(socket, ref)
+    {:noreply, queue_event(state, decode_message(data))}
+  end
+
+  def handle_info(
+        {HTTP.WebSocket, socket, %HTTP.WebSocket.Event.Close{}},
+        %{client: %Client{ws: socket}} = state
+      ) do
+    {:noreply, queue_event(state, %{"method" => "CDP.close"})}
+  end
+
+  def handle_info({HTTP.WebSocket, _socket, %HTTP.WebSocket.Event.Error{}}, state),
+    do: {:noreply, state}
+
   def handle_info({_port, {:data, _data}}, state), do: {:noreply, state}
 
   def handle_info({_port, {:exit_status, status}}, state),
@@ -179,6 +197,7 @@ defmodule DuskmoonBundler.Integration.CDPBrowser do
 
   @impl true
   def terminate(_reason, state) do
+    HTTP.WebSocket.close(state.client.ws)
     close_port(state.port)
   rescue
     _ -> :ok
@@ -260,11 +279,8 @@ defmodule DuskmoonBundler.Integration.CDPBrowser do
       |> maybe_put_session_id(session_id)
       |> Jason.encode!()
 
-    with {:ok, ws, data} <- Mint.WebSocket.encode(client.ws, {:text, payload}),
-         {:ok, conn} <- Mint.WebSocket.stream_request_body(client.conn, client.ref, data) do
-      {:ok, id, %{client | conn: conn, ws: ws, next_id: id + 1}}
-    else
-      {:error, conn, reason} -> {:error, reason, %{client | conn: conn}}
+    case HTTP.WebSocket.send(client.ws, payload) do
+      :ok -> {:ok, id, %{client | next_id: id + 1}}
       {:error, reason} -> {:error, reason, client}
     end
   end
@@ -338,39 +354,25 @@ defmodule DuskmoonBundler.Integration.CDPBrowser do
   end
 
   defp do_recv_messages(%{client: %Client{} = client} = state, timeout) do
-    case Mint.WebSocket.recv(client.conn, 0, timeout) do
-      {:ok, conn, responses} ->
-        decode_responses(%{state | client: %{client | conn: conn}}, responses)
+    socket = client.ws
 
-      {:error, conn, %Mint.TransportError{reason: :timeout}, _responses} ->
-        {:error, :timeout, %{state | client: %{client | conn: conn}}}
+    receive do
+      {HTTP.WebSocket, ^socket, %HTTP.WebSocket.Event.Message{data: data}, ref} ->
+        HTTP.WebSocket.acknowledge(socket, ref)
+        {:ok, [decode_message(data)], state}
 
-      {:error, conn, reason, _responses} ->
-        {:error, reason, %{state | client: %{client | conn: conn}}}
+      {HTTP.WebSocket, ^socket, %HTTP.WebSocket.Event.Close{}} ->
+        {:error, :closed, state}
+
+      {HTTP.WebSocket, ^socket, %HTTP.WebSocket.Event.Error{reason: reason}} ->
+        {:error, reason, state}
+    after
+      timeout -> {:error, :timeout, state}
     end
   end
 
-  defp decode_responses(state, responses) do
-    Enum.reduce_while(responses, {:ok, [], state}, fn
-      {:data, ref, data}, {:ok, messages, %{client: %Client{ref: ref} = client} = state} ->
-        case Mint.WebSocket.decode(client.ws, data) do
-          {:ok, ws, frames} ->
-            messages = messages ++ Enum.flat_map(frames, &frame_messages/1)
-            {:cont, {:ok, messages, %{state | client: %{client | ws: ws}}}}
-
-          {:error, ws, reason} ->
-            {:halt, {:error, reason, %{state | client: %{client | ws: ws}}}}
-        end
-
-      _response, acc ->
-        {:cont, acc}
-    end)
-  end
-
-  defp frame_messages({:text, text}), do: [Jason.decode!(text)]
-  defp frame_messages({:binary, data}), do: [Jason.decode!(data)]
-  defp frame_messages({:close, _code, _reason}), do: [%{"method" => "CDP.close"}]
-  defp frame_messages(_frame), do: []
+  defp decode_message(%HTTP.WebSocket.ArrayBuffer{data: data}), do: Jason.decode!(data)
+  defp decode_message(data) when is_binary(data), do: Jason.decode!(data)
 
   defp queue_event(%{client: %Client{} = client} = state, message) do
     %{state | client: %{client | events: client.events ++ [message]}}
@@ -397,29 +399,33 @@ defmodule DuskmoonBundler.Integration.CDPBrowser do
   defp remote_value(_remote_object), do: nil
 
   defp connect(ws_url, timeout) do
-    uri = URI.parse(ws_url)
+    case HTTP.WebSocket.new(ws_url, [],
+           owner: self(),
+           binary_type: :array_buffer,
+           delivery: :ack,
+           opening_timeout: timeout
+         ) do
+      %HTTP.WebSocket{} = socket ->
+        receive do
+          {HTTP.WebSocket, ^socket, %HTTP.WebSocket.Event.Open{}} ->
+            {:ok, %Client{ws: socket}}
 
-    with {:ok, conn} <- Mint.HTTP.connect(:http, uri.host, uri.port, mode: :passive),
-         {:ok, conn, ref} <- Mint.WebSocket.upgrade(:ws, conn, uri.path, []),
-         {:ok, conn, responses} <- Mint.WebSocket.recv(conn, 0, timeout),
-         {:ok, headers} <- websocket_headers(responses, ref),
-         {:ok, conn, ws} <- Mint.WebSocket.new(conn, ref, 101, headers, mode: :passive) do
-      {:ok, %Client{conn: conn, ws: ws, ref: ref}}
+          {HTTP.WebSocket, ^socket, %HTTP.WebSocket.Event.Error{reason: reason}} ->
+            HTTP.WebSocket.close(socket)
+            {:error, reason}
+
+          {HTTP.WebSocket, ^socket, %HTTP.WebSocket.Event.Close{}} ->
+            {:error, :websocket_upgrade_failed}
+        after
+          timeout ->
+            HTTP.WebSocket.close(socket)
+            {:error, :timeout}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
-
-  defp websocket_headers(responses, ref) do
-    case Enum.find(responses, &match?({:status, ^ref, 101}, &1)) do
-      nil ->
-        {:error, :websocket_upgrade_failed}
-
-      _status ->
-        {:ok, Enum.find_value(responses, [], &headers_for(&1, ref))}
-    end
-  end
-
-  defp headers_for({:headers, ref, headers}, ref), do: headers
-  defp headers_for(_response, _ref), do: nil
 
   defp launch_chromium(executable, profile_dir) do
     args = [

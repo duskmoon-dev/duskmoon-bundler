@@ -94,16 +94,15 @@ defmodule Mix.Tasks.Npm.BootstrapTest do
 
     server =
       start_supervised!(
-        {Bandit,
+        {Gaoxy.HTTP,
          plug: {Registry, {self(), archive}},
-         scheme: :https,
+         transport: :tls,
          ip: {127, 0, 0, 1},
          port: 0,
-         certfile: cert,
-         keyfile: key}
+         tls: %{certfile: cert, keyfile: key}}
       )
 
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(server, :http)
     registry = "https://localhost:#{port}"
     integrity = "sha512-" <> Base.encode64(:crypto.hash(:sha512, archive))
     write_compilation_project!(dir)

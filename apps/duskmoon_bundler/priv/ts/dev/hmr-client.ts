@@ -87,7 +87,7 @@ let lastPongAt = 0
 let reconnectAttempts = 0
 
 // Bound at serve time from the server's `hmr_timeout` (half of it) so the
-// heartbeat always lands inside Bandit's websocket `read_timeout` window.
+// heartbeat always lands inside the server's websocket idle timeout window.
 // The value is injected by the dev server when serving this module.
 const configuredHeartbeat = (globalThis as Record<string, unknown>).__DUSKMOON_BUNDLER_HEARTBEAT__
 const HEARTBEAT_INTERVAL = typeof configuredHeartbeat === 'number' ? configuredHeartbeat : 25_000

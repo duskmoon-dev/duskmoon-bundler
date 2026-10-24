@@ -31,6 +31,29 @@ defmodule HologramClusterTests.ProxyTest do
           |> Plug.Conn.put_resp_cookie("stub_cookie_b", "2")
           |> Plug.Conn.send_resp(200, "ok")
 
+        "/redirect" ->
+          conn
+          |> Plug.Conn.put_resp_header("location", "/redirect-target")
+          |> Plug.Conn.send_resp(302, "redirect-body")
+
+        "/gzip" ->
+          bytes = :zlib.gzip(<<0, 1, 2, 255>>)
+          split = div(byte_size(bytes), 2)
+          <<first::binary-size(split), last::binary>> = bytes
+
+          conn =
+            conn
+            |> Plug.Conn.put_resp_header("content-encoding", "gzip")
+            |> Plug.Conn.send_chunked(200)
+
+          {:ok, conn} = Plug.Conn.chunk(conn, first)
+          {:ok, conn} = Plug.Conn.chunk(conn, last)
+          conn
+
+        "/echo-body" ->
+          {:ok, body, conn} = Plug.Conn.read_body(conn)
+          Plug.Conn.send_resp(conn, 200, "#{conn.method}:#{body}")
+
         "/stream" ->
           conn = Plug.Conn.send_chunked(conn, 200)
           {:ok, conn} = Plug.Conn.chunk(conn, "chunk-1\n")
@@ -54,7 +77,7 @@ defmodule HologramClusterTests.ProxyTest do
 
   setup do
     for port <- [@stub_port_1, @stub_port_2] do
-      start_supervised!({Bandit, plug: {StubUpstream, port}, port: port},
+      start_supervised!({Gaoxy.HTTP, plug: {StubUpstream, port}, port: port},
         id: {:stub_upstream, port}
       )
     end
@@ -73,6 +96,59 @@ defmodule HologramClusterTests.ProxyTest do
   defp served_by(response) do
     {"x-upstream", upstream} = List.keyfind(response.headers, "x-upstream", 0)
     String.to_integer(upstream)
+  end
+
+  defp assert_upstream_cancelled(phase) do
+    {:ok, listener} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
+    {:ok, {_ip, port}} = :inet.sockname(listener)
+    test_pid = self()
+
+    upstream =
+      Task.async(fn ->
+        {:ok, socket} = :gen_tcp.accept(listener, 1_000)
+        request = recv_headers(socket)
+        assert request =~ "GET /cancel HTTP/1.1"
+
+        if phase == :body do
+          :ok =
+            :gen_tcp.send(
+              socket,
+              "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\r\n"
+            )
+        end
+
+        send(test_pid, {:upstream_ready, self()})
+        result = :gen_tcp.recv(socket, 0, 2_000)
+        :gen_tcp.close(socket)
+        result
+      end)
+
+    on_exit(fn ->
+      :gen_tcp.close(listener)
+      Process.exit(upstream.pid, :kill)
+    end)
+
+    put_upstreams([port])
+    proxy_port = Application.fetch_env!(:hologram_cluster_tests, :proxy_port)
+    {:ok, downstream} = :gen_tcp.connect({127, 0, 0, 1}, proxy_port, [:binary, active: false])
+    on_exit(fn -> :gen_tcp.close(downstream) end)
+    :ok = :gen_tcp.send(downstream, "GET /cancel HTTP/1.1\r\nHost: localhost\r\n\r\n")
+
+    upstream_pid = upstream.pid
+    assert_receive {:upstream_ready, ^upstream_pid}, 1_000
+    if phase == :body, do: assert(recv_headers(downstream) =~ "HTTP/1.1 200")
+    :ok = :gen_tcp.close(downstream)
+
+    assert Task.await(upstream, 3_000) == {:error, :closed}
+  end
+
+  defp recv_headers(socket, bytes \\ "") do
+    if String.contains?(bytes, "\r\n\r\n") do
+      bytes
+    else
+      {:ok, chunk} = :gen_tcp.recv(socket, 0, 1_000)
+      recv_headers(socket, bytes <> chunk)
+    end
   end
 
   describe "clear_log/0" do
@@ -131,6 +207,14 @@ defmodule HologramClusterTests.ProxyTest do
   end
 
   describe "request forwarding" do
+    test "cancels upstream requests when the browser closes before response headers" do
+      assert_upstream_cancelled(:headers)
+    end
+
+    test "cancels upstream requests when the browser closes during an idle response body" do
+      assert_upstream_cancelled(:body)
+    end
+
     test "alternates upstreams for consecutive requests when no policy cookie is set" do
       first_upstream = served_by(get_through_proxy("/"))
       second_upstream = served_by(get_through_proxy("/"))
@@ -148,6 +232,42 @@ defmodule HologramClusterTests.ProxyTest do
       response = get_through_proxy("/echo-cookie", [{"cookie", "stub=42"}])
 
       assert response.body == "stub=42"
+    end
+
+    test "passes redirects through with their original status, location and body" do
+      response = get_through_proxy("/redirect")
+
+      assert response.status == 302
+      assert {"location", "/redirect-target"} in response.headers
+      assert response.body == "redirect-body"
+    end
+
+    test "preserves streamed gzip bytes and their content-encoding header" do
+      response = get_through_proxy("/gzip")
+
+      assert response.status == 200
+      assert {"content-encoding", "gzip"} in response.headers
+      assert response.body == :zlib.gzip(<<0, 1, 2, 255>>)
+    end
+
+    test "forwards a GET request entity without dropping the body" do
+      proxy_port = Application.fetch_env!(:hologram_cluster_tests, :proxy_port)
+
+      promise =
+        HTTP.fetch("http://127.0.0.1:#{proxy_port}/echo-body",
+          method: :get,
+          request_mode: :proxy,
+          body: "request entity",
+          redirect: :manual,
+          timeout: 5_000
+        )
+
+      try do
+        assert %HTTP.Response{status: 200} = response = HTTP.Promise.await(promise)
+        assert HTTP.Response.read_all(response) == "GET:request entity"
+      after
+        assert :ok = HTTP.RequestCompletion.abort_and_await(HTTP.Promise.completion(promise))
+      end
     end
 
     test "relays every set-cookie header rather than collapsing them" do

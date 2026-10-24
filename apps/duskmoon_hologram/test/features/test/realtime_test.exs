@@ -3,6 +3,7 @@ defmodule HologramFeatureTests.RealtimeTest do
   use HologramFeatureTests.TestCase, async: false
 
   alias Hologram.Realtime
+  alias Hologram.Realtime.SubscriptionRegistry
   alias Hologram.Router
   alias HologramFeatureTests.Realtime.Page1
   alias HologramFeatureTests.Realtime.Page10
@@ -579,23 +580,23 @@ defmodule HologramFeatureTests.RealtimeTest do
   end
 
   describe "subscriptions across reconnect" do
-    # Over HTTP/1.1 the kill closes the socket and the browser reconnects at once. Over HTTP/2
-    # on Bandit the browser learns nothing, and only the client's heartbeat watchdog brings
-    # the reconnect, two intervals after the last heartbeat. 1 s keeps that inside the wait
-    # budget: anything above the heartbeat's local delivery jitter (milliseconds) and well
-    # below the 30 s wait behaves the same.
+    # A killed stream that does not notify the browser is detected by the heartbeat
+    # watchdog. A 1 s heartbeat keeps that reconnect inside the existing wait budget
+    # on either HTTP version.
     feature "restored after SSE reconnect with stored receipts", %{session: session} do
       session =
         session
         |> simulate_fast_sse_heartbeat(1_000)
         |> visit(Page1)
 
-      simulate_sse_disconnect(current_instance_id(session))
+      instance_id = current_instance_id(session)
 
-      session =
-        session
-        |> wait_for_no_subscription(@channel_1)
-        |> wait_for_subscription(@channel_1)
+      [{^instance_id, %{sse_pid: prior_sse_pid}}] =
+        :ets.lookup(SubscriptionRegistry.ets_table_name(), instance_id)
+
+      simulate_sse_disconnect(instance_id)
+      session = wait_for_reconnected_subscription(session, @channel_1, prior_sse_pid)
+      assert current_instance_id(session) == instance_id
 
       Realtime.broadcast_action(@channel_1, :show, message: "delivered after reconnect")
 
@@ -615,19 +616,20 @@ defmodule HologramFeatureTests.RealtimeTest do
         |> visit(Page2)
 
       instance_id = current_instance_id(session)
+
+      [{^instance_id, %{sse_pid: prior_sse_pid}}] =
+        :ets.lookup(SubscriptionRegistry.ets_table_name(), instance_id)
+
       simulate_sse_disconnect(instance_id)
 
-      # Wait for the registry GC so the subsequent wait_for_subscription/2 below
-      # doesn't match the stale pre-kill entry (which still carries both
-      # bindings) and return before the JS-driven reconnect has even started.
-      # The tombstone write itself doesn't need the GC - it just needs to land
-      # before the reconnect POSTs the handshake (~250ms backoff is ample).
-      session = wait_for_no_subscription(session, @channel_1)
+      # Tombstones do not require registry GC. Record this before the reconnect
+      # handshake validates the browser's stored receipts.
       Realtime.unsubscribe_all({:instance, instance_id}, @channel_1)
 
       # On reconnect only the @channel_2 binding restores in the new entry; the
       # tombstoned @channel_1 receipt is rejected at handshake verification.
-      session = wait_for_subscription(session, @channel_2)
+      session = wait_for_reconnected_subscription(session, @channel_2, prior_sse_pid)
+      assert current_instance_id(session) == instance_id
 
       Realtime.broadcast_action(@channel_1, :show_1, message: "blocked")
       Realtime.broadcast_action(@channel_2, :show_2, message: "delivered")
@@ -653,12 +655,15 @@ defmodule HologramFeatureTests.RealtimeTest do
         |> visit(Page1)
 
       instance_id = current_instance_id(session)
+
+      [{^instance_id, %{sse_pid: prior_sse_pid}}] =
+        :ets.lookup(SubscriptionRegistry.ets_table_name(), instance_id)
+
       simulate_sse_disconnect(instance_id)
 
-      session = wait_for_no_subscription(session, @channel_1)
       Realtime.unsubscribe_all({:instance, instance_id}, @channel_1)
 
-      session = wait_for_subscription(session, @channel_1)
+      session = wait_for_reconnected_subscription(session, @channel_1, prior_sse_pid)
 
       # The fresh instance id proves the page reloaded rather than reconnecting in
       # place, and the channel re-subscribes cleanly so broadcasts dispatch again.

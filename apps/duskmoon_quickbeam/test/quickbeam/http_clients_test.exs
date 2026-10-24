@@ -66,7 +66,7 @@ defmodule QuickBEAM.HTTPClientsTest do
   end
 
   setup_all do
-    for app <- [:duskmoon_quickbeam, :bandit, :websock_adapter] do
+    for app <- [:duskmoon_quickbeam, :gaoxy_http, :websock_adapter] do
       {:ok, _} = Application.ensure_all_started(app)
     end
 
@@ -82,9 +82,9 @@ defmodule QuickBEAM.HTTPClientsTest do
     end
 
     server =
-      start_supervised!({Bandit, plug: TestPlug, port: 0, ip: :loopback, startup_log: false})
+      start_supervised!({Gaoxy.HTTP, plug: {TestPlug, []}, port: 0, ip: {127, 0, 0, 1}})
 
-    {:ok, {_address, port}} = ThousandIsland.listener_info(server)
+    %{local: {:ok, {_address, port}}} = Gaoxy.info(server, :http)
     {:ok, url: "http://127.0.0.1:#{port}"}
   end
 
@@ -227,8 +227,7 @@ defmodule QuickBEAM.HTTPClientsTest do
     assert_receive {:websocket_started, ^id, pid}, 2_000
     assert_receive {:websocket_event, ["__ws_open", ^id, "echo"]}, 2_000
     GenServer.cast(pid, {:close, 4001, "client finished"})
-    # Bandit acknowledges client closes with its own normal close frame.
-    assert_receive {:websocket_event, ["__ws_close", ^id, 1000, "", true]}, 2_000
+    assert_receive {:websocket_event, ["__ws_close", ^id, 4001, "client finished", true]}, 2_000
   end
 
   test "the native JavaScript bridge returns fetch bytes and receives WebSocket ArrayBuffers", %{

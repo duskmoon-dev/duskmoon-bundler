@@ -82,14 +82,11 @@ defmodule DuskmoonBundler.Integration.HoistedRegistrarBuildTest do
 
     server =
       start_supervised!(
-        {Bandit,
-         plug: {__MODULE__.Static, at: "/", from: outdir},
-         ip: :loopback,
-         port: 0,
-         startup_log: false}
+        {Gaoxy.HTTP,
+         plug: {__MODULE__.Static, at: "/", from: outdir}, ip: {127, 0, 0, 1}, port: 0}
       )
 
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(server, :http)
     {:ok, page} = CDPBrowser.new_page(browser)
     on_exit(fn -> CDPBrowser.close_page(page) end)
     :ok = CDPBrowser.goto(page, "http://127.0.0.1:#{port}/index.html")

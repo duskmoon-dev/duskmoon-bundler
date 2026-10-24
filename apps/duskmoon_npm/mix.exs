@@ -53,7 +53,7 @@ defmodule DuskmoonNpm.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_slop, "~> 0.4", only: [:dev, :test], runtime: false},
       {:ex_dna, "~> 1.5", only: [:dev, :test], runtime: false},
-      {:bandit, "~> 1.0", only: :test},
+      {:gaoxy_http, "~> 0.12.2", only: :test},
       {:ex_doc, "~> 0.40", runtime: false}
     ]
   end

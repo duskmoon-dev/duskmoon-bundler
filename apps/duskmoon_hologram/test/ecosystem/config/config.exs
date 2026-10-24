@@ -8,7 +8,7 @@ config :ash,
 config :ex_money, auto_start_exchange_rate_service: false
 
 config :hologram_ecosystem_tests, HologramEcosystemTestsWeb.Endpoint,
-  adapter: Bandit.PhoenixAdapter,
+  adapter: Gaoxy.PhoenixAdapter,
   pubsub_server: HologramEcosystemTests.PubSub,
   render_errors: [
     formats: [json: HologramEcosystemTestsWeb.ErrorJSON],

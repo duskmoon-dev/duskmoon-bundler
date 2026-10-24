@@ -15,7 +15,7 @@ defmodule DuskmoonBundler.HMR.Socket do
   end
 
   # Heartbeat: the browser client sends a `{"type":"ping"}` JSON message
-  # every few seconds to keep Bandit's websocket `read_timeout` from closing
+  # every few seconds to keep the server's websocket idle timeout from closing
   # an otherwise idle connection. We reply with `{"type":"pong"}` so the
   # client can also detect a dead link and reconnect. Both messages flow
   # through the `DuskmoonBundler.HMR.Message` JSONCodec.

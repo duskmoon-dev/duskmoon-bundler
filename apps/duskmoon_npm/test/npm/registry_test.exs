@@ -113,9 +113,11 @@ defmodule NPM.RegistryTest do
     attempts = start_supervised!({Agent, fn -> 0 end})
 
     server =
-      start_supervised!({Bandit, plug: {Server, {self(), attempts}}, ip: {127, 0, 0, 1}, port: 0})
+      start_supervised!(
+        {Gaoxy.HTTP, plug: {Server, {self(), attempts}}, ip: {127, 0, 0, 1}, port: 0}
+      )
 
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(server, :http)
     registry = "http://127.0.0.1:#{port}"
     Application.put_env(:duskmoon_npm, :registry, registry)
     Application.put_env(:duskmoon_npm, :allowed_registries, [registry])

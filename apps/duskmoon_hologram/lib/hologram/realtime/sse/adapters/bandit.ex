@@ -8,6 +8,9 @@ defmodule Hologram.Realtime.SSE.Adapters.Bandit do
 
   @behaviour Hologram.Realtime.SSE.Adapter
 
+  @impl Hologram.Realtime.SSE.Adapter
+  def prepare(conn), do: conn
+
   # Bandit delivers a client's HTTP/2 stream reset to the stream's process, which is the
   # pump's. Left unhandled it would be swallowed and the stream would live on until a
   # heartbeat write fails.
