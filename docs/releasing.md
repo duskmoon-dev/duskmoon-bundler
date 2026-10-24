@@ -77,11 +77,14 @@ release validation. Its output directory must not exist. `publish-assets` and
 `publish-packages` are side-effecting release operations and require explicit
 operational authorization outside this implementation task. `publish-packages`
 rechecks public artifacts rather than assuming a preceding upload succeeded.
-For the source/UI gate, run this before the release dispatch:
+For the source/UI gate, confirm `main` points at the intended toolchain SHA, then
+run this before the release dispatch. GitHub requires a branch or tag as the
+dispatch ref; a bare commit SHA is not accepted. Check the created run's
+`head_sha` against that intended SHA:
 
 ```sh
 gh workflow run test.yml --repo duskmoon-dev/duskmoon-bundler \
-  --ref FULL_TOOLCHAIN_SHA -f ui_sha=FULL_UI_SHA
+  --ref main -f ui_sha=FULL_UI_SHA
 ```
 
 Wait for that run and `ci.yml` at the same source SHA to succeed. A new failed,
