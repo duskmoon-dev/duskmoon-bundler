@@ -215,37 +215,18 @@ jobs:
           elixir "$GITHUB_WORKSPACE/validation/scripts/package-consumer-smoke.exs" --stage "$RUNNER_TEMP/consumer-packages" --mode precompiled
           elixir "$GITHUB_WORKSPACE/validation/.github/scripts/runtime_consumer.exs" "$VERSION" "$RUNNER_TEMP/consumer-packages"
   published-native-downloads:
-    name: published-native-downloads / ${{ matrix.runner }} / ${{ matrix.container || 'host' }}
+    name: published-native-downloads / ${{ matrix.runner }}
     needs: published-context
     if: needs.published-context.outputs.version != ''
     runs-on: ${{ matrix.runner }}
-    container: ${{ matrix.container || null }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: ubuntu-26.04
-            container: ubuntu:22.04
-            image_os: ubuntu22
-          - runner: ubuntu-26.04
-            container: ubuntu:24.04
-            image_os: ubuntu24
-          - runner: ubuntu-26.04-arm
-            container: ubuntu:22.04
-            image_os: ubuntu22-arm64
-          - runner: macos-15-intel
-            image_os: macos15
+        runner: [ubuntu-26.04, ubuntu-26.04-arm, macos-26-intel, xcode-27]
     steps:
-      - name: Install consumer container dependencies
-        if: matrix.container != ''
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl git libssl-dev unzip
       - uses: actions/checkout@v7
       - uses: erlef/setup-beam@v1
-        env:
-          ImageOS: ${{ matrix.image_os }}
         with:
           elixir-version: '1.18'
           otp-version: '28.5.0.8'
@@ -257,17 +238,28 @@ jobs:
     needs: published-context
     if: needs.published-context.outputs.version != ''
     runs-on: ubuntu-26.04
+    container: ubuntu:26.04
     timeout-minutes: 25
     steps:
+      - name: Install registry consumer dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git libssl-dev unzip
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
+      - uses: erlef/setup-beam@v1
+        env:
+          ImageOS: ubuntu26
+        with:
+          elixir-version: '1.18'
+          otp-version: '28'
       - name: Cold registry glibc consumer without source compilers
         env:
           VERSION: ${{ needs.published-context.outputs.version }}
         run: |
-          docker run --rm --volume "$PWD/.github/scripts:/validation:ro" \
-            elixir:1.18-otp-28-slim sh /validation/alpine_native_smoke.sh "$VERSION"
+          ln -s "$GITHUB_WORKSPACE/.github/scripts" /validation
+          sh /validation/alpine_native_smoke.sh "$VERSION"
   musl:
     needs: published-context
     if: needs.published-context.outputs.version != ''

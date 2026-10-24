@@ -7,19 +7,6 @@ Code.require_file("release_support.exs", __DIR__)
     ["published", version] -> {:published, ReleaseSupport.stable!(version)}
   end
 
-legacy_vize =
-  case System.get_env("DUSKMOON_PROBE_LEGACY_VIZE_GLIBC") do
-    value when value in [nil, ""] -> nil
-    value -> value
-  end
-
-if legacy_vize do
-  unless mode == :candidate and version == "10.0.3" and legacy_vize == "2.39" and
-           :os.type() == {:unix, :linux} and
-           String.starts_with?(to_string(:erlang.system_info(:system_architecture)), "aarch64"),
-         do: raise("legacy ABI expectation only applies to published 10.0.3 ARM GNU Vize")
-end
-
 root = Path.expand("../..", __DIR__)
 
 temp =
@@ -166,38 +153,16 @@ end
 
 run!.(["compile", "--warnings-as-errors"])
 
-if legacy_vize do
-  # This immutable fixture predates the Ubuntu 22.04 GNU build baseline. Verify
-  # its exact known failure explicitly; published-mode consumers have no exception.
-  File.write!(Path.join(consumer, "legacy_vize.exs"), "Vize.parse_sfc(\"<template />\")\n")
-  {output, status} = run.(["run", "legacy_vize.exs"])
-  IO.write(output)
-
-  unless status != 0 and output =~ "GLIBC_2.39" and output =~ "Vize.Native",
-    do: raise("immutable Vize ABI baseline changed; retained at #{temp}")
-
-  IO.puts(
-    "::warning::Confirmed immutable 10.0.3 ARM Vize requires GLIBC_2.39. " <>
-      "All six downloads passed; the five compatible libraries are executed below. " <>
-      "New published cohorts must execute all six libraries on this runner."
-  )
-end
-
-vize_smoke =
-  if legacy_vize,
-    do: "",
-    else: ~s|{:ok, _} = Vize.parse_sfc("<template><div>download</div></template>")|
-
 File.write!(Path.join(consumer, "smoke.exs"), """
 {:ok, _} = OXC.parse("export const answer = 42;", "entry.js")
 {:ok, _} = OXC.Format.run("const answer=42;", "entry.js")
 {:ok, _} = OXC.Lint.run("const answer=42;", "entry.js")
 [_ | _] = Oxide.extract(~s(<div class="flex">), "html")
-#{vize_smoke}
+{:ok, _} = Vize.parse_sfc("<template><div>download</div></template>")
 {:ok, runtime} = QuickBEAM.start()
 {:ok, 42} = QuickBEAM.eval(runtime, "21 * 2")
 :ok = QuickBEAM.stop(runtime)
-IO.puts("#{if legacy_vize, do: "Five compatible", else: "All six"} native libraries loaded and executed")
+IO.puts("All six native libraries loaded and executed")
 """)
 
 run!.(["run", "smoke.exs"])

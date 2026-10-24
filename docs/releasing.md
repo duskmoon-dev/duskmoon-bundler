@@ -51,9 +51,10 @@ UI repository tags remain the source for earlier toolchains.
    original successful run, verifies all public bytes, extracts the exact Hex
    tarballs outside both checkouts, and runs strict precompiled consumers and
    the runtime-only manifest regression. It also runs cold registry smoke checks
-   on glibc and Alpine amd64/arm64, with no Rust/Zig compiler in those containers.
+   on Ubuntu 26.04 glibc and Alpine amd64/arm64, with no Rust/Zig compiler in
+   those containers.
    A separate OTP 28.5.0.8 matrix loads and executes all six published NIFs on
-   Ubuntu 22.04 amd64/arm64, Ubuntu 24.04 amd64 and macOS 15 Intel.
+   Ubuntu 26.04 amd64/arm64, macOS 26 Intel and macOS 27 ARM.
    The complete registry consumers bootstrap the third-party `lazy_html` NIF
    through ElixirMake's target/URL/cache interfaces with a bounded 64 KiB header
    budget and the checksum from its published Hex package. Its default downloader
@@ -99,27 +100,23 @@ cancelled or unfinished source run blocks release instead of reusing older green
 results. After publication, wait for the separate **Toolchain Tests** run before
 considering the cohort verified for UI adoption.
 
-Hosted runners use `ubuntu-26.04`, `ubuntu-26.04-arm`, `macos-26`,
-`macos-26-intel` and `windows-2025`. Linux GNU Rust and QuickBEAM builds run
-inside Ubuntu 22.04 containers on the matching `ubuntu-26.04` or
-`ubuntu-26.04-arm` host. Before upload, every GNU archive must pass the glibc
-symbol-version ceiling of 2.35. Cross builds remain in use for the other Rust
-targets that require them. Host image upgrades cannot raise the GNU baseline.
+Hosted runners use `ubuntu-26.04`, `ubuntu-26.04-arm`, `macos-26-intel`,
+`xcode-27` (macOS 27 ARM) and `windows-2025`. GitHub currently provides macOS 27
+through its `xcode-27` preview image label. Linux GNU Rust and QuickBEAM builds
+run directly on the matching Ubuntu 26.04 host. This internal toolchain follows
+the current runner's glibc and does not impose an older-distribution ABI ceiling.
+Cross builds remain in use for the other Rust targets that require them.
 
 The CI download regression additionally pins OTP `28.5.0.8` on the consumer
-environments Ubuntu 22.04 amd64/arm64, Ubuntu 24.04 amd64 and `macos-15-intel`.
-Linux consumers run in containers on `ubuntu-26.04` / `ubuntu-26.04-arm` hosts.
+environments `ubuntu-26.04`, `ubuntu-26.04-arm`, `macos-26-intel` and `xcode-27`.
+These consumers run directly on their hosted runners.
 It checks expanded redirect headers and the 64 KiB limit, then extracts verified
 10.0.3 Hex packages outside the checkout and overlays only the candidate URL
-callbacks and their call sites. Both builds use the original public native
+callbacks and their call sites. Both runs use the original public native
 artifacts and checksum files with empty caches and compiler traps. This isolates
 download compatibility from source builds and from a not-yet-published cohort;
 the normal release still builds all 47 archives and tests the new exact packages.
-The immutable 10.0.3 ARM GNU Vize fixture requires GLIBC 2.39. On Ubuntu 22.04,
-candidate CI explicitly verifies that known loading failure after all downloads
-succeed, then executes the five compatible libraries. This exception is limited
-to that historical fixture. Published-cohort qualification has no exception:
-all six NIFs must execute in every matrix environment before adoption.
+All six NIFs must execute in every matrix environment before adoption.
 
 Publication uploads the verified tarballs directly through Hex's package API
 with replacement disabled. It does not resolve optional source dependencies or
