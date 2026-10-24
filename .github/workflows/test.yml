@@ -223,7 +223,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-26.04, ubuntu-26.04-arm, macos-26-intel, xcode-27]
+        runner: [ubuntu-26.04, ubuntu-26.04-arm, macos-26-intel, macos-26]
     steps:
       - uses: actions/checkout@v7
       - uses: erlef/setup-beam@v1
