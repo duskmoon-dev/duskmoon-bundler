@@ -224,11 +224,15 @@ jobs:
         include:
           - runner: ubuntu-26.04
             container: ubuntu:22.04
+            image_os: ubuntu22
           - runner: ubuntu-26.04
             container: ubuntu:24.04
+            image_os: ubuntu24
           - runner: ubuntu-26.04-arm
             container: ubuntu:22.04
+            image_os: ubuntu22-arm64
           - runner: macos-15-intel
+            image_os: macos15
     steps:
       - name: Install consumer container dependencies
         if: matrix.container != ''
@@ -237,6 +241,8 @@ jobs:
           apt-get install -y --no-install-recommends ca-certificates curl git libssl-dev unzip
       - uses: actions/checkout@v7
       - uses: erlef/setup-beam@v1
+        env:
+          ImageOS: ${{ matrix.image_os }}
         with:
           elixir-version: '1.18'
           otp-version: '28.5.0.8'

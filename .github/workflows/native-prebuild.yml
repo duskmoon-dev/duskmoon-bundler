@@ -136,6 +136,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends build-essential ca-certificates curl git libssl-dev pkg-config python3 unzip
+          echo 'ImageOS=${{ startsWith(inputs.quickbeam_target, 'aarch64-') && 'ubuntu22-arm64' || 'ubuntu22' }}' >> "$GITHUB_ENV"
 
       - name: Checkout code
         uses: actions/checkout@v7
