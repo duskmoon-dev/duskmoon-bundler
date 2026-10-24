@@ -781,10 +781,10 @@ defmodule Hologram.Reflection do
   @doc """
   Returns the project OTP application name.
 
-  Resolved from the active Mix project when it defines an `:app`. Otherwise
-  (umbrella root, releases) it is identified among the loaded applications as
-  the one that depends on `:duskmoon_hologram`, disambiguated by Phoenix endpoint
-  ownership when several do.
+  Resolved from the active Mix project when it is Hologram itself or declares a
+  `:duskmoon_hologram` dependency. Otherwise (unrelated projects, umbrella roots,
+  releases) it is identified among the loaded applications as the one that depends
+  on `:duskmoon_hologram`, disambiguated by Phoenix endpoint ownership when several do.
   """
   @spec otp_app() :: atom
   def otp_app do
@@ -1274,7 +1274,15 @@ defmodule Hologram.Reflection do
   end
 
   defp otp_app_from_mix_project do
-    if Code.ensure_loaded?(Mix.Project), do: Mix.Project.config()[:app]
+    if Code.ensure_loaded?(Mix.Project) do
+      config = Mix.Project.config()
+      app = config[:app]
+
+      if app == :duskmoon_hologram or
+           Enum.any?(Keyword.get(config, :deps, []), &(elem(&1, 0) == :duskmoon_hologram)) do
+        app
+      end
+    end
   end
 
   defp phoenix_endpoint?(module) do
