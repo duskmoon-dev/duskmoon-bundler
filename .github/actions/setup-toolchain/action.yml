@@ -14,9 +14,10 @@ runs:
     - uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
-    - uses: goto-bus-stop/setup-zig@v2
+    - uses: jdx/mise-action@v5.2.2
       with:
-        version: 0.16.0
+        tool_versions: |
+          zig 0.16.0
     - uses: oven-sh/setup-bun@v2
       with:
         bun-version: 1.4.0

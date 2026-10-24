@@ -150,9 +150,10 @@ jobs:
           otp-version: '28'
 
       - name: Install Zig
-        uses: goto-bus-stop/setup-zig@v2
+        uses: jdx/mise-action@v5.2.2
         with:
-          version: 0.16.0
+          tool_versions: |
+            zig 0.16.0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
