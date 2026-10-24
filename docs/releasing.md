@@ -54,6 +54,11 @@ UI repository tags remain the source for earlier toolchains.
    on glibc and Alpine amd64/arm64, with no Rust/Zig compiler in those containers.
    A separate OTP 28.5.0.8 matrix loads and executes all six published NIFs on
    Ubuntu 22.04 amd64/arm64, Ubuntu 24.04 amd64 and macOS 15 Intel.
+   The complete registry consumers bootstrap the third-party `lazy_html` NIF
+   through ElixirMake's target/URL/cache interfaces with a bounded 64 KiB header
+   budget and the checksum from its published Hex package. Its default downloader
+   otherwise discards the OTP 28 header-limit error and attempts a source build.
+   Duskmoon NIF downloads remain cold, with no native compiler fallback.
    These tests run after publication; a consumer failure blocks adoption but
    does not roll back already published packages.
 7. Only successful published-artifact, registry and platform tests in `test.yml`

@@ -32,6 +32,7 @@ cd "$consumer_dir"
 export DUSKMOON_RELEASE_VERSION="$version"
 export MIX_ENV=prod
 export DUSKMOON_NATIVE_MODE=precompiled
+export ELIXIR_MAKE_CACHE_DIR="$consumer_dir/elixir-make-cache"
 mix local.hex --force
 mix local.rebar --force
 cat > mix.exs <<EOF
@@ -52,6 +53,10 @@ defmodule AlpineNativeSmoke.MixProject do
 end
 EOF
 mix deps.get
+if [ -d deps/lazy_html ]; then
+  mix deps.compile elixir_make cc_precompiler
+  mix run --no-compile --no-start --no-deps-check /validation/cache_lazy_html.exs
+fi
 mix deps.compile
 mix compile --warnings-as-errors
 mix run /validation/alpine_native_smoke.exs

@@ -54,6 +54,7 @@ jobs:
           MIX_ENV: dev
         run: mix compile --warnings-as-errors
       - run: elixir scripts/native-download-failure-test.exs
+      - run: elixir .github/scripts/cache_lazy_html_test.exs
       - name: Hologram Mocha suite under Bun and asset dependency setup
         run: MIX_ENV=dev mix test.js
       - name: All sub-app Elixir tests including Hologram
