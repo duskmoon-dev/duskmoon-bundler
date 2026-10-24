@@ -55,7 +55,9 @@ EOF
 mix deps.get
 if [ -d deps/lazy_html ]; then
   mix deps.compile elixir_make cc_precompiler
-  mix run --no-compile --no-start --no-deps-check /validation/cache_lazy_html.exs
+  # A standalone VM retains OTP TLS paths before the consumer is compiled.
+  elixir -pa _build/prod/lib/elixir_make/ebin -pa _build/prod/lib/cc_precompiler/ebin \
+    /validation/cache_lazy_html.exs
 fi
 mix deps.compile
 mix compile --warnings-as-errors
