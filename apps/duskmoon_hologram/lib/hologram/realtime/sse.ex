@@ -184,7 +184,10 @@ defmodule Hologram.Realtime.SSE do
   @doc false
   @spec prepare(Plug.Conn.t()) :: Plug.Conn.t()
   def prepare(conn) do
+    adapter = adapter_for(conn)
+
     conn
+    |> adapter.prepare()
     |> Plug.Conn.put_resp_header("cache-control", "no-cache")
     |> Plug.Conn.put_resp_header("content-type", "text/event-stream")
     |> Plug.Conn.send_chunked(200)
@@ -384,6 +387,7 @@ defmodule Hologram.Realtime.SSE do
         case adapter.handle_message(message) do
           :closed -> {:halt, conn}
           :ignore -> {:cont, conn}
+          :poll -> adapter.poll(conn)
         end
     end
   end
@@ -591,7 +595,9 @@ defmodule Hologram.Realtime.SSE do
   end
 
   # The server-specific half of the stream, picked from the conn so nothing needs
-  # configuring. Bandit is matched by name only - Hologram doesn't depend on it.
+  # configuring. Servers are matched by name only - Hologram doesn't depend on them.
+  defp adapter_for(%Plug.Conn{adapter: {Gaoxy.PlugAdapter, _state}}), do: Adapters.Gaoxy
+
   defp adapter_for(%Plug.Conn{adapter: {Bandit.Adapter, _state}}), do: Adapters.Bandit
 
   defp adapter_for(_conn), do: Adapters.Passive

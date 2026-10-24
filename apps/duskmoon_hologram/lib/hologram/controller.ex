@@ -5,6 +5,7 @@ defmodule Hologram.Controller do
 
   alias Hologram.Assets.ChunkRegistry
   alias Hologram.Assets.PageDigestRegistry
+  alias Hologram.Commons.CryptographicUtils
   alias Hologram.Compiler.Encoder
   alias Hologram.Component.Action
   alias Hologram.LiveReload
@@ -433,7 +434,7 @@ defmodule Hologram.Controller do
     {conn_with_csrf_token, {masked_csrf_token, _unmasked_csrf_token}} =
       CSRFProtection.ensure_tokens(conn)
 
-    instance_id = UUID.uuid4()
+    instance_id = CryptographicUtils.uuid4()
 
     renderer_opts = [
       csrf_token: masked_csrf_token,
@@ -520,7 +521,7 @@ defmodule Hologram.Controller do
         {validated_bindings, refreshed_receipts} =
           verify_and_refresh_receipts(receipts, instance_id, session_id, current_user_id)
 
-        handshake_id = UUID.uuid4()
+        handshake_id = CryptographicUtils.uuid4()
         expires_at = System.system_time(:millisecond) + Handshake.stash_ttl_ms()
 
         Handshake.insert(

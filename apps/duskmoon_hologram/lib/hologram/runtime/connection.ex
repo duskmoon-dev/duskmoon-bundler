@@ -7,13 +7,14 @@ defmodule Hologram.Runtime.Connection do
   @behaviour WebSock
 
   alias Hologram.Assets.PageDigestRegistry
+  alias Hologram.Commons.CryptographicUtils
   alias Hologram.Runtime.Deserializer
 
   @type state :: %{plug_conn: Plug.Conn.t()}
 
   @impl WebSock
   def init(plug_conn) do
-    connection_id = UUID.uuid4()
+    connection_id = CryptographicUtils.uuid4()
 
     # context = gproc_context(Hologram.env())
     # :gproc.reg({:n, context, {:hologram_connection, connection_id}})

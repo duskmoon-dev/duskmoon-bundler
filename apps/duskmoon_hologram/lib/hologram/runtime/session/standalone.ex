@@ -1,6 +1,7 @@
 defmodule Hologram.Runtime.Session.Standalone do
   @moduledoc false
 
+  alias Hologram.Commons.CryptographicUtils
   alias Plug.Crypto.KeyGenerator
   alias Plug.Crypto.MessageEncryptor
 
@@ -33,7 +34,7 @@ defmodule Hologram.Runtime.Session.Standalone do
   end
 
   defp create_new_session(conn) do
-    session_id = UUID.uuid4()
+    session_id = CryptographicUtils.uuid4()
     session_data = %{session_id: session_id}
     encrypted_session = encrypt_session_data(session_data)
     new_conn = put_session_cookie(conn, encrypted_session)

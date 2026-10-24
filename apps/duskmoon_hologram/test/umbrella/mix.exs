@@ -28,6 +28,7 @@ defmodule HologramUmbrellaTests.MixProject do
 
   defp deps do
     [
+      {:websock_adapter, "~> 0.12.2", hex: :gaoxy_websock_adapter, override: true},
       {:credo, "~> 1.0", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.0", only: [:dev, :test], runtime: false}
     ]

@@ -5,8 +5,8 @@ config :hologram_feature_tests, HologramFeatureTestsWeb.Endpoint,
   server: true
 
 # HOLOGRAM_FEATURE_TESTS_HTTPS serves the same app over TLS, where Chrome negotiates
-# HTTP/2 - Bandit offers it over TLS by default. Tests touching the SSE stream then run
-# against Bandit's other protocol, whose stream lifecycle is unlike HTTP/1.1's.
+# HTTP/2 - Gaoxy offers it over TLS by default. Tests touching the SSE stream then run
+# against its other protocol, whose stream lifecycle is unlike HTTP/1.1's.
 # Endpoint.url/0 follows the listener, and Wallaby follows Endpoint.url/0, so nothing
 # else changes.
 #
@@ -20,6 +20,7 @@ config :hologram_feature_tests, HologramFeatureTestsWeb.Endpoint,
 # phx.gen.cert leaves out the NULL parameters of the public key's rsaEncryption algorithm
 # identifier, which RFC 3279 requires. OpenSSL and curl accept that, Chrome's BoringSSL
 # does not: it rejects the key with a fatal decode error and every page load fails.
+# TODO(upstream): gsmlg-dev/gaoxy#17 classify early TLS HTTP/2 peer closure without error logs.
 if System.get_env("HOLOGRAM_FEATURE_TESTS_HTTPS") do
   config :hologram_feature_tests, HologramFeatureTestsWeb.Endpoint,
     https: [

@@ -83,11 +83,10 @@ defmodule DuskmoonBundler.Integration.HMRTest do
     plug_opts = %{root: @fixture_dir, dev_server: dev_server_opts}
 
     {:ok, server} =
-      Bandit.start_link(
+      Gaoxy.HTTP.start_link(
         plug: {DuskmoonBundler.Integration.TestPlug, plug_opts},
         port: @port,
-        ip: :loopback,
-        startup_log: false
+        ip: {127, 0, 0, 1}
       )
 
     on_exit(fn -> Process.exit(server, :normal) end)

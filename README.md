@@ -8,6 +8,22 @@ The synchronized toolchain version is **10.0.4**. All nine packages and their na
 
 `apps/duskmoon_hologram` vendors [Hologram](https://github.com/bartblast/hologram) as the OTP application `:duskmoon_hologram`. It joins the synchronized release cohort at version 10.0.3; its upstream source provenance remains Hologram 0.12.2. See its [integration notes](apps/duskmoon_hologram/UPSTREAM.md).
 
+## Phoenix HTTP server
+
+The host application selects its HTTP server; the libraries retain the standard `websock_adapter` dependency for Bandit and Cowboy compatibility. For a Gaoxy host, add these dependencies to the host's `mix.exs`:
+
+```elixir
+{:gaoxy_http, "~> 0.12.2"},
+{:websock_adapter, "~> 0.12.2", hex: :gaoxy_websock_adapter, override: true}
+```
+
+The host-level override makes Phoenix and Gaoxy resolve the same `:websock_adapter` application to the Gaoxy fork. Configure the Phoenix endpoint to use its adapter:
+
+```elixir
+config :my_app, MyAppWeb.Endpoint,
+  adapter: Gaoxy.PhoenixAdapter
+```
+
 ## Development
 
 Use `devenv shell` for the Elixir/OTP, Rust, Zig, Bun and Tailwind toolchains. Development explicitly builds candidate native sources; the ordinary UI consumer requires published artifacts.

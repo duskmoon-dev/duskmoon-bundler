@@ -8,6 +8,8 @@ defmodule Hologram.Runtime.Session do
   # the current body) and Hologram.Runtime.Session.Standalone (already preserved).
   # Today this module only exposes the Phoenix-backed (embedded-mode) path.
 
+  alias Hologram.Commons.CryptographicUtils
+
   @session_id_key :hologram_session_id
   @user_id_key :hologram_user_id
 
@@ -50,7 +52,7 @@ defmodule Hologram.Runtime.Session do
   @spec init(Plug.Conn.t()) :: Plug.Conn.t()
   def init(conn) do
     case Plug.Conn.get_session(conn, @session_id_key) do
-      nil -> Plug.Conn.put_session(conn, @session_id_key, UUID.uuid4())
+      nil -> Plug.Conn.put_session(conn, @session_id_key, CryptographicUtils.uuid4())
       _session_id -> conn
     end
   end

@@ -226,9 +226,11 @@ defmodule NPM.FrozenWorkspaceTest do
       end)
 
     server =
-      start_supervised!({Bandit, plug: {Server, {archives, self()}}, ip: {127, 0, 0, 1}, port: 0})
+      start_supervised!(
+        {Gaoxy.HTTP, plug: {Server, {archives, self()}}, ip: {127, 0, 0, 1}, port: 0}
+      )
 
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(server, :http)
     origin = "http://127.0.0.1:#{port}"
     Application.put_env(:duskmoon_npm, :allowed_registries, [origin])
 

@@ -60,9 +60,8 @@ defmodule DuskmoonBundler.MixProject do
       {:ex_dna, "~> 1.1", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.40", runtime: false, override: true},
       {:makeup_js, "~> 0.1", only: :dev, runtime: false},
-      {:bandit, "~> 1.0", only: :test},
-      {:mint, "~> 1.9"},
-      {:mint_web_socket, "~> 1.0"}
+      {:gaoxy_http, "~> 0.12.2", only: :test},
+      {:http_web_socket, "~> 0.21.16", only: :test}
     ]
   end
 

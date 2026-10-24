@@ -520,9 +520,9 @@ defmodule HologramFeatureTests.Helpers do
   JS-driven reconnect cycle begins: backoff, then POST handshake (the
   receipts in `App.subscriptionReceiptRegistry` are re-validated), then a
   fresh `EventSource` GET that re-registers bindings via
-  `SubscriptionRegistry.attach_connection`. Callers typically follow with
-  `wait_for_no_subscription/2` to gate the registry GC and then
-  `wait_for_subscription/2` to gate the reconnect-attach.
+  `SubscriptionRegistry.attach_connection`. Capture the current SSE pid before
+  disconnecting and use `wait_for_reconnected_subscription/4` to distinguish
+  the restored stream from the old entry without requiring a transient gap.
   """
   @spec simulate_sse_disconnect(String.t()) :: :ok
   def simulate_sse_disconnect(instance_id) do
@@ -692,6 +692,33 @@ defmodule HologramFeatureTests.Helpers do
       true ->
         :timer.sleep(100)
         wait_for_own_subscription(session, channel, cid, start_time)
+    end
+  end
+
+  @doc """
+  Waits until this browser's current connection has a different live SSE process
+  from `prior_sse_pid` and can receive broadcasts on `channel`.
+
+  The browser may reconnect in place or reload under a new instance id. Other
+  sessions' bindings never satisfy this wait, and a brief absence of the old
+  entry need not be observed.
+  """
+  def wait_for_reconnected_subscription(session, channel, prior_sse_pid, start_time \\ nil) do
+    start_time = start_time || current_time()
+    entry = registry_entry(session)
+
+    cond do
+      entry != nil and entry.sse_pid != prior_sse_pid and Process.alive?(entry.sse_pid) and
+          receiving?(entry, channel, nil) ->
+        session
+
+      timed_out?(start_time) ->
+        raise Wallaby.ExpectationNotMetError,
+              "Timed out waiting for this session's reconnected subscription on #{inspect(channel)}"
+
+      true ->
+        :timer.sleep(100)
+        wait_for_reconnected_subscription(session, channel, prior_sse_pid, start_time)
     end
   end
 

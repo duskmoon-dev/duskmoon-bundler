@@ -1,7 +1,7 @@
 import Config
 
 config :app_1, App1.Endpoint,
-  adapter: Bandit.PhoenixAdapter,
+  adapter: Gaoxy.PhoenixAdapter,
   pubsub_server: App1.PubSub,
   url: [host: "localhost"]
 

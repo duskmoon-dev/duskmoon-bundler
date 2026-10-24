@@ -18,14 +18,17 @@ defmodule HologramClusterTests.MixProject do
 
   defp deps do
     [
-      {:bandit, "~> 1.5"},
+      {:gaoxy_http, "~> 0.12.2"},
+      {:websock_adapter, "~> 0.12.2", hex: :gaoxy_websock_adapter, override: true},
       {:credo, "~> 1.0", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.0", only: [:dev, :test], runtime: false},
+      {:ex_doc, "~> 0.40", runtime: false, override: true},
       {:duskmoon_hologram, path: Path.expand("../..", __DIR__)},
       {:jason, "~> 1.0"},
-      {:mint, "~> 1.0", only: :test},
+      {:http_fetch, "~> 0.21.16"},
       {:phoenix, "~> 1.7"},
-      {:wallaby, "~> 0.30", only: :test}
+      {:wallaby, "~> 0.30", only: :test},
+      {:zigler, "~> 0.16.0", only: :test, runtime: false}
     ]
   end
 

@@ -1,7 +1,7 @@
 import Config
 
 config :hologram_cluster_tests, HologramClusterTestsWeb.Endpoint,
-  adapter: Bandit.PhoenixAdapter,
+  adapter: Gaoxy.PhoenixAdapter,
   pubsub_server: HologramClusterTests.PubSub,
   render_errors: [
     formats: [json: HologramClusterTestsWeb.ErrorJSON],

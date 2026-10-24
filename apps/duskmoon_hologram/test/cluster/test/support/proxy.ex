@@ -148,7 +148,11 @@ defmodule HologramClusterTests.Proxy do
     proxy_port = Application.fetch_env!(:hologram_cluster_tests, :proxy_port)
 
     {:ok, listener_pid} =
-      Bandit.start_link(plug: HologramClusterTests.Proxy.Forwarder, port: proxy_port)
+      Gaoxy.HTTP.start_link(
+        plug: {HologramClusterTests.Proxy.Forwarder, []},
+        ip: {127, 0, 0, 1},
+        port: proxy_port
+      )
 
     {:ok, %{listener_pid: listener_pid}}
   end
@@ -204,10 +208,13 @@ defmodule HologramClusterTests.Proxy.Forwarder do
     end
   end
 
-  # The host header names this proxy, so it is rewritten for the upstream. Everything
-  # else - cookies included - passes through untouched, in both directions.
+  # Rewrite the upstream authority and let http_fetch frame the buffered request body.
+  # Entity headers and cookies retain their values and duplicates.
   defp build_request_headers(conn, upstream) do
-    forwarded_headers = Enum.reject(conn.req_headers, fn {name, _value} -> name == "host" end)
+    forwarded_headers =
+      Enum.reject(conn.req_headers, fn {name, _value} ->
+        name in ["host", "transfer-encoding", "trailer"]
+      end)
 
     [{"host", "127.0.0.1:#{upstream}"} | forwarded_headers]
   end
@@ -215,21 +222,59 @@ defmodule HologramClusterTests.Proxy.Forwarder do
   defp forward(conn, upstream) do
     {:ok, request_body, conn} = read_full_body(conn, [])
 
-    {:ok, initial_mint_conn} = Mint.HTTP.connect(:http, "127.0.0.1", upstream, mode: :passive)
-
-    request_path = build_request_path(conn)
-    request_headers = build_request_headers(conn, upstream)
-
-    {:ok, mint_conn, request_ref} =
-      Mint.HTTP.request(
-        initial_mint_conn,
-        conn.method,
-        request_path,
-        request_headers,
-        request_body
+    promise =
+      HTTP.fetch("http://127.0.0.1:#{upstream}#{build_request_path(conn)}",
+        method: conn.method,
+        headers: build_request_headers(conn, upstream),
+        body: request_body,
+        request_mode: :proxy,
+        http_version: :http1,
+        redirect: :manual,
+        decode_body: false,
+        stream_response: true,
+        timeout: :infinity,
+        connect_timeout: @recv_timeout_ms,
+        read_idle_timeout: @recv_timeout_ms,
+        response_stream_idle_timeout: @recv_timeout_ms
       )
 
-    relay_response(conn, mint_conn, request_ref, upstream, %{headers: [], status: nil})
+    try do
+      case await_response(conn, promise.task) do
+        {:ok, response, conn} ->
+          relay_response(conn, response, upstream)
+
+        {:error, conn} ->
+          halt_towards_browser(conn, upstream, %{headers: [], status: nil})
+
+        {:closed, conn} ->
+          conn
+      end
+    after
+      :ok = HTTP.RequestCompletion.abort_and_await(HTTP.Promise.completion(promise))
+    end
+  end
+
+  defp await_response(conn, task) do
+    case Task.yield(task, 100) do
+      {:ok, %HTTP.Response{} = response} ->
+        {:ok, response, conn}
+
+      {:ok, {:error, _reason}} ->
+        {:error, conn}
+
+      {:exit, _reason} ->
+        {:error, conn}
+
+      nil ->
+        case Gaoxy.HTTP.poll_connection(conn, 0) do
+          {kind, conn} when kind in [:pending, :more] ->
+            await_response(conn, task)
+
+          {:error, reason, conn} ->
+            {:ok, conn} = Gaoxy.HTTP.abort(conn, reason)
+            {:closed, conn}
+        end
+    end
   end
 
   defp read_full_body(conn, acc) do
@@ -248,62 +293,81 @@ defmodule HologramClusterTests.Proxy.Forwarder do
   end
 
   # Streams the upstream's response to the browser as it arrives. The response is opened
-  # towards the browser on the first data entry (or on :done for bodiless responses), and
-  # every subsequent data entry is relayed as its own chunk - never accumulated.
-  defp relay_response(conn, mint_conn, request_ref, upstream, response) do
-    case Mint.HTTP.recv(mint_conn, 0, @recv_timeout_ms) do
-      {:ok, mint_conn, entries} ->
-        case relay_entries(conn, entries, request_ref, upstream, response) do
-          {:cont, conn, response} ->
-            relay_response(conn, mint_conn, request_ref, upstream, response)
+  # towards the browser on the first body chunk. Acknowledgement follows the downstream
+  # write, keeping backpressure and the original encoded entity bytes intact.
+  defp relay_response(conn, response, upstream) do
+    response_head = %{
+      status: response.status,
+      headers:
+        Enum.map(HTTP.Headers.to_list(response.headers), fn {name, value} ->
+          {String.downcase(name), value}
+        end)
+    }
 
-          {:halt, conn} ->
-            Mint.HTTP.close(mint_conn)
+    case HTTP.Response.stream_pid(response) do
+      stream when is_pid(stream) ->
+        monitor = Process.monitor(stream)
+        send(stream, {:read_chunk, self(), :ack})
+
+        try do
+          relay_stream(conn, stream, monitor, upstream, response_head)
+        after
+          Process.demonitor(monitor, [:flush])
+        end
+
+      nil ->
+        conn
+        |> put_response_headers(upstream, response_head)
+        |> Plug.Conn.send_resp(response.status, response.body)
+    end
+  end
+
+  defp relay_stream(conn, stream, monitor, upstream, response) do
+    receive do
+      {:stream_chunk, ^stream, bytes, ref} ->
+        conn = open_towards_browser(conn, upstream, response)
+
+        case Plug.Conn.chunk(conn, bytes) do
+          {:ok, conn} ->
+            send(stream, {:stream_chunk_ack, ref})
+            relay_stream(conn, stream, monitor, upstream, response)
+
+          {:error, _reason} ->
             conn
         end
 
-      {:error, _mint_conn, _reason, _entries} ->
+      {:stream_trailers, ^stream, _headers} ->
+        relay_stream(conn, stream, monitor, upstream, response)
+
+      {:stream_end, ^stream} ->
+        finish_response(conn, upstream, response)
+
+      {:stream_error, ^stream, _reason} ->
         halt_towards_browser(conn, upstream, response)
+
+      {:DOWN, ^monitor, :process, ^stream, _reason} ->
+        halt_towards_browser(conn, upstream, response)
+    after
+      100 ->
+        case Gaoxy.HTTP.poll_connection(conn, 0) do
+          {kind, conn} when kind in [:pending, :more] ->
+            relay_stream(conn, stream, monitor, upstream, response)
+
+          {:error, reason, conn} ->
+            {:ok, conn} = Gaoxy.HTTP.abort(conn, reason)
+            conn
+        end
     end
   end
 
-  defp relay_entries(conn, [], _request_ref, _upstream, response), do: {:cont, conn, response}
-
-  defp relay_entries(conn, [entry | rest], request_ref, upstream, response) do
-    case relay_entry(conn, entry, request_ref, upstream, response) do
-      {:cont, conn, response} -> relay_entries(conn, rest, request_ref, upstream, response)
-      {:halt, conn} -> {:halt, conn}
-    end
-  end
-
-  defp relay_entry(conn, {:status, request_ref, status}, request_ref, _upstream, response) do
-    {:cont, conn, %{response | status: status}}
-  end
-
-  defp relay_entry(conn, {:headers, request_ref, headers}, request_ref, _upstream, response) do
-    {:cont, conn, %{response | headers: response.headers ++ headers}}
-  end
-
-  defp relay_entry(conn, {:data, request_ref, data}, request_ref, upstream, response) do
-    conn = open_towards_browser(conn, upstream, response)
-
-    case Plug.Conn.chunk(conn, data) do
-      {:ok, conn} -> {:cont, conn, response}
-      {:error, _reason} -> {:halt, conn}
-    end
-  end
-
-  defp relay_entry(conn, {:done, request_ref}, request_ref, upstream, response) do
+  defp finish_response(conn, upstream, response) do
     if conn.state == :chunked do
-      {:halt, conn}
+      conn
     else
       # No body at all - answer without entering chunked encoding.
-      conn =
-        conn
-        |> put_response_headers(upstream, response)
-        |> Plug.Conn.send_resp(response.status, "")
-
-      {:halt, conn}
+      conn
+      |> put_response_headers(upstream, response)
+      |> Plug.Conn.send_resp(response.status, "")
     end
   end
 
@@ -322,6 +386,7 @@ defmodule HologramClusterTests.Proxy.Forwarder do
   defp open_towards_browser(conn, upstream, response) do
     conn
     |> put_response_headers(upstream, response)
+    |> Gaoxy.HTTP.put_stream_timeout(:infinity)
     |> Plug.Conn.send_chunked(response.status)
   end
 

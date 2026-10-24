@@ -12,7 +12,8 @@ defmodule HologramEcosystemTests.MixProject do
     [
       {:ash, "~> 3.0"},
       {:ash_money, "~> 0.2"},
-      {:bandit, "~> 1.5"},
+      {:gaoxy_http, "~> 0.12.2"},
+      {:websock_adapter, "~> 0.12.2", hex: :gaoxy_websock_adapter, override: true},
       {:credo, "~> 1.0", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.0", only: [:dev, :test], runtime: false},
       {:ecto, "~> 3.0"},

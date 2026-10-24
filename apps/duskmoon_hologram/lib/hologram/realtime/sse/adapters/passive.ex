@@ -9,6 +9,9 @@ defmodule Hologram.Realtime.SSE.Adapters.Passive do
   @behaviour Hologram.Realtime.SSE.Adapter
 
   @impl Hologram.Realtime.SSE.Adapter
+  def prepare(conn), do: conn
+
+  @impl Hologram.Realtime.SSE.Adapter
   def handle_message(_message), do: :ignore
 
   @impl Hologram.Realtime.SSE.Adapter
