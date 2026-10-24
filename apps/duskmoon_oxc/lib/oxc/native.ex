@@ -12,8 +12,7 @@ defmodule OXC.Native do
   use RustlerPrecompiled,
     otp_app: :duskmoon_oxc,
     crate: "oxc_ex_nif",
-    base_url:
-      "https://github.com/duskmoon-dev/duskmoon-bundler/releases/download/v#{native_version}",
+    base_url: {OXC.NativeURL, :url},
     force_build: build_from_source,
     targets: ~w(
       aarch64-apple-darwin
