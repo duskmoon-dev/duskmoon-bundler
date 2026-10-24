@@ -27,7 +27,9 @@ UI repository tags remain the source for earlier toolchains.
    latest CI and test runs at that exact source SHA and the successful UI job
    named with that exact UI SHA; it never executes those tests again. PR checks
    and post-release checks cannot substitute for these source gates. Candidate
-   integration uses the UI's isolated candidate closure and native sources.
+   integration uses the UI's isolated candidate closure and native sources,
+   including third-party Rust NIF dependencies via
+   `RUSTLER_PRECOMPILED_FORCE_BUILD_ALL=1`.
 3. Release calls eight independent `native-<rust-target>.yml` workflows. Each
    delegates to `native-prebuild.yml` for five Rust crates and, except Windows,
    one QuickBEAM target. Rust and QuickBEAM builds are independent, so one target

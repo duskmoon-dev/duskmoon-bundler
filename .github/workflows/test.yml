@@ -69,6 +69,7 @@ jobs:
     timeout-minutes: 60
     env:
       DUSKMOON_NATIVE_MODE: source
+      RUSTLER_PRECOMPILED_FORCE_BUILD_ALL: '1'
     steps:
       - uses: actions/checkout@v7
         with:
