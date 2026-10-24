@@ -105,7 +105,7 @@ defmodule DuskmoonBundler.Integration.PhoenixExampleBuildTest do
 
   @moduletag :integration
 
-  @app_dir Path.expand("../../..", __DIR__)
+  @root_dir Path.expand("../../../../..", __DIR__)
   @example_dir Path.expand("fixtures/vanilla", __DIR__)
   @assets_root Path.join(@example_dir, "assets")
   @outdir Path.join(@example_dir, "priv/static/assets")
@@ -122,7 +122,7 @@ defmodule DuskmoonBundler.Integration.PhoenixExampleBuildTest do
 
     {output, status} =
       System.cmd("mix", build_args(),
-        cd: @app_dir,
+        cd: @root_dir,
         env: [
           {"NPM_EX_ALLOWED_REGISTRIES",
            "https://registry.npmjs.org,https://npm.gsmlg.dev,https://nexus.gsmlg.net"}
@@ -222,7 +222,7 @@ defmodule DuskmoonBundler.Integration.PhoenixExampleBuildTest do
       "--tailwind-source",
       Path.join(@example_dir, "lib"),
       "--resolve-dir",
-      Path.expand("../../node_modules", @app_dir),
+      Path.join(@root_dir, "node_modules"),
       "--hash",
       "--no-minify"
     ]
