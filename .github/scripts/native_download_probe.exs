@@ -1,7 +1,25 @@
-# Qualify candidate download code against immutable, already-published native bytes.
+# Qualify candidate callbacks or exact published packages against public native bytes.
 Code.require_file("release_support.exs", __DIR__)
 
-version = "10.0.3"
+{mode, version} =
+  case System.argv() do
+    [] -> {:candidate, "10.0.3"}
+    ["published", version] -> {:published, ReleaseSupport.stable!(version)}
+  end
+
+legacy_vize =
+  case System.get_env("DUSKMOON_PROBE_LEGACY_VIZE_GLIBC") do
+    value when value in [nil, ""] -> nil
+    value -> value
+  end
+
+if legacy_vize do
+  unless mode == :candidate and version == "10.0.3" and legacy_vize == "2.39" and
+           :os.type() == {:unix, :linux} and
+           String.starts_with?(to_string(:erlang.system_info(:system_architecture)), "aarch64"),
+         do: raise("legacy ABI expectation only applies to published 10.0.3 ARM GNU Vize")
+end
+
 root = Path.expand("../..", __DIR__)
 
 temp =
@@ -112,53 +130,77 @@ run!.(["local.hex", "--force"])
 run!.(["local.rebar", "--force"])
 run!.(["deps.get"])
 
-# Capture the published baseline before applying candidate download code.
-{baseline, status} = run.(["compile", "--warnings-as-errors"])
-IO.write(baseline)
+if mode == :candidate do
+  # Capture the published baseline before applying candidate download code.
+  {baseline, status} = run.(["compile", "--warnings-as-errors"])
+  IO.write(baseline)
 
-cond do
-  status == 0 ->
-    IO.puts("Published baseline fits this runner's current response-header budget")
+  cond do
+    status == 0 ->
+      IO.puts("Published baseline fits this runner's current response-header budget")
 
-  baseline =~ "header_too_long" and baseline =~ "10240" ->
-    IO.puts("Reproduced published download failure at the default 10240-byte header budget")
+    baseline =~ "header_too_long" and baseline =~ "10240" ->
+      IO.puts("Reproduced published download failure at the default 10240-byte header budget")
 
-  true ->
-    raise "published baseline failed outside the header regression; retained at #{temp}"
+    true ->
+      raise "published baseline failed outside the header regression; retained at #{temp}"
+  end
+
+  # Overlay only the candidate URL callback and its six call sites. Keep the
+  # published manifests, checksum files and native binaries at their original B.
+  for {app, directory, files} <- [
+        {"duskmoon_oxc", "oxc", ["native.ex", "format/native.ex", "lint/native.ex"]},
+        {"duskmoon_oxide", "oxide", ["native.ex"]},
+        {"duskmoon_vize", "vize", ["native.ex"]},
+        {"duskmoon_quickbeam", "quickbeam", ["native.ex"]}
+      ],
+      file <- ["native_url.ex" | files] do
+    relative = Path.join(["lib", directory, file])
+    File.cp!(Path.join([root, "apps", app, relative]), Path.join([temp, app, relative]))
+  end
+
+  File.rm_rf!(Path.join(consumer, "_build"))
+  File.rm_rf!(Path.join(temp, "rust-cache"))
+  File.rm_rf!(Path.join(temp, "zig-cache"))
 end
-
-# Overlay only the candidate URL callback and its six call sites. Keep the
-# published manifests, checksum files and native binaries at their original B.
-for {app, directory, files} <- [
-      {"duskmoon_oxc", "oxc", ["native.ex", "format/native.ex", "lint/native.ex"]},
-      {"duskmoon_oxide", "oxide", ["native.ex"]},
-      {"duskmoon_vize", "vize", ["native.ex"]},
-      {"duskmoon_quickbeam", "quickbeam", ["native.ex"]}
-    ],
-    file <- ["native_url.ex" | files] do
-  relative = Path.join(["lib", directory, file])
-  File.cp!(Path.join([root, "apps", app, relative]), Path.join([temp, app, relative]))
-end
-
-File.rm_rf!(Path.join(consumer, "_build"))
-File.rm_rf!(Path.join(temp, "rust-cache"))
-File.rm_rf!(Path.join(temp, "zig-cache"))
 
 run!.(["compile", "--warnings-as-errors"])
+
+if legacy_vize do
+  # This immutable fixture predates the Ubuntu 22.04 GNU build baseline. Verify
+  # its exact known failure explicitly; published-mode consumers have no exception.
+  File.write!(Path.join(consumer, "legacy_vize.exs"), "Vize.parse_sfc(\"<template />\")\n")
+  {output, status} = run.(["run", "legacy_vize.exs"])
+  IO.write(output)
+
+  unless status != 0 and output =~ "GLIBC_2.39" and output =~ "Vize.Native",
+    do: raise("immutable Vize ABI baseline changed; retained at #{temp}")
+
+  IO.puts(
+    "::warning::Confirmed immutable 10.0.3 ARM Vize requires GLIBC_2.39. " <>
+      "All six downloads passed; the five compatible libraries are executed below. " <>
+      "New published cohorts must execute all six libraries on this runner."
+  )
+end
+
+vize_smoke =
+  if legacy_vize,
+    do: "",
+    else: ~s|{:ok, _} = Vize.parse_sfc("<template><div>download</div></template>")|
 
 File.write!(Path.join(consumer, "smoke.exs"), """
 {:ok, _} = OXC.parse("export const answer = 42;", "entry.js")
 {:ok, _} = OXC.Format.run("const answer=42;", "entry.js")
 {:ok, _} = OXC.Lint.run("const answer=42;", "entry.js")
 [_ | _] = Oxide.extract(~s(<div class="flex">), "html")
-{:ok, _} = Vize.parse_sfc("<template><div>download</div></template>")
+#{vize_smoke}
 {:ok, runtime} = QuickBEAM.start()
 {:ok, 42} = QuickBEAM.eval(runtime, "21 * 2")
 :ok = QuickBEAM.stop(runtime)
-IO.puts("All six native libraries loaded and executed with candidate download callbacks")
+IO.puts("#{if legacy_vize, do: "Five compatible", else: "All six"} native libraries loaded and executed")
 """)
 
 run!.(["run", "smoke.exs"])
 if File.exists?(compiler_log), do: raise("native download invoked a source compiler")
 File.rm_rf!(temp)
-IO.puts("Cold OTP 28.5.0.8 precompiled consumer passed with no compiler invocation")
+IO.puts("Cold #{mode} #{version} precompiled consumer passed with no compiler invocation")

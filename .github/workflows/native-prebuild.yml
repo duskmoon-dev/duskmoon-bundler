@@ -28,10 +28,14 @@ concurrency:
   cancel-in-progress: false
 env:
   DUSKMOON_NATIVE_MODE: source
+defaults:
+  run:
+    shell: bash
 jobs:
   rust-nifs:
     name: ${{ matrix.crate.app }} / ${{ matrix.crate.name }} / ${{ inputs.target }}
     runs-on: ${{ inputs.runner }}
+    container: ${{ endsWith(inputs.target, '-linux-gnu') && 'ubuntu:22.04' || null }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -53,6 +57,12 @@ jobs:
             name: vize_ex_nif
             project-dir: apps/duskmoon_vize/native/vize_ex_nif
     steps:
+      - name: Install GNU build container dependencies
+        if: endsWith(inputs.target, '-linux-gnu')
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential ca-certificates curl git pkg-config python3
+
       - name: Checkout code
         uses: actions/checkout@v7
         with:
@@ -81,6 +91,12 @@ jobs:
           use-cross: ${{ inputs.use_cross }}
           cross-version: from-source
           project-dir: ${{ matrix.crate.project-dir }}
+
+      - name: Verify GNU glibc compatibility
+        if: endsWith(inputs.target, '-linux-gnu')
+        env:
+          ARTIFACT: ${{ steps.build-crate.outputs.file-path }}
+        run: python3 .github/scripts/check_glibc.py "$ARTIFACT" 2.35
 
       - name: Verify musl shared library
         if: endsWith(inputs.target, '-linux-musl')
@@ -112,8 +128,15 @@ jobs:
     name: duskmoon_quickbeam / ${{ inputs.quickbeam_target }}
     if: inputs.quickbeam_target != ''
     runs-on: ${{ inputs.runner }}
+    container: ${{ endsWith(inputs.quickbeam_target, '-linux-gnu') && 'ubuntu:22.04' || null }}
     timeout-minutes: 90
     steps:
+      - name: Install GNU build container dependencies
+        if: endsWith(inputs.quickbeam_target, '-linux-gnu')
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential ca-certificates curl git libssl-dev pkg-config python3 unzip
+
       - name: Checkout code
         uses: actions/checkout@v7
         with:
@@ -144,11 +167,14 @@ jobs:
           QUICKBEAM_BUILD: '1'
           DUSKMOON_BUILD_NATIVE_FROM_SOURCE: '1'
         run: |
-          # Keep the same-host Linux build from inheriting the runner's CPU
+          # Keep same-host GNU Linux builds from inheriting the runner's CPU
           # features. Cross-target builds must let Zigler perform host sema
           # before it applies the requested target to the final artifact.
-          if [[ "${{ inputs.quickbeam_target }}" == "x86_64-linux-gnu" ]]; then
-            export TARGET_ARCH=x86_64
+          case "${{ inputs.quickbeam_target }}" in
+            x86_64-linux-gnu) export TARGET_ARCH=x86_64 ;;
+            aarch64-linux-gnu) export TARGET_ARCH=aarch64 ;;
+          esac
+          if [[ "${{ inputs.quickbeam_target }}" == *-linux-gnu ]]; then
             export TARGET_OS=linux
             export TARGET_ABI=gnu
           fi
@@ -157,6 +183,12 @@ jobs:
             --target ${{ inputs.quickbeam_target }} \
             --version ${{ inputs.version }} \
             --out ../../artifacts
+
+      - name: Verify GNU glibc compatibility
+        if: endsWith(inputs.quickbeam_target, '-linux-gnu')
+        env:
+          ARTIFACT: artifacts/Elixir.QuickBEAM.Native-v${{ inputs.version }}-${{ inputs.quickbeam_target }}.so.tar.gz
+        run: python3 .github/scripts/check_glibc.py "$ARTIFACT" 2.35
 
       - name: Verify portable x86_64 instruction baseline
         if: startsWith(inputs.quickbeam_target, 'x86_64-linux-')

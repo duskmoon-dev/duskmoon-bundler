@@ -22,14 +22,28 @@ jobs:
       - run: mix compile --warnings-as-errors
       - uses: ./.github/actions/hologram-checks
   native-downloads:
-    name: native-downloads / ${{ matrix.runner }}
+    name: native-downloads / ${{ matrix.runner }} / ${{ matrix.container || 'host' }}
     runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container || null }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-22.04, ubuntu-24.04, ubuntu-22.04-arm, macos-15-intel]
+        include:
+          - runner: ubuntu-26.04
+            container: ubuntu:22.04
+          - runner: ubuntu-26.04
+            container: ubuntu:24.04
+          - runner: ubuntu-26.04-arm
+            container: ubuntu:22.04
+            legacy_vize_glibc: '2.39'
+          - runner: macos-15-intel
     steps:
+      - name: Install consumer container dependencies
+        if: matrix.container != ''
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git libssl-dev unzip
       - uses: actions/checkout@v7
       - uses: erlef/setup-beam@v1
         with:
@@ -38,4 +52,6 @@ jobs:
       - name: Redirect header regressions
         run: elixir scripts/native-url-test.exs
       - name: Cold published-native consumer with candidate download callbacks
+        env:
+          DUSKMOON_PROBE_LEGACY_VIZE_GLIBC: ${{ matrix.legacy_vize_glibc }}
         run: elixir .github/scripts/native_download_probe.exs

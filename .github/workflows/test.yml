@@ -211,6 +211,39 @@ jobs:
           elixir "$GITHUB_WORKSPACE/validation/.github/scripts/prepare_tar_consumer.exs" "$RUNNER_TEMP/verified-hex-packages" "$RUNNER_TEMP/consumer-packages"
           elixir "$GITHUB_WORKSPACE/validation/scripts/package-consumer-smoke.exs" --stage "$RUNNER_TEMP/consumer-packages" --mode precompiled
           elixir "$GITHUB_WORKSPACE/validation/.github/scripts/runtime_consumer.exs" "$VERSION" "$RUNNER_TEMP/consumer-packages"
+  published-native-downloads:
+    name: published-native-downloads / ${{ matrix.runner }} / ${{ matrix.container || 'host' }}
+    needs: published-context
+    if: needs.published-context.outputs.version != ''
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container || null }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-26.04
+            container: ubuntu:22.04
+          - runner: ubuntu-26.04
+            container: ubuntu:24.04
+          - runner: ubuntu-26.04-arm
+            container: ubuntu:22.04
+          - runner: macos-15-intel
+    steps:
+      - name: Install consumer container dependencies
+        if: matrix.container != ''
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git libssl-dev unzip
+      - uses: actions/checkout@v7
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.18'
+          otp-version: '28.5.0.8'
+      - name: Execute all six NIFs from exact published packages without source compilers
+        env:
+          VERSION: ${{ needs.published-context.outputs.version }}
+        run: elixir .github/scripts/native_download_probe.exs published "$VERSION"
   registry:
     needs: published-context
     if: needs.published-context.outputs.version != ''
@@ -234,7 +267,7 @@ jobs:
       version: ${{ needs.published-context.outputs.version }}
       source_sha: ${{ github.sha }}
   upgrade:
-    needs: [published-context, public-artifacts, registry, musl]
+    needs: [published-context, public-artifacts, published-native-downloads, registry, musl]
     if: needs.published-context.outputs.version != ''
     runs-on: ubuntu-26.04
     permissions:
@@ -257,7 +290,7 @@ jobs:
           RELEASE_RUN: ${{ needs.published-context.outputs.release_run }}
           VERIFICATION_RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          elixir -r .github/scripts/release_support.exs -e 'File.write!("verified-release.json", JSON.encode!(%{version: System.fetch_env!("VERSION"), source_sha: System.fetch_env!("SOURCE_SHA"), validation_sha: System.fetch_env!("VALIDATION_SHA"), release_run: System.fetch_env!("RELEASE_RUN"), verification_run: System.fetch_env!("VERIFICATION_RUN"), packages: ReleaseSupport.cohort(System.fetch_env!("VERSION")), public_assets_verified: true, registry_consumer_verified: true, musl_amd64_verified: true, musl_arm64_verified: true}))'
+          elixir -r .github/scripts/release_support.exs -e 'File.write!("verified-release.json", JSON.encode!(%{version: System.fetch_env!("VERSION"), source_sha: System.fetch_env!("SOURCE_SHA"), validation_sha: System.fetch_env!("VALIDATION_SHA"), release_run: System.fetch_env!("RELEASE_RUN"), verification_run: System.fetch_env!("VERIFICATION_RUN"), packages: ReleaseSupport.cohort(System.fetch_env!("VERSION")), public_assets_verified: true, native_download_consumers_verified: true, registry_consumer_verified: true, musl_amd64_verified: true, musl_arm64_verified: true}))'
       - uses: actions/upload-artifact@v6
         with:
           name: verified-toolchain-release-v${{ needs.published-context.outputs.version }}
