@@ -2,7 +2,7 @@
 
 Independent Elixir toolchain for frontend assets, native JS/CSS compilers, and the QuickBEAM runtime. The nine Hex packages retain their existing names and namespaces: `duskmoon_bundler`, `duskmoon_bundler_runtime`, `duskmoon_oxc`, `duskmoon_oxide`, `duskmoon_vize`, `duskmoon_quickbeam`, `duskmoon_npm`, `duskmoon_hex_solver`, and `duskmoon_hologram`.
 
-The synchronized toolchain version is **10.0.5**. All nine packages and their native artifacts are released from this repository. Earlier packages retain their native downloads from historical UI releases. UI version U is maintained independently in `phoenix-duskmoon-ui`.
+The synchronized toolchain version is **10.0.6**. All nine packages and their native artifacts are released from this repository. Earlier packages retain their native downloads from historical UI releases. UI version U is maintained independently in `phoenix-duskmoon-ui`.
 
 ## Hologram sub-application
 
@@ -41,6 +41,8 @@ elixir scripts/native-download-failure-test.exs
 
 `DUSKMOON_NATIVE_MODE=source` selects all five Rust crates and QuickBEAM sources. `precompiled` requires verified downloads and rejects legacy source flags, Rustler/Zigler force-build configuration, and `-dev` versions which the pinned download libraries interpret as source builds. Without the mode variable, legacy explicit source flags still work; no umbrella build-path heuristic remains. Missing downloads and checksum errors raise through the pinned precompiled libraries without source fallback.
 
+Published Linux GNU native artifacts follow the required Ubuntu 26.04 build environment and its glibc baseline. Older glibc versions are outside the supported platform contract.
+
 Runtime-only Phoenix applications can use `duskmoon_bundler_runtime` without the compiler family. The package preserves `manifest_version = 1` and historical manifest behavior.
 
 Native packages resolve GitHub release redirects with a bounded 64 KiB response-header budget before handing the signed asset URL to RustlerPrecompiled or ZiglerPrecompiled. This supports OTP 28.5.0.8, whose default cumulative 10 KiB budget is smaller than GitHub's release redirect headers. TLS verification, proxy settings, checksum verification and strict precompiled mode remain enforced.
@@ -48,7 +50,7 @@ Native packages resolve GitHub release redirects with a bounded 64 KiB response-
 ## Package staging
 
 ```sh
-elixir scripts/stage-packages.exs --version 10.0.5 --output /tmp/bundler-packages
+elixir scripts/stage-packages.exs --version 10.0.6 --output /tmp/bundler-packages
 elixir scripts/package-consumer-smoke.exs --stage /tmp/bundler-packages --mode source
 ```
 

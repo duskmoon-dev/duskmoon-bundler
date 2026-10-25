@@ -1,5 +1,14 @@
 # Changelog
 
+## 10.0.6 - 2026-10-25
+
+- Reuse development vendor discovery until the application import graph changes,
+  avoiding repeated prebundle checks during Phoenix runtime Plug initialization.
+- Reuse one dependency signature per vendor request and serve unchanged cached
+  dependencies without waiting for optimizer or dependency revision locks.
+- Preserve content-based dependency invalidation, shared vendor graphs, and
+  browser cache-busting URLs after source or package changes.
+
 ## 10.0.2 - 2026-10-19
 
 - Honor configured Tailwind source directories and patterns during development,
