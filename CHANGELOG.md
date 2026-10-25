@@ -1,5 +1,10 @@
 # Changelog
 
+## 10.0.7 - 2026-10-26
+
+- Rewrite minified Worker and SharedWorker module URLs to the emitted hashed
+  worker files, including static template literals produced by the minifier.
+
 ## 10.0.6 - 2026-10-25
 
 - Reuse development vendor discovery until the application import graph changes,
