@@ -5,6 +5,7 @@ defmodule DuskmoonBundler.Application do
   @impl true
   def start(_type, _args) do
     DuskmoonBundler.Cache.create_table()
+    DuskmoonBundler.JS.Vendor.create_table()
     DuskmoonBundler.HMR.ImportGraph.create_table()
     DuskmoonBundler.HMR.GlobGraph.create_table()
     DuskmoonBundler.HMR.ModuleGraph.create_table()

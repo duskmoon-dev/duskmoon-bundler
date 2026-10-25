@@ -17,6 +17,7 @@ defmodule DuskmoonBundler.DevServerTest do
     """)
 
     DuskmoonBundler.Cache.clear()
+    DuskmoonBundler.ETS.clear(:duskmoon_bundler_vendor_prebundles)
     DuskmoonBundler.HMR.ModuleGraph.clear()
 
     on_exit(fn -> File.rm_rf!(@fixture_dir) end)
@@ -83,6 +84,66 @@ defmodule DuskmoonBundler.DevServerTest do
   end
 
   describe "vendor modules" do
+    test "cached runtime requests remain responsive while optimizer locks are held" do
+      packages = Enum.map(1..10, &"burst-vendor-#{&1}")
+
+      for package <- packages do
+        dir = Path.join(@fixture_dir, "node_modules/#{package}")
+        File.mkdir_p!(dir)
+        File.write!(Path.join(dir, "package.json"), JSON.encode!(%{"main" => "index.js"}))
+        File.write!(Path.join(dir, "index.js"), "export const value = '#{package}';")
+      end
+
+      File.write!(
+        Path.join(@fixture_dir, "src/app.ts"),
+        Enum.map_join(packages, "\n", &"import '#{&1}';")
+      )
+
+      opts = [root: Path.join(@fixture_dir, "src"), prefix: "/assets"]
+      config = DuskmoonBundler.DevServer.init(opts)
+
+      for package <- packages do
+        assert %{status: 200} =
+                 conn(:get, "/@vendor/#{package}.js")
+                 |> DuskmoonBundler.DevServer.call(config)
+      end
+
+      cache = Path.join(Mix.Project.build_path(), "duskmoon_bundler/vendor")
+
+      resources =
+        [
+          {DuskmoonBundler.DevServer, :vendor_url_nonce},
+          {DuskmoonBundler.JS.Vendor, cache}
+        ] ++
+          Enum.map(Path.wildcard(Path.join(cache, "dependencies/*")), fn dir ->
+            {DuskmoonBundler.JS.Vendor, :dependency_revision, dir}
+          end)
+
+      for resource <- resources, do: :global.set_lock({resource, self()}, [node()])
+
+      tasks =
+        for n <- 0..15 do
+          Task.async(fn ->
+            package = Enum.at(packages, rem(n, 4))
+            config = DuskmoonBundler.DevServer.init(opts)
+
+            response =
+              conn(:get, "/@vendor/#{package}.js") |> DuskmoonBundler.DevServer.call(config)
+
+            {response.status, response.resp_body =~ package}
+          end)
+        end
+
+      try do
+        for {_task, result} <- Task.yield_many(tasks, 2_000) do
+          assert result == {:ok, {200, true}}
+        end
+      after
+        for resource <- resources, do: :global.del_lock({resource, self()}, [node()])
+        for task <- tasks, do: Task.shutdown(task, :brutal_kill)
+      end
+    end
+
     test "configured entry and aliases reach vendors without scanning unrelated Bun tests" do
       package_dir = Path.join(@fixture_dir, "node_modules/entry-vendor")
       File.mkdir_p!(package_dir)

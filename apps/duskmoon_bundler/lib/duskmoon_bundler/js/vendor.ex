@@ -18,6 +18,52 @@ defmodule DuskmoonBundler.JS.Vendor do
 
   alias OXC.Bundle
 
+  @prebundles :duskmoon_bundler_vendor_prebundles
+
+  @doc false
+  def create_table, do: DuskmoonBundler.ETS.create_named_set(@prebundles)
+
+  @doc false
+  def prebundle_once(opts) do
+    # Plug.init/1 may run for every HTTP request. Rediscover the static graph
+    # only when its application sources change, without checking vendor inputs.
+    if :ets.whereis(@prebundles) == :undefined do
+      prebundle(opts)
+    else
+      key = {cache_dir(), opts}
+
+      case current_prebundle?(key, opts) do
+        true ->
+          :cached
+
+        false ->
+          :global.trans({{__MODULE__, cache_dir()}, self()}, fn ->
+            case current_prebundle?(key, opts) do
+              true ->
+                :cached
+
+              false ->
+                with {:ok, vendors, inputs} <- prebundle_with_inputs(opts) do
+                  :ets.insert(@prebundles, {key, inputs})
+                  {:ok, vendors}
+                end
+            end
+          end)
+      end
+    end
+  end
+
+  defp current_prebundle?(key, opts) do
+    case :ets.lookup(@prebundles, key) do
+      [{^key, %{entries: entries, files: files}}] ->
+        entries == application_entries(opts[:root], Keyword.get(opts, :plugins, []), opts) and
+          Enum.all?(files, fn {path, hash} -> file_signature(path) == hash end)
+
+      [] ->
+        false
+    end
+  end
+
   defp cache_dir do
     Path.join(build_root(), "duskmoon_bundler/vendor")
   end
@@ -47,6 +93,10 @@ defmodule DuskmoonBundler.JS.Vendor do
   """
   @spec prebundle(keyword()) :: {:ok, %{String.t() => String.t()}} | {:error, term()}
   def prebundle(opts) do
+    with {:ok, vendors, _inputs} <- prebundle_with_inputs(opts), do: {:ok, vendors}
+  end
+
+  defp prebundle_with_inputs(opts) do
     root = Keyword.fetch!(opts, :root)
     force = Keyword.get(opts, :force, false)
     node_modules = opts[:node_modules] || NPM.Resolution.PackageResolver.find_node_modules(root)
@@ -56,14 +106,25 @@ defmodule DuskmoonBundler.JS.Vendor do
     module_types = Keyword.get(opts, :module_types, %{})
     source_specifiers = Keyword.get(opts, :vendor_source, [])
 
-    with {:ok, specifiers} <- scan_bare_imports(root, plugins, opts),
+    entries = application_entries(root, plugins, opts)
+
+    with {:ok, specifiers, files} <- scan_application(entries, plugins, opts),
          :ok <- ensure_cache_dir() do
       specifiers =
         specifiers
         |> Enum.map(&DuskmoonBundler.PluginRunner.prebundle_alias(plugins, &1))
         |> Enum.uniq()
 
-      prebundle_vendors(specifiers, module_dirs, force, plugins, module_types, source_specifiers)
+      with {:ok, vendors} <-
+             prebundle_vendors(
+               specifiers,
+               module_dirs,
+               force,
+               plugins,
+               module_types,
+               source_specifiers
+             ),
+           do: {:ok, vendors, %{entries: entries, files: files}}
     end
   end
 
@@ -206,6 +267,20 @@ defmodule DuskmoonBundler.JS.Vendor do
     browser_hash(module_dirs, plugins, module_types, source_specifiers)
   end
 
+  @doc false
+  def snapshot(opts) do
+    {plugins, resolve_dirs, module_types, source_specifiers, _browser_token} =
+      normalize_on_demand_opts(opts)
+
+    module_dirs = module_dirs(Keyword.get(opts, :node_modules), resolve_dirs)
+    signature = browser_signature(module_dirs, plugins, module_types, source_specifiers)
+
+    Keyword.merge(opts,
+      browser_signature: signature,
+      browser_hash: hash_signature(signature)
+    )
+  end
+
   defp browser_hash_for_url(opts) do
     case Keyword.get(opts, :browser_hash) do
       hash when is_binary(hash) and hash != "" -> hash
@@ -214,12 +289,13 @@ defmodule DuskmoonBundler.JS.Vendor do
   end
 
   defp browser_hash(module_dirs, plugins, module_types, source_specifiers) do
-    :crypto.hash(
-      :sha256,
-      :erlang.term_to_binary(
-        browser_signature(module_dirs, plugins, module_types, source_specifiers)
-      )
-    )
+    module_dirs
+    |> browser_signature(plugins, module_types, source_specifiers)
+    |> hash_signature()
+  end
+
+  defp hash_signature(signature) do
+    :crypto.hash(:sha256, :erlang.term_to_binary(signature))
     |> Base.encode16(case: :lower)
     |> binary_part(0, 8)
   end
@@ -249,7 +325,8 @@ defmodule DuskmoonBundler.JS.Vendor do
          plugins,
          module_types,
          source_specifiers,
-         browser_token
+         browser_token,
+         Keyword.get(opts, :browser_signature)
        ) do
       read_vendor_output(read_cached(specifier), opts)
     else
@@ -289,39 +366,48 @@ defmodule DuskmoonBundler.JS.Vendor do
   # ── Scanning ──────────────────────────────────────────────────────
 
   defp scan_bare_imports(root, plugins, opts) do
-    entries =
-      case opts[:entry] do
-        nil ->
-          for dir <- [root, Path.join(root, "js"), Path.join(root, "src")],
-              ext <- DuskmoonBundler.JS.Extensions.scannable(plugins),
-              path = Path.join(dir, "app" <> ext),
-              File.regular?(path),
-              do: path
+    entries = application_entries(root, plugins, opts)
 
-        entry ->
-          entry |> List.wrap() |> Enum.map(&Path.expand/1)
-      end
+    with {:ok, specifiers, _files} <- scan_application(entries, plugins, opts),
+         do: {:ok, specifiers}
+  end
 
+  defp application_entries(root, plugins, opts) do
+    case opts[:entry] do
+      nil ->
+        for dir <- [root, Path.join(root, "js"), Path.join(root, "src")],
+            ext <- DuskmoonBundler.JS.Extensions.scannable(plugins),
+            path = Path.join(dir, "app" <> ext),
+            File.regular?(path),
+            do: path
+
+      entry ->
+        entry |> List.wrap() |> Enum.map(&Path.expand/1)
+    end
+  end
+
+  defp scan_application(entries, plugins, opts) do
     ctx = %DuskmoonBundler.Builder.Context{
       plugins: plugins,
       aliases: Keyword.get(opts, :aliases, %{})
     }
 
-    scan_source_files(entries, ctx, MapSet.new(), MapSet.new())
+    scan_source_files(entries, ctx, %{}, MapSet.new())
   end
 
-  defp scan_source_files([], _ctx, _seen, specifiers), do: {:ok, MapSet.to_list(specifiers)}
+  defp scan_source_files([], _ctx, seen, specifiers), do: {:ok, MapSet.to_list(specifiers), seen}
 
   defp scan_source_files([module_id | rest], ctx, seen, specifiers) do
     {file, _query} = DuskmoonBundler.URL.split_query(module_id)
 
-    if MapSet.member?(seen, file) do
+    if Map.has_key?(seen, file) do
       scan_source_files(rest, ctx, seen, specifiers)
     else
       with {:ok, source} <- File.read(file),
            {:ok, imports} <- extract_imports(source, file, ctx.plugins, :static),
            {:ok, files, specifiers} <- scan_imports(imports, file, ctx, specifiers) do
-        scan_source_files(files ++ rest, ctx, MapSet.put(seen, file), specifiers)
+        hash = :crypto.hash(:sha256, source) |> Base.encode16(case: :lower)
+        scan_source_files(files ++ rest, ctx, Map.put(seen, file, hash), specifiers)
       else
         {:error, reason} -> {:error, {:scan_error, file, reason}}
       end
@@ -387,11 +473,20 @@ defmodule DuskmoonBundler.JS.Vendor do
 
   defp prebundle_vendors(specifiers, module_dirs, force, plugins, module_types, source_specifiers) do
     vendor_map = Map.new(specifiers, &{&1, cache_path(&1)})
+    signature = browser_signature(module_dirs, plugins, module_types, source_specifiers)
 
     if not force and
          Enum.all?(
            specifiers,
-           &cache_fresh?(&1, module_dirs, plugins, module_types, source_specifiers, nil)
+           &cache_fresh?(
+             &1,
+             module_dirs,
+             plugins,
+             module_types,
+             source_specifiers,
+             nil,
+             signature
+           )
          ) do
       {:ok, vendor_map}
     else
@@ -580,6 +675,8 @@ defmodule DuskmoonBundler.JS.Vendor do
          source_specifiers,
          browser_token \\ nil
        ) do
+    signature = browser_signature(module_dirs, plugins, module_types, source_specifiers)
+
     Enum.each(specifiers, fn specifier ->
       if File.regular?(cache_path(specifier)) do
         File.write!(
@@ -590,7 +687,8 @@ defmodule DuskmoonBundler.JS.Vendor do
             plugins,
             module_types,
             source_specifiers,
-            browser_token
+            browser_token,
+            signature
           )
         )
       end
@@ -1307,7 +1405,8 @@ defmodule DuskmoonBundler.JS.Vendor do
          plugins,
          module_types,
          source_specifiers,
-         browser_token
+         browser_token,
+         signature \\ nil
        ) do
     File.regular?(cache_path(specifier)) and
       File.read(cache_meta_path(specifier)) ==
@@ -1318,7 +1417,8 @@ defmodule DuskmoonBundler.JS.Vendor do
            plugins,
            module_types,
            source_specifiers,
-           browser_token
+           browser_token,
+           signature
          )}
   end
 
@@ -1366,7 +1466,8 @@ defmodule DuskmoonBundler.JS.Vendor do
          plugins,
          module_types,
          source_specifiers,
-         browser_token
+         browser_token,
+         signature \\ nil
        ) do
     :crypto.hash(
       :sha256,
@@ -1377,7 +1478,8 @@ defmodule DuskmoonBundler.JS.Vendor do
           plugins,
           module_types,
           source_specifiers,
-          browser_token
+          browser_token,
+          signature
         )
       )
     )
@@ -1400,9 +1502,10 @@ defmodule DuskmoonBundler.JS.Vendor do
          plugins,
          module_types,
          source_specifiers,
-         browser_token
+         browser_token,
+         signature
        ) do
-    browser_signature(module_dirs, plugins, module_types, source_specifiers)
+    (signature || browser_signature(module_dirs, plugins, module_types, source_specifiers))
     |> Map.put(:specifier, specifier)
     |> Map.put(:plugins, Enum.map(plugins, &plugin_signature(&1, specifier)))
     |> Map.put(:package, package_signature(specifier, module_dirs))
@@ -1524,40 +1627,55 @@ defmodule DuskmoonBundler.JS.Vendor do
 
   defp dependency_revision(module_dirs, plugins, module_types, source_specifiers) do
     dir = dependency_dir(module_dirs, plugins, module_types, source_specifiers)
+    path = Path.join(dir, "revision")
+    current = dependency_state(module_dirs, plugins, module_types, source_specifiers)
 
-    :global.trans({{__MODULE__, :dependency_revision, dir}, self()}, fn ->
-      signature = dependency_signature(module_dirs, plugins, module_types, source_specifiers)
+    case read_dependency_revision(path) do
+      {^current, revision} ->
+        revision
 
-      current =
-        Map.new(
-          Enum.map(signature.files, fn {path, value} -> {{:file, path}, value} end) ++
-            Enum.map(signature.lookup_dirs, fn {path, value} -> {{:directory, path}, value} end)
-        )
+      _ ->
+        # Hash inputs without holding the global lock. Unchanged requests can
+        # read concurrently; only a revision update needs serialization.
+        :global.trans({{__MODULE__, :dependency_revision, dir}, self()}, fn ->
+          update_dependency_revision(path, module_dirs, plugins, module_types, source_specifiers)
+        end)
+    end
+  end
 
-      path = Path.join(dir, "revision")
-      {previous, revision} = read_dependency_revision(path)
+  defp dependency_state(module_dirs, plugins, module_types, source_specifiers) do
+    signature = dependency_signature(module_dirs, plugins, module_types, source_specifiers)
 
-      # Discovery extends the graph, but must not replace modules already loaded
-      # by the browser. Only changes to previously observed inputs advance it.
-      revision =
-        if Enum.any?(previous, fn {key, value} -> Map.get(current, key) != value end),
-          do: :crypto.hash(:sha256, :erlang.term_to_binary({revision, current})),
-          else: revision
+    Map.new(
+      Enum.map(signature.files, fn {path, value} -> {{:file, path}, value} end) ++
+        Enum.map(signature.lookup_dirs, fn {path, value} -> {{:directory, path}, value} end)
+    )
+  end
 
-      if current != previous do
-        File.mkdir_p!(dir)
-        temp = path <> "." <> cache_nonce() <> ".tmp"
+  defp update_dependency_revision(path, module_dirs, plugins, module_types, source_specifiers) do
+    current = dependency_state(module_dirs, plugins, module_types, source_specifiers)
+    {previous, revision} = read_dependency_revision(path)
 
-        try do
-          File.write!(temp, :erlang.term_to_binary({current, revision}))
-          File.rename!(temp, path)
-        after
-          File.rm(temp)
-        end
+    # Discovery extends the graph, but must not replace modules already loaded
+    # by the browser. Only changes to previously observed inputs advance it.
+    revision =
+      if Enum.any?(previous, fn {key, value} -> Map.get(current, key) != value end),
+        do: :crypto.hash(:sha256, :erlang.term_to_binary({revision, current})),
+        else: revision
+
+    if current != previous do
+      File.mkdir_p!(Path.dirname(path))
+      temp = path <> "." <> cache_nonce() <> ".tmp"
+
+      try do
+        File.write!(temp, :erlang.term_to_binary({current, revision}))
+        File.rename!(temp, path)
+      after
+        File.rm(temp)
       end
+    end
 
-      revision
-    end)
+    revision
   end
 
   defp read_dependency_revision(path) do

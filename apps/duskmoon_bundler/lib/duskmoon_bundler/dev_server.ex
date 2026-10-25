@@ -607,7 +607,10 @@ defmodule DuskmoonBundler.DevServer do
   end
 
   defp prebundle_vendor(opts) do
-    case DuskmoonBundler.JS.Vendor.prebundle(opts) do
+    case DuskmoonBundler.JS.Vendor.prebundle_once(opts) do
+      :cached ->
+        :ok
+
       {:ok, vendor_map} when map_size(vendor_map) > 0 ->
         count = map_size(vendor_map)
         Logger.debug("[DuskmoonBundler] Pre-bundled #{count} vendor package(s)")
@@ -621,7 +624,7 @@ defmodule DuskmoonBundler.DevServer do
   end
 
   defp serve_vendor(specifier, config, browser_hash, browser_token) do
-    vendor_opts = vendor_opts(config)
+    vendor_opts = config |> vendor_opts() |> DuskmoonBundler.JS.Vendor.snapshot()
 
     if current_vendor_request?(browser_hash, browser_token, config, vendor_opts) do
       read_or_bundle_vendor(specifier, config, vendor_opts)
@@ -660,7 +663,7 @@ defmodule DuskmoonBundler.DevServer do
       plugins: config.plugins,
       resolve_dirs: config.resolve_dirs,
       module_types: config.module_types,
-      browser_hash: vendor_hash(config),
+      browser_hash: config.vendor_hash,
       vendor_source: config.vendor_source,
       browser_token: config.vendor_url_token
     ]
@@ -685,17 +688,23 @@ defmodule DuskmoonBundler.DevServer do
     key = {__MODULE__, :vendor_url_nonce}
 
     nonce =
-      :global.trans({key, self()}, fn ->
-        case :persistent_term.get(key, nil) do
-          nil ->
-            nonce = :crypto.strong_rand_bytes(16)
-            :persistent_term.put(key, nonce)
-            nonce
+      case :persistent_term.get(key, nil) do
+        nil ->
+          :global.trans({key, self()}, fn ->
+            case :persistent_term.get(key, nil) do
+              nil ->
+                nonce = :crypto.strong_rand_bytes(16)
+                :persistent_term.put(key, nonce)
+                nonce
 
-          nonce ->
-            nonce
-        end
-      end)
+              nonce ->
+                nonce
+            end
+          end)
+
+        nonce ->
+          nonce
+      end
 
     :crypto.hash(:sha256, :erlang.term_to_binary({nonce, identity}))
     |> binary_part(0, 12)
