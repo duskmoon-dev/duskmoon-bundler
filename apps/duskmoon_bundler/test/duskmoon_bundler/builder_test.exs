@@ -523,6 +523,62 @@ defmodule DuskmoonBundler.BuilderTest do
       assert Map.has_key?(manifest, "worker_app.js")
     end
 
+    for constructor <- ["Worker", "SharedWorker"], minify <- [false, true] do
+      @tag :tmp_dir
+      test "rewrites hashed #{constructor} module URL with minify #{minify}", %{tmp_dir: root} do
+        constructor = unquote(constructor)
+        minify = unquote(minify)
+        root = Path.expand(root)
+        entry = Path.join(root, "app.js")
+        outdir = Path.join(root, "dist")
+
+        File.write!(
+          Path.join(root, "message.js"),
+          "export const message = 'worker-dependency-ready';"
+        )
+
+        worker_body =
+          if constructor == "SharedWorker" do
+            "self.onconnect = event => event.ports[0].postMessage(message);"
+          else
+            "self.postMessage(message);"
+          end
+
+        File.write!(Path.join(root, "worker.js"), """
+        import { message } from './message.js';
+        #{worker_body}
+        """)
+
+        File.write!(entry, """
+        new #{constructor}(new URL('./worker.js', import.meta.url), { type: 'module' });
+        """)
+
+        assert {:ok, %{js: %{path: entry_path}}} =
+                 DuskmoonBundler.Builder.build(
+                   entry: entry,
+                   root: root,
+                   outdir: outdir,
+                   format: :esm,
+                   minify: minify,
+                   hash: true,
+                   sourcemap: false
+                 )
+
+        assert [_, worker_specifier] =
+                 Regex.run(
+                   ~r/new\s+URL\(\s*["'`]([^"'`]+)["'`]\s*,\s*import\.meta\.url\s*\)/,
+                   File.read!(entry_path)
+                 )
+
+        assert [worker_path] = Path.wildcard(Path.join(outdir, "worker-*.js"))
+        assert Path.expand(worker_specifier, Path.dirname(entry_path)) == worker_path
+        assert File.regular?(worker_path)
+        worker_source = File.read!(worker_path)
+        assert worker_source =~ "worker-dependency-ready"
+        refute worker_source =~ "./message.js"
+      end
+    end
+
     test "accepts custom name" do
       {:ok, result} =
         DuskmoonBundler.Builder.build(

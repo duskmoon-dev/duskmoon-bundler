@@ -5,7 +5,7 @@ use oxc_ast::ast::{
 use oxc_ast_visit::walk;
 use oxc_ast_visit::Visit;
 use oxc_parser::Parser;
-use oxc_span::SourceType;
+use oxc_span::{SourceType, Span};
 use rustler::{Atom, Encoder, Env, NifResult, Term};
 use rustler_match_spec::{MatchEvent, Selector, ValueRef};
 
@@ -374,22 +374,22 @@ impl<'a> Visit<'a> for ImportCollector {
     }
 
     fn visit_new_expression(&mut self, expr: &oxc_ast::ast::NewExpression<'a>) {
-        if let Some(lit) = url_literal_from_new_url_expression(expr) {
+        if let Some((specifier, span)) = url_literal_from_new_url_expression(expr) {
             self.asset_urls.push(AssetUrlInfo {
-                specifier: lit.value.to_string(),
-                start: lit.span.start,
-                r#end: lit.span.end,
+                specifier: specifier.to_string(),
+                start: span.start,
+                r#end: span.end,
             });
         }
 
         if let Some(kind) = worker_constructor_kind(&expr.callee) {
             if let Some(Argument::NewExpression(url)) = expr.arguments.first() {
-                if let Some(lit) = url_literal_from_new_url_expression(url) {
+                if let Some((specifier, span)) = url_literal_from_new_url_expression(url) {
                     self.workers.push(WorkerInfo {
-                        specifier: lit.value.to_string(),
+                        specifier: specifier.to_string(),
                         kind,
-                        start: lit.span.start,
-                        r#end: lit.span.end,
+                        start: span.start,
+                        r#end: span.end,
                     });
                 }
             }
@@ -535,14 +535,21 @@ fn glob_patterns_from_argument(argument: &Argument<'_>) -> Option<Vec<String>> {
 
 fn url_literal_from_new_url_expression<'a>(
     expr: &'a oxc_ast::ast::NewExpression<'a>,
-) -> Option<&'a oxc_ast::ast::StringLiteral<'a>> {
+) -> Option<(&'a str, Span)> {
     if !(is_url_constructor(&expr.callee) && expr.arguments.len() >= 2) {
         return None;
     }
 
     match (expr.arguments.first(), expr.arguments.get(1)) {
         (Some(Argument::StringLiteral(lit)), Some(base)) if is_import_meta_url_argument(base) => {
-            Some(lit)
+            Some((lit.value.as_str(), lit.span))
+        }
+        (Some(Argument::TemplateLiteral(template)), Some(base))
+            if is_import_meta_url_argument(base) =>
+        {
+            template
+                .single_quasi()
+                .map(|value| (value.as_str(), template.span))
         }
         _ => None,
     }
