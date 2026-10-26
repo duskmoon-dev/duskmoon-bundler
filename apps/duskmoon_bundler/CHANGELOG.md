@@ -1,5 +1,12 @@
 # Changelog
 
+## 10.0.8 - 2026-10-26
+
+- Apply environment defines, including `process.env.NODE_ENV`, to development
+  source with scope-aware replacement that preserves local bindings.
+- Keep page-only console forwarding, HMR connections, and style injection
+  inactive in workers and imported modules while preserving normal page HMR.
+
 ## 10.0.7 - 2026-10-26
 
 - Rewrite minified Worker and SharedWorker module URLs to the emitted hashed
