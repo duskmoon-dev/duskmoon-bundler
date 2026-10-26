@@ -3,7 +3,8 @@ const levels = ['log', 'info', 'warn', 'error', 'debug'] as const
 
 type ConsoleLevel = (typeof levels)[number]
 
-if (!window.__duskmoon_bundlerConsoleForwarderInstalled) {
+if (typeof window !== 'undefined' && typeof document !== 'undefined' &&
+    !window.__duskmoon_bundlerConsoleForwarderInstalled) {
   window.__duskmoon_bundlerConsoleForwarderInstalled = true
 
   const original = Object.fromEntries(

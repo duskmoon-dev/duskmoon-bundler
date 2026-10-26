@@ -10,7 +10,9 @@ defmodule DuskmoonBundler.DevServer do
     * Bare imports (`vue`) → `/@vendor/vue.js` (pre-bundled)
     * Alias imports (`@/utils`) → `/assets/utils.ts`
 
-  Each module includes an `import.meta.hot` runtime for HMR support.
+  Page modules include an `import.meta.hot` runtime for HMR support. In workers,
+  the development bootstrap leaves `import.meta.hot` undefined and skips
+  page-only console forwarding, HMR connections, and style injection.
 
   ## Options
 

@@ -78,8 +78,6 @@ export function createHotContext(ownerPath: string) {
 
 // ── WebSocket connection ───────────────────────────────────────
 
-const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-
 let ws: WebSocket | undefined
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined
 let heartbeatTimer: ReturnType<typeof setInterval> | undefined
@@ -99,6 +97,7 @@ const RECONNECT_BASE = 1_000
 const RECONNECT_MAX = 30_000
 
 function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
   ws = new WebSocket(`${proto}//${location.host}/@duskmoon_bundler/ws`)
 
   ws.onopen = () => {
@@ -291,6 +290,8 @@ function importVersion(url: string, timestamp: number) {
 }
 
 export function updateStyle(id: string, css: string) {
+  if (typeof document === 'undefined') return
+
   let style = document.querySelector<HTMLStyleElement>(`style[data-duskmoon-bundler-id="${id}"]`)
 
   if (!style) {
@@ -303,6 +304,8 @@ export function updateStyle(id: string, css: string) {
 }
 
 export function removeStyle(id: string) {
+  if (typeof document === 'undefined') return
+
   document.querySelector<HTMLStyleElement>(`style[data-duskmoon-bundler-id="${id}"]`)?.remove()
 }
 
@@ -355,4 +358,6 @@ function showOverlay(reason: unknown) {
   overlay.textContent = `[DuskmoonBundler] Build error:\n\n${message}`
 }
 
-connect()
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  connect()
+}
