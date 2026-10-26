@@ -7,6 +7,7 @@ use oxc_parser::{ParseOptions, Parser};
 use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_transformer::{EnvOptions, JsxRuntime, TransformOptions, Transformer};
+use oxc_transformer_plugins::{ReplaceGlobalDefines, ReplaceGlobalDefinesConfig};
 use rustler::{Binary, Encoder, Env, Error, NifResult, OwnedBinary, SerdeTerm, Term};
 use serde::de::{self, Visitor};
 use serde::Serialize;
@@ -345,6 +346,23 @@ pub fn transform_source(source: &str, filename: &str, opts: &TransformInput) -> 
         .build(&program)
         .semantic
         .into_scoping();
+
+    let scoping = if opts.define.is_empty() {
+        scoping
+    } else {
+        let defines: Vec<_> = opts
+            .define
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        let config = match ReplaceGlobalDefinesConfig::new(&defines) {
+            Ok(config) => config,
+            Err(errors) => return TransformOutput::Error(format_errors(&errors)),
+        };
+        ReplaceGlobalDefines::new(&allocator, config)
+            .build(scoping, &mut program)
+            .scoping
+    };
 
     let options = build_transform_options(
         &opts.jsx_runtime,

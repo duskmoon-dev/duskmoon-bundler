@@ -28,7 +28,7 @@ defmodule DuskmoonBundler.Pipeline do
     * `:vapor` — use Vue Vapor mode (default: `false`)
     * `:rewrite_import` — function `(specifier -> {:rewrite, new} | :keep)` for import rewriting
     * `:plugins` — list of `DuskmoonBundler.Plugin` modules to run
-    * `:define` — compile-time replacements for `import.meta.env`
+    * `:define` — compile-time global replacements and `import.meta.env` values
     * `:preserve_json` — return unmodified JSON with type `:json` for the
       production JSON loader; plugin-generated JavaScript retains type `:js`
   """
@@ -120,7 +120,8 @@ defmodule DuskmoonBundler.Pipeline do
       |> DuskmoonBundler.JS.Transforms.DynamicImports.transform(filename)
       |> DuskmoonBundler.JS.Transforms.GlobImports.transform(Path.dirname(path), filename)
 
-    with {:ok, code} <-
+    with {:ok, code} <- apply_defines(code, filename, Keyword.get(opts, :define, %{})),
+         {:ok, code} <-
            DuskmoonBundler.JS.Transforms.ImportMetaEnv.inject(
              code,
              filename,
@@ -131,6 +132,19 @@ defmodule DuskmoonBundler.Pipeline do
   end
 
   defp postprocess_javascript(compiled, _path, _opts), do: {:ok, compiled}
+
+  defp apply_defines(code, _filename, define) when define in [%{}, nil], do: {:ok, code}
+
+  defp apply_defines(code, filename, define) do
+    globals =
+      Map.reject(define, fn {key, _value} -> String.starts_with?(key, "import.meta.env.") end)
+
+    if map_size(globals) == 0 do
+      {:ok, code}
+    else
+      OXC.transform(code, filename, define: globals)
+    end
+  end
 
   defp rewrite_compiled_imports(compiled, path, rewrite_fn) do
     filename = Path.basename(path)

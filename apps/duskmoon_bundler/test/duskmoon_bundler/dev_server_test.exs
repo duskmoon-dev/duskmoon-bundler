@@ -35,6 +35,38 @@ defmodule DuskmoonBundler.DevServerTest do
     conn(:get, path) |> DuskmoonBundler.DevServer.call(opts)
   end
 
+  describe "environment defines" do
+    test "replaces NODE_ENV in development source alongside import.meta.env" do
+      File.write!(Path.join(@fixture_dir, "src/env.ts"), """
+      export const nodeMode = process.env.NODE_ENV
+      export const mode = import.meta.env.MODE
+      """)
+
+      assert %{status: 200, resp_body: code} = call_dev_server("/assets/env.ts")
+      assert code =~ ~s(export const nodeMode = "development")
+      assert code =~ ~s("MODE": "development")
+      refute code =~ "process.env.NODE_ENV"
+    end
+
+    test "honors resolved NODE_ENV defines without replacing a local process" do
+      File.write!(Path.join(@fixture_dir, "src/env.ts"), """
+      export const mode = process.env.NODE_ENV
+      export function read(process) { return process.env.NODE_ENV }
+      """)
+
+      config =
+        DuskmoonBundler.DevServer.init(root: Path.join(@fixture_dir, "src"), prefix: "/assets")
+
+      config = %{config | define: Map.put(config.define, "process.env.NODE_ENV", ~s("preview"))}
+
+      assert %{status: 200, resp_body: code} =
+               conn(:get, "/assets/env.ts") |> DuskmoonBundler.DevServer.call(config)
+
+      assert code =~ ~s(export const mode = "preview")
+      assert code =~ "return process.env.NODE_ENV"
+    end
+  end
+
   describe "HMR endpoints" do
     test "runtime plug initialization preserves server identity across local modules and dependency changes" do
       opts = [root: Path.join(@fixture_dir, "src"), prefix: "/assets"]

@@ -19,6 +19,9 @@ defmodule DuskmoonBundler.Env do
       console.log(import.meta.env.DEV)    // true/false
       console.log(import.meta.env.PROD)   // true/false
 
+  `process.env.NODE_ENV` is also replaced with the build mode in development
+  source and production bundles, without requiring a browser `process` shim.
+
   Only variables matching `:env_prefix` are exposed to client code. The default
   prefix is `"DUSKMOON_BUNDLER_"`.
   """

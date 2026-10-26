@@ -103,6 +103,29 @@ defmodule DuskmoonBundler.Integration.HMRTest do
   end
 
   describe "dev server module serving" do
+    test "executes NODE_ENV and import.meta.env in browser source without a process shim", %{
+      page: page
+    } do
+      write_fixture("app.ts", """
+      window.__environmentModes = {
+        node: process.env.NODE_ENV,
+        meta: import.meta.env.MODE,
+        development: import.meta.env.DEV,
+        processType: typeof process
+      }
+      """)
+
+      :ok = CDPBrowser.goto(page, base_url(), timeout: 10_000)
+
+      assert {:ok,
+              %{
+                "node" => "development",
+                "meta" => "development",
+                "development" => true,
+                "processType" => "undefined"
+              }} = eval_poll(page, "window.__environmentModes")
+    end
+
     test "serves compiled TypeScript and executes in browser", %{page: page} do
       :ok = CDPBrowser.goto(page, base_url(), timeout: 10_000)
 

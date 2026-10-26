@@ -98,7 +98,25 @@ defmodule DuskmoonBundler.PipelineTest do
       assert result.code =~ ~s("import.meta.env")
     end
 
-    test "leaves non import.meta.env defines unchanged" do
+    test "replaces global defines without bundling module imports" do
+      source = """
+      import { value } from './dep.js'
+      export const mode = process.env.NODE_ENV
+      console.log(value, 'process.env.NODE_ENV')
+      """
+
+      assert {:ok, result} =
+               DuskmoonBundler.Pipeline.compile("app.ts", source,
+                 define: %{"process.env.NODE_ENV" => ~s("development")}
+               )
+
+      assert result.code =~ ~s(export const mode = "development")
+      assert result.code =~ ~s(from "./dep.js")
+      assert result.code =~ ~s("process.env.NODE_ENV")
+      assert result.sourcemap == nil
+    end
+
+    test "preserves local bindings when applying global defines" do
       source = "function f(process) { return process.env.NODE_ENV }"
 
       {:ok, result} =

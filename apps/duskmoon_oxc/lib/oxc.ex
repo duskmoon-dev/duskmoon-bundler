@@ -121,6 +121,8 @@ defmodule OXC do
     * `:jsx_fragment` — fragment for classic JSX (default: `"React.Fragment"`)
     * `:import_source` — JSX import source (e.g. `"vue"`, `"preact"`)
     * `:target` — downlevel target (e.g. `"es2019"`, `"chrome80"`)
+    * `:define` — scope-aware replacements for global expressions, for example
+      `%{"process.env.NODE_ENV" => ~s("development")}`. Local bindings are preserved.
     * `:sourcemap` — generate a source map (default: `false`). When `true`,
       returns `%{code: String.t(), sourcemap: String.t()}` instead of a plain string.
 
@@ -496,6 +498,7 @@ defmodule OXC do
       jsx_fragment: Keyword.get(opts, :jsx_fragment, ""),
       import_source: Keyword.get(opts, :import_source, ""),
       target: Keyword.get(opts, :target, ""),
+      define: Keyword.get(opts, :define, %{}),
       sourcemap: Keyword.get(opts, :sourcemap, false)
     }
   end

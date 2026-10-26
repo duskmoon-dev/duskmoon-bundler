@@ -95,6 +95,7 @@ pub struct TransformInput {
     pub import_source: String,
     pub target: String,
     pub sourcemap: bool,
+    pub define: BTreeMap<String, String>,
 }
 
 impl Default for TransformInput {
@@ -106,6 +107,7 @@ impl Default for TransformInput {
             import_source: String::new(),
             target: String::new(),
             sourcemap: false,
+            define: BTreeMap::new(),
         }
     }
 }
@@ -131,6 +133,9 @@ impl TransformInput {
         }
         if let Some(value) = get_bool(term, atoms::sourcemap(), "sourcemap") {
             opts.sourcemap = value;
+        }
+        if let Some(value) = get_string_map(term, atoms::define(), "define") {
+            opts.define = value;
         }
 
         opts

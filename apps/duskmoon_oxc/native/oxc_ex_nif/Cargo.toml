@@ -23,6 +23,7 @@ oxc_span = "0.130"
 oxc_str = "0.130"
 oxc_syntax = "0.130"
 oxc_transformer = "0.130"
+oxc_transformer_plugins = "0.130"
 oxc = { version = "0.135", features = ["minifier"] }
 rolldown = "1.1"
 rolldown_common = "1.1"
