@@ -21,9 +21,9 @@ defmodule DuskmoonHologram.MixProject do
         &install_js_deps/1,
         "cmd --cd test/ecosystem mix deps.get",
         "cmd --cd test/features mix deps.get",
-        "cmd --cd test/features/assets mix npm.install",
+        "cmd --cd test/features/assets mix npm.ci",
         "cmd --cd test/umbrella mix deps.get",
-        "cmd --cd test/umbrella/assets mix npm.install"
+        "cmd --cd test/umbrella/assets mix npm.ci"
       ],
       t: ["test", "test.js"],
       "test.js": [&test_js/1]
@@ -181,7 +181,10 @@ defmodule DuskmoonHologram.MixProject do
 
   defp install_js_deps(_args) do
     Mix.Task.run("compile")
-    Hologram.Compiler.install_js_deps(Path.expand("assets", __DIR__), Mix.Project.app_path())
+
+    File.cd!(Path.expand("assets", __DIR__), fn ->
+      Mix.Tasks.Npm.Ci.run([])
+    end)
   end
 
   defp test_js(args) do

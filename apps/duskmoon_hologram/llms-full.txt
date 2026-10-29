@@ -1254,6 +1254,8 @@ Keyboard events (`$key_down`, `$key_up`) include:
 - `repeat` - whether the key is being held down and auto-repeating
 - `shift_key` - whether the Shift key was held
 
+Some keyboard events carry no key at all. Chrome and other Chromium-based browsers send a `keydown` and a `keyup` with no key when the user fills a field from an autofill suggestion, and a script or browser extension can dispatch a plain `Event` named `keydown` or `keyup` too. Hologram ignores these events, so the handler does not run for them and `key` is always a string.
+
 To run a handler only for specific keys or key combinations, see the "Keyboard Key Filters" section below.
 
 ##### Mouse Events
@@ -1825,6 +1827,10 @@ A component's actions run one at a time, in the order they were dispatched. Each
 
 An action that awaits a `Task` (see JavaScript Interop) holds back later actions for the same component until it finishes. Actions for other components keep running. A delayed action takes its place in the order when its delay elapses.
 
+#### Leaving the Page Before an Action Finishes
+
+An action's result belongs to the page it ran on. If the visitor has moved to another page by the time an action that awaits a `Task` finishes, Hologram drops its whole result. That covers the state update and anything the action put with `put_action`, `put_command` or `put_page`. None of it reaches the page the visitor moved to, even when that page has a component with the same cid, such as its page or layout component. The browser console notes the drop.
+
 #### Putting It All Together
 
 Here's a simple example that demonstrates how actions work in Hologram. The counter component shows:
@@ -1987,6 +1993,10 @@ end
 #### Command Targets
 
 By default, commands are executed on the component that contains them. If the component is stateless (doesn't have a CID specified), the closest stateful component higher in the hierarchy is used. You can specify a different component for execution using the `target` parameter. For more information about event targets, see the Events documentation.
+
+#### Leaving the Page Before the Reply
+
+The action a command puts with `put_action` runs on the page the command was sent from. If the visitor navigates to another page before that action runs, it is dropped and the browser console notes it. The command's server-side effects, such as session and cookie changes, database writes and broadcasts to other tabs, still apply.
 
 ### Navigation
 
@@ -2497,7 +2507,7 @@ Component middleware lets a distributable component gate its own commands regard
 Middleware operates on a `Server` struct - the same struct `init/3` and `command/3` receive. It has three zones:
 
 - **Request** (read-only) - the incoming request, read as struct fields: `method`, `scheme`, `host`, `port`, `path`, `query`, `raw_query`, and `ip`.
-- **Response** - the response being built: its `status`, headers, and body.
+- **Response** - the response being built: its `status`, headers, and body. A header set here goes out with whatever response the request ends in - the rendered page, a navigation's page data, a command's reply, or a terminal response - the same way cookies and session changes do.
 - **Stash** - a request-scoped scratchpad for passing data to later middleware in the chain and on to `init/3` or `command/3`.
 
 Identity, session, and cookies live here too. The functions for reading the request and writing each zone are in the Helper Reference below. Enrichment is a common middleware job - the example here resolves the current user once and stashes it, so everything downstream can read it:
@@ -2578,7 +2588,7 @@ These helpers are imported into pages, components, and `use Hologram.Middleware`
 - `put_redirect(server, url_or_page)` - a 302 redirect to either a URL string or a page module.
 - `put_redirect(server, page, params)` - a 302 redirect to a page module with route params.
 - `put_response_body(server, body)` - sets the response body (iodata). Not terminal on its own - pair it with `put_status`.
-- `put_response_header(server, name, value)` - sets a response header (name lower-cased), replacing any existing value. Raises on `cookie` / `set-cookie` - use the cookie helpers for those.
+- `put_response_header(server, name, value)` - sets a response header (name lower-cased), replacing any existing value. Raises on `cookie` / `set-cookie` - use the cookie helpers for those. A `content-type` describes the body, so it is allowed only on a response that middleware ends with `put_status`. Anywhere else it raises.
 - `put_status(server, status)` - sets the response status and stops the chain. `status` is an integer like `403` or an atom alias like `:forbidden` or `:not_found`. An unknown alias or out-of-range integer raises. The full alias set is in Status Aliases below.
 
 ##### Identity

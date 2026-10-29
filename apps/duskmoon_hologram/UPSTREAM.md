@@ -1,9 +1,44 @@
 # Duskmoon Hologram
 
-This umbrella sub-application imports Hologram 0.12.2 from
-<https://github.com/bartblast/hologram> at commit
-`ccdf843fdc82ec270301832f24263095dd791658`.
+This umbrella sub-application tracks the released Hologram
+[v0.12.4 tag](https://github.com/bartblast/hologram/releases/tag/v0.12.4) at commit
+`abe401764d112acbc482e115e1b162ff9831f4fe`.
+The original import, `ccdf843fdc82ec270301832f24263095dd791658`, was a `dev`
+snapshot reporting version 0.12.2, rather than the v0.12.2 release tag.
 The upstream Apache-2.0 license and attribution are preserved in `LICENSE`.
+
+## v0.12.4 synchronization
+
+- Keyboard events without a key, including Chromium autofill events, are ignored
+  instead of raising in `$key_down` or `$key_up` handlers.
+- Non-text binaries compare and sort by their bytes, including equivalent binaries
+  assembled with different segment boundaries.
+- Response headers set by middleware, page/layout initialization or commands are
+  applied to initial pages, client navigations and command replies. A `content-type`
+  set on a response Hologram itself writes raises; middleware may set it on a
+  terminal response. Navigation redirects discard the original content type when
+  sending their JSON payload.
+- Includes upstream unit/browser regressions and reference documentation.
+  The root lockfile already contains upstream's `hackney` 4.9.1 security update
+  and its transitive dependencies, so those entries are preserved.
+- Unreleased changes, including `$focused`, remain outside this synchronization.
+
+## v0.12.3 synchronization
+
+- Command replies retain the page epoch from dispatch, so their next action is
+  dropped after navigation. Commands dispatched during a page transition are
+  dropped before sending; server effects of an already-sent command still apply.
+- Command self echoes follow broadcast delivery: a shared layout can receive an
+  echo after navigation, while targets absent from the current page are skipped.
+- An asynchronous action that finishes after its page has been left has its
+  entire result dropped, including state, chained actions, commands and navigation.
+- The Hologram app's setup alias and JavaScript tests use `duskmoon_npm` frozen installs.
+  The feature and umbrella fixture asset lockfiles are committed as well.
+  Production compilation still permits a first install without a lockfile.
+- The root lockfile already has upstream's `plug_crypto` 2.2.1 update; the five
+  standalone test fixture lockfiles now use it too.
+- Upstream regressions and reference documentation are synchronized, preserving
+  local native bundling, OXC formatting, OTP naming and HTTP integrations.
 
 ## Local integration
 
@@ -26,8 +61,8 @@ The upstream Apache-2.0 license and attribution are preserved in `LICENSE`.
 - Chunk entries build independently through the native bundler. The upstream
   esbuild subprocess batching and Windows command-line limits no longer apply.
 - The fork joins the synchronized nine-package B cohort at version 10.0.3.
-  Its upstream source provenance remains Hologram 0.12.2. Packaging, publication,
-  registry verification, and production consumer checks use the shared workflow.
+  Its upstream source baseline is the Hologram v0.12.4 release tag. Packaging,
+  publication, registry verification, and production consumer checks use the shared workflow.
 
 Use from another application in this umbrella:
 
@@ -77,8 +112,8 @@ DUSKMOON_NATIVE_MODE=source MIX_ENV=dev mix test.js
 
 Run these commands from the umbrella root so optional development dependencies
 share the umbrella's dependency context. `mix test.js` installs JavaScript
-dependencies through `duskmoon_npm` and runs the imported JavaScript suite
-under Bun. Single-file runs use the same runtime, for example
+dependencies through `duskmoon_npm` without rewriting the committed lockfile
+and runs the imported JavaScript suite under Bun. Single-file runs use the same runtime, for example
 `DUSKMOON_NATIVE_MODE=source MIX_ENV=dev mix test.js test/javascript/serializer_test.mjs`.
 Nested feature, ecosystem, cluster, Cowboy and umbrella fixtures use this local
 fork rather than fetching the original `:hologram` application.

@@ -1,8 +1,8 @@
 # Duskmoon Hologram
 
 Duskmoon Hologram is the `:duskmoon_hologram` umbrella fork of
-[Hologram](https://github.com/bartblast/hologram), based on version 0.12.2.
-The fork version is 10.0.5, synchronized with the other eight toolchain packages.
+[Hologram](https://github.com/bartblast/hologram), based on the v0.12.4 release tag.
+The fork version is 10.0.8, synchronized with the other eight toolchain packages.
 It uses the Duskmoon native toolchain. See [UPSTREAM.md](UPSTREAM.md) for the
 source commit, attribution, and compatibility details.
 
@@ -98,7 +98,9 @@ Published-package consumer checks run afterward in `test.yml`.
 `mix test.js` runs the existing Mocha + jsdom suite through Bun, using
 `bun --bun run mocha` to force the Bun runtime. It does not use `bun test`.
 
-`duskmoon_npm` installs JavaScript dependencies without the npm CLI.
+The Hologram app's `setup` alias and umbrella-root `mix test.js` install
+JavaScript dependencies from the committed lockfiles through `duskmoon_npm`,
+without rewriting them or using the npm CLI.
 `duskmoon_bundler` builds standalone IIFEs with linked source maps instead of
 esbuild. Its native OXC formatter and linter replace Prettier and ESLint. The
 `duskmoon_hologram` profile covers runtime code, tests, benchmarks, and scripts,

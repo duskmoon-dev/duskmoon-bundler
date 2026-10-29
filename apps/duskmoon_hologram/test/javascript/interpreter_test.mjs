@@ -4718,6 +4718,16 @@ describe("Interpreter", () => {
 
           assert.isTrue(Interpreter.isStrictlyEqual(left, right));
         });
+
+        it("both decoded as not text", () => {
+          const left = Bitstring.fromBytes([0xff]);
+          Bitstring.maybeSetTextFromBytes(left);
+
+          const right = Bitstring.fromBytes([0xff]);
+          Bitstring.maybeSetTextFromBytes(right);
+
+          assert.isTrue(Interpreter.isStrictlyEqual(left, right));
+        });
       });
 
       describe("not equal - different length", () => {
@@ -4748,6 +4758,16 @@ describe("Interpreter", () => {
 
           assert.isFalse(Interpreter.isStrictlyEqual(left, right));
         });
+
+        it("both decoded as not text", () => {
+          const left = Bitstring.fromBytes([0xff]);
+          Bitstring.maybeSetTextFromBytes(left);
+
+          const right = Bitstring.fromBytes([0xff, 0x00, 0xff, 0x00]);
+          Bitstring.maybeSetTextFromBytes(right);
+
+          assert.isFalse(Interpreter.isStrictlyEqual(left, right));
+        });
       });
 
       describe("not equal - different content", () => {
@@ -4775,6 +4795,16 @@ describe("Interpreter", () => {
         it("left has bytes field, right has text field", () => {
           const left = Bitstring.fromBytes([97, 98, 100]);
           const right = Type.bitstring("abc");
+
+          assert.isFalse(Interpreter.isStrictlyEqual(left, right));
+        });
+
+        it("both decoded as not text", () => {
+          const left = Bitstring.fromBytes([0xff]);
+          Bitstring.maybeSetTextFromBytes(left);
+
+          const right = Bitstring.fromBytes([0xfe]);
+          Bitstring.maybeSetTextFromBytes(right);
 
           assert.isFalse(Interpreter.isStrictlyEqual(left, right));
         });

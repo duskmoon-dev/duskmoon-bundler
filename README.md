@@ -6,7 +6,7 @@ The synchronized toolchain version is **10.0.8**. All nine packages and their na
 
 ## Hologram sub-application
 
-`apps/duskmoon_hologram` vendors [Hologram](https://github.com/bartblast/hologram) as the OTP application `:duskmoon_hologram`. It joins the synchronized release cohort at version 10.0.3; its upstream source provenance remains Hologram 0.12.2. See its [integration notes](apps/duskmoon_hologram/UPSTREAM.md).
+`apps/duskmoon_hologram` vendors [Hologram](https://github.com/bartblast/hologram) as the OTP application `:duskmoon_hologram`. It joins the synchronized release cohort at version 10.0.3; its upstream source baseline is the Hologram v0.12.4 release tag. See its [integration notes](apps/duskmoon_hologram/UPSTREAM.md).
 
 ## Phoenix HTTP server
 

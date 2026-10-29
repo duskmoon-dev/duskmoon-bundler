@@ -53,3 +53,5 @@ package-lock.json
 
 # Lock the Hologram assets installed by duskmoon_npm.
 !/apps/duskmoon_hologram/assets/package-lock.json
+!/apps/duskmoon_hologram/test/features/assets/package-lock.json
+!/apps/duskmoon_hologram/test/umbrella/assets/package-lock.json
