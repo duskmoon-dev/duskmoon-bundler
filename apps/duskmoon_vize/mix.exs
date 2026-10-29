@@ -1,7 +1,7 @@
 defmodule Vize.MixProject do
   use Mix.Project
 
-  @version "10.0.8"
+  @version "10.0.9"
   @source_url "https://github.com/duskmoon-dev/duskmoon-bundler"
   @upstream_url "https://github.com/elixir-volt/vize_ex"
 

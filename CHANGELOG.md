@@ -1,5 +1,15 @@
 # Changelog
 
+## 10.0.9 - 2026-10-29
+
+- Synchronize Hologram with upstream v0.12.4, including stale command/action
+  protection, broadcast self echoes, response headers, keyboard event guards,
+  and non-text binary comparisons.
+- Install Hologram development assets from frozen lockfiles and update its
+  standalone fixture security dependencies.
+- Refresh locked dependencies while preserving the synchronized nine-package
+  toolchain and native artifact contracts.
+
 ## 10.0.8 - 2026-10-26
 
 - Apply environment defines, including `process.env.NODE_ENV`, to development
