@@ -48,7 +48,7 @@ defmodule DuskmoonHologram.MixProject do
 
   def deps do
     [
-      {:duskmoon_npm, in_umbrella: true},
+      {:duskmoon_npm, in_umbrella: true, runtime: false},
       {:duskmoon_bundler, in_umbrella: true, runtime: false},
       {:beam_file, "0.6.4"},
       {:benchee, "~> 1.0", only: :dev, runtime: false},

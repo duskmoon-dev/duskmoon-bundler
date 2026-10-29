@@ -69,6 +69,14 @@ unless css =~ ".flex" and css =~ ".items-center" and css =~ ".p-4" and
        do: raise("Tailwind did not generate the scanned utilities")
 
 if hologram != [] do
+  if Version.compare(System.fetch_env!("DUSKMOON_RELEASE_VERSION"), "10.0.10") != :lt do
+    applications = Application.spec(:duskmoon_hologram, :applications)
+
+    for app <- [:duskmoon_bundler, :duskmoon_npm, :duskmoon_hex_solver] do
+      if app in applications, do: raise("Hologram runtime must not depend on #{app}")
+    end
+  end
+
   true = Hologram.enabled?()
   true = is_pid(Process.whereis(Hologram.Supervisor))
 

@@ -53,6 +53,9 @@ The upstream Apache-2.0 license and attribution are preserved in `LICENSE`.
   `DuskmoonBundler.Builder.build/1`. No npm CLI or esbuild binary is required.
   Bun runs the imported Mocha + jsdom JavaScript suite; Node.js is not needed.
   CI pins Bun 1.4.0 and the scripts force its runtime with `bun --bun`.
+- Both `duskmoon_npm` and `duskmoon_bundler` are build dependencies
+  (`runtime: false`). They remain available for asset compilation and development
+  live reload without entering Hologram's production application closure.
 - Bundles remain standalone IIFEs with linked source maps and content hashes.
   Hashes use Duskmoon Bundler's eight lowercase hexadecimal characters. Asset
   discovery also accepts historical Hologram base32 hashes.
