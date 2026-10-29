@@ -213,12 +213,12 @@ defmodule ReleaseRecoveryContractTest do
             "-r",
             Path.join(__DIR__, "release_support.exs"),
             "-e",
-            "ReleaseSupport.verify_public_packages!(\"10.0.3\", \"#{sha}\", hd(System.argv()))",
+            "System.put_env(\"PATH\", System.fetch_env!(\"RECOVERY_TEST_PATH\")); ReleaseSupport.verify_public_packages!(\"10.0.3\", \"#{sha}\", hd(System.argv()))",
             tmp_dir
           ],
           stderr_to_stdout: true,
           env: [
-            {"PATH", bin <> ":" <> System.fetch_env!("PATH")},
+            {"RECOVERY_TEST_PATH", bin <> ":" <> System.fetch_env!("PATH")},
             {"RECOVERY_PUBLIC", public}
           ]
         )
