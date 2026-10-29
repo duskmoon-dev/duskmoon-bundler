@@ -4,7 +4,7 @@ defmodule DuskmoonToolchain.MixProject do
   def project do
     [
       apps_path: "apps",
-      version: "10.0.9",
+      version: "10.0.10",
       elixir: ">= 1.18.0",
       start_permanent: Mix.env() == :prod,
       deps: deps(),

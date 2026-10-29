@@ -2,7 +2,7 @@
 
 Duskmoon Hologram is the `:duskmoon_hologram` umbrella fork of
 [Hologram](https://github.com/bartblast/hologram), based on the v0.12.4 release tag.
-The fork version is 10.0.9, synchronized with the other eight toolchain packages.
+The fork version is 10.0.10, synchronized with the other eight toolchain packages.
 It uses the Duskmoon native toolchain. See [UPSTREAM.md](UPSTREAM.md) for the
 source commit, attribution, and compatibility details.
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 10.0.10 - 2026-10-30
+
+- Keep Hologram's npm and Hex solver build tools out of the production
+  application closure while preserving asset compilation and development
+  live reload.
+
 ## 10.0.9 - 2026-10-29
 
 - Synchronize Hologram with upstream v0.12.4, including stale command/action
