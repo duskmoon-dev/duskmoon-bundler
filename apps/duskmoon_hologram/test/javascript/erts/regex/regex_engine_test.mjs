@@ -89,7 +89,7 @@ describe("RegexEngine", () => {
 
     it("sorts astral code points after BMP ones, unlike default JS order", () => {
       assert.isAbove(RegexEngine.compareByUtf8Bytes("\u{10000}", "\uffff"), 0);
-      assert.isTrue("\u{10000}" < "\uffff");
+      assert.deepEqual(["\uffff", "\u{10000}"].sort(), ["\u{10000}", "\uffff"]);
     });
   });
 

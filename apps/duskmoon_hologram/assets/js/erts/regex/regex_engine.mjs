@@ -462,7 +462,7 @@ export default class RegexEngine {
   static utf16IndexToByteOffset(text, utf16Index) {
     let byteOffset = 0;
 
-    for (let i = 0; i < utf16Index; ) {
+    for (let i = 0; i < utf16Index;) {
       const codePoint = text.codePointAt(i);
       byteOffset += $.#calculateCodePointByteCount(codePoint);
       i += codePoint > 0xffff ? 2 : 1;
