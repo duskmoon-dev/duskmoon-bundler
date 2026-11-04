@@ -2,12 +2,11 @@ use std::path::Path;
 
 use oxc_allocator::Allocator;
 use oxc_formatter::{
-    enable_jsx_source_type, get_parse_options, ArrowParentheses, AttributePosition,
-    BracketSameLine, BracketSpacing, EmbeddedLanguageFormatting, Expand, FormatOptions, Formatter,
-    IndentStyle, IndentWidth, LineEnding, LineWidth, OperatorPosition, QuoteProperties, QuoteStyle,
+    format_program, parse_for_format, ArrowParentheses, AttributePosition, BracketSameLine,
+    BracketSpacing, Expand, JsFormatOptions, OperatorPosition, QuoteProperties, QuoteStyle,
     Semicolons, SortImportsOptions, SortOrder, TrailingCommas,
 };
-use oxc_parser::Parser;
+use oxc_formatter_core::{IndentStyle, IndentWidth, LineEnding, LineWidth};
 use oxc_span::SourceType;
 use rustler::{Binary, Encoder, Env, Error, NifResult, Term};
 
@@ -31,7 +30,6 @@ mod atoms {
         object_wrap,
         experimental_operator_position,
         experimental_ternaries,
-        embedded_language_formatting,
         sort_imports,
         sort_tailwindcss,
         // sort_imports sub-keys
@@ -43,12 +41,9 @@ mod atoms {
         partition_by_comment,
         internal_pattern,
         // sort_tailwindcss sub-keys
-        config,
-        stylesheet,
         functions,
         attributes,
         preserve_whitespace,
-        preserve_duplicates,
     }
 }
 
@@ -81,8 +76,8 @@ fn get_map<'a>(term: Term<'a>, key: rustler::Atom) -> Option<Term<'a>> {
     }
 }
 
-fn decode_format_options(opts: Term) -> FormatOptions {
-    let mut o = FormatOptions::default();
+fn decode_format_options(opts: Term) -> JsFormatOptions {
+    let mut o = JsFormatOptions::default();
 
     if let Some(v) = get_int(opts, atoms::print_width()) {
         if let Ok(w) = LineWidth::try_from(v as u16) {
@@ -184,7 +179,7 @@ fn decode_format_options(opts: Term) -> FormatOptions {
     }
 
     if let Some(v) = get_str(opts, atoms::experimental_operator_position()) {
-        o.experimental_operator_position = match v.as_str() {
+        o.operator_position = match v.as_str() {
             "start" => OperatorPosition::Start,
             _ => OperatorPosition::End,
         };
@@ -194,12 +189,9 @@ fn decode_format_options(opts: Term) -> FormatOptions {
         o.experimental_ternaries = v;
     }
 
-    if let Some(v) = get_str(opts, atoms::embedded_language_formatting()) {
-        o.embedded_language_formatting = match v.as_str() {
-            "off" => EmbeddedLanguageFormatting::Off,
-            _ => EmbeddedLanguageFormatting::Auto,
-        };
-    }
+    // Embedded formatting and Tailwind host configuration require session
+    // services. This standalone NIF does not install those services, matching
+    // its previous callback-free formatter behavior.
 
     if let Some(m) = get_map(opts, atoms::sort_imports()) {
         o.sort_imports = Some(decode_sort_imports(m));
@@ -250,12 +242,6 @@ fn decode_sort_imports(m: Term) -> SortImportsOptions {
 fn decode_sort_tailwindcss(m: Term) -> oxc_formatter::SortTailwindcssOptions {
     let mut s = oxc_formatter::SortTailwindcssOptions::default();
 
-    if let Some(v) = get_str(m, atoms::config()) {
-        s.config = Some(v);
-    }
-    if let Some(v) = get_str(m, atoms::stylesheet()) {
-        s.stylesheet = Some(v);
-    }
     if let Some(v) = get_str_list(m, atoms::functions()) {
         s.functions = v;
     }
@@ -264,9 +250,6 @@ fn decode_sort_tailwindcss(m: Term) -> oxc_formatter::SortTailwindcssOptions {
     }
     if let Some(v) = get_bool(m, atoms::preserve_whitespace()) {
         s.preserve_whitespace = v;
-    }
-    if let Some(v) = get_bool(m, atoms::preserve_duplicates()) {
-        s.preserve_duplicates = v;
     }
 
     s
@@ -290,22 +273,25 @@ fn format<'a>(
     let source_binary = source_from_term(source_term)?;
     let source = binary_to_str(&source_binary)?;
     let path = Path::new(filename);
-    let source_type = enable_jsx_source_type(SourceType::from_path(path).unwrap_or_default());
+    let source_type = SourceType::from_path(path).unwrap_or_default();
 
     let allocator = Allocator::default();
-    let ret = Parser::new(&allocator, source, source_type)
-        .with_options(get_parse_options())
-        .parse();
+    let ret = parse_for_format(&allocator, source, source_type);
 
-    if !ret.errors.is_empty() {
-        let errors: Vec<String> = ret.errors.iter().map(|e| e.message.to_string()).collect();
+    if !ret.diagnostics.is_empty() {
+        let errors: Vec<String> = ret
+            .diagnostics
+            .iter()
+            .map(|e| e.message.to_string())
+            .collect();
         return Ok((atoms::error(), errors).encode(env));
     }
 
     let options = decode_format_options(opts);
-    let formatted = Formatter::new(&allocator, options).build(&ret.program);
-
-    Ok((atoms::ok(), formatted).encode(env))
+    match format_program(&allocator, &ret.program, options).print() {
+        Ok(formatted) => Ok((atoms::ok(), formatted.into_code()).encode(env)),
+        Err(error) => Ok((atoms::error(), vec![error.to_string()]).encode(env)),
+    }
 }
 
 rustler::init!("Elixir.OXC.Format.Native");

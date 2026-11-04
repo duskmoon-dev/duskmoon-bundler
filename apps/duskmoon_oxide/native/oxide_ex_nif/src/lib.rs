@@ -1,8 +1,11 @@
-use rustler::{Env, NifStruct, ResourceArc, Term};
+use rustler::{NifStruct, ResourceArc};
 use std::sync::Mutex;
 use tailwindcss_oxide::{ChangedContent, GlobEntry, PublicSourceEntry, Scanner};
 
 struct ScannerResource(Mutex<Scanner>);
+
+#[rustler::resource_impl]
+impl rustler::Resource for ScannerResource {}
 
 #[derive(NifStruct)]
 #[module = "Oxide.Source"]
@@ -111,10 +114,4 @@ fn get_globs(resource: ResourceArc<ScannerResource>) -> Vec<ExGlobEntry> {
     scanner.get_globs().into_iter().map(Into::into).collect()
 }
 
-#[allow(non_local_definitions)]
-fn load(env: Env, _: Term) -> bool {
-    let _ = rustler::resource!(ScannerResource, env);
-    true
-}
-
-rustler::init!("Elixir.Oxide.Native", load = load);
+rustler::init!("Elixir.Oxide.Native");

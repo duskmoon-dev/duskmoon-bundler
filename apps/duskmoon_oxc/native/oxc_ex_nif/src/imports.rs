@@ -313,7 +313,7 @@ impl<'a> Visit<'a> for ImportCollector {
     fn visit_import_declaration(&mut self, decl: &oxc_ast::ast::ImportDeclaration<'a>) {
         if decl.import_kind != ImportOrExportKind::Type {
             self.imports.push(ImportInfo {
-                specifier: decl.source.value.to_string(),
+                specifier: String::from_utf8_lossy(decl.source.value.as_bytes()).into_owned(),
                 r#type: atoms::atom_static(),
                 kind: atoms::import(),
                 start: decl.source.span.start,
@@ -322,25 +322,24 @@ impl<'a> Visit<'a> for ImportCollector {
         }
     }
 
-    fn visit_export_named_declaration(&mut self, decl: &oxc_ast::ast::ExportNamedDeclaration<'a>) {
+    fn visit_export_from_declaration(&mut self, decl: &oxc_ast::ast::ExportFromDeclaration<'a>) {
         if decl.export_kind != ImportOrExportKind::Type {
-            if let Some(source) = &decl.source {
-                self.imports.push(ImportInfo {
-                    specifier: source.value.to_string(),
-                    r#type: atoms::atom_static(),
-                    kind: atoms::export(),
-                    start: source.span.start,
-                    r#end: source.span.end,
-                });
-            }
+            let source = &decl.source;
+            self.imports.push(ImportInfo {
+                specifier: String::from_utf8_lossy(source.value.as_bytes()).into_owned(),
+                r#type: atoms::atom_static(),
+                kind: atoms::export(),
+                start: source.span.start,
+                r#end: source.span.end,
+            });
         }
-        walk::walk_export_named_declaration(self, decl);
+        walk::walk_export_from_declaration(self, decl);
     }
 
     fn visit_export_all_declaration(&mut self, decl: &oxc_ast::ast::ExportAllDeclaration<'a>) {
         if decl.export_kind != ImportOrExportKind::Type {
             self.imports.push(ImportInfo {
-                specifier: decl.source.value.to_string(),
+                specifier: String::from_utf8_lossy(decl.source.value.as_bytes()).into_owned(),
                 r#type: atoms::atom_static(),
                 kind: atoms::export_all(),
                 start: decl.source.span.start,
@@ -363,7 +362,7 @@ impl<'a> Visit<'a> for ImportCollector {
         if is_require_call(&expr.callee) {
             if let Some(Argument::StringLiteral(lit)) = expr.arguments.first() {
                 self.require_calls.push(RequireCallInfo {
-                    specifier: lit.value.to_string(),
+                    specifier: String::from_utf8_lossy(lit.value.as_bytes()).into_owned(),
                     start: lit.span.start,
                     r#end: lit.span.end,
                 });
@@ -402,7 +401,7 @@ impl<'a> Visit<'a> for ImportCollector {
         match &expr.source {
             Expression::StringLiteral(lit) => {
                 self.imports.push(ImportInfo {
-                    specifier: lit.value.to_string(),
+                    specifier: String::from_utf8_lossy(lit.value.as_bytes()).into_owned(),
                     r#type: atoms::dynamic(),
                     kind: atoms::import(),
                     start: lit.span.start,
@@ -441,8 +440,8 @@ pub fn select<'a>(
     let source_type = SourceType::from_path(filename).unwrap_or_default();
     let ret = Parser::new(&allocator, source, source_type).parse();
 
-    if !ret.errors.is_empty() {
-        return error_to_term(env, &format_errors(&ret.errors));
+    if !ret.diagnostics.is_empty() {
+        return error_to_term(env, &format_errors(&ret.diagnostics));
     }
 
     let mut collector = ImportCollector {
@@ -498,7 +497,7 @@ fn dynamic_import_pattern(template: &TemplateLiteral<'_>) -> Option<String> {
 
     for (index, quasi) in template.quasis.iter().enumerate() {
         match &quasi.value.cooked {
-            Some(cooked) => pattern.push_str(cooked.as_str()),
+            Some(cooked) => pattern.push_str(cooked.as_str()?),
             None => pattern.push_str(quasi.value.raw.as_str()),
         }
 
@@ -520,12 +519,16 @@ fn is_require_call(expr: &Expression<'_>) -> bool {
 
 fn glob_patterns_from_argument(argument: &Argument<'_>) -> Option<Vec<String>> {
     match argument {
-        Argument::StringLiteral(lit) => Some(vec![lit.value.to_string()]),
+        Argument::StringLiteral(lit) => Some(vec![
+            String::from_utf8_lossy(lit.value.as_bytes()).into_owned()
+        ]),
         Argument::ArrayExpression(array) => array
             .elements
             .iter()
             .map(|element| match element {
-                ArrayExpressionElement::StringLiteral(lit) => Some(lit.value.to_string()),
+                ArrayExpressionElement::StringLiteral(lit) => {
+                    Some(String::from_utf8_lossy(lit.value.as_bytes()).into_owned())
+                }
                 _ => None,
             })
             .collect(),
@@ -542,14 +545,14 @@ fn url_literal_from_new_url_expression<'a>(
 
     match (expr.arguments.first(), expr.arguments.get(1)) {
         (Some(Argument::StringLiteral(lit)), Some(base)) if is_import_meta_url_argument(base) => {
-            Some((lit.value.as_str(), lit.span))
+            Some((lit.value.as_str()?, lit.span))
         }
         (Some(Argument::TemplateLiteral(template)), Some(base))
             if is_import_meta_url_argument(base) =>
         {
             template
                 .single_quasi()
-                .map(|value| (value.as_str(), template.span))
+                .and_then(|value| value.as_str().map(|value| (value, template.span)))
         }
         _ => None,
     }
@@ -586,9 +589,5 @@ fn is_import_meta_member(
     member: &oxc_ast::ast::StaticMemberExpression<'_>,
     property: &str,
 ) -> bool {
-    member.property.name == property
-        && matches!(
-            &member.object,
-            Expression::MetaProperty(meta) if meta.meta.name == "import" && meta.property.name == "meta"
-        )
+    member.property.name == property && matches!(&member.object, Expression::ImportMeta(_))
 }

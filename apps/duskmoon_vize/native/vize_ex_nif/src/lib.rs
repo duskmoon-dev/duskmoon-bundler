@@ -5,11 +5,11 @@ use lightningcss::stylesheet::{
 };
 use rustler::{Atom, Encoder, Env, NifResult, Term};
 use rustler_match_spec::{MatchEvent, Selector, ValueRef};
+use vize_atelier_core::lane::transform;
 use vize_atelier_core::options::{
     CodegenMode, CodegenOptions, ParserOptions, TemplateSyntaxMode, TransformOptions,
 };
 use vize_atelier_core::parser::{parse, parse_with_options};
-use vize_atelier_core::transform::transform;
 use vize_atelier_sfc::compile_script::typescript::transform_typescript_to_js;
 use vize_atelier_sfc::croquis::{analyze_sfc_descriptor, SfcCroquisOptions};
 use vize_atelier_sfc::script::analyze_script_setup_to_summary;
@@ -22,7 +22,7 @@ use vize_atelier_vapor::{
     compile_vapor, compile_vapor_with_template_syntax_and_diagnostics, ir::*, transform_to_ir,
     VaporCompilerOptions,
 };
-use vize_carton::Bump;
+use vize_carton::Allocator;
 
 #[macro_use]
 mod macros;
@@ -31,7 +31,10 @@ mod ir_encoding;
 mod term_encoding;
 mod vapor_split;
 
-use crate::ir_encoding::{encode_ir_prop, encode_simple_expr};
+use crate::ir_encoding::{
+    anchor_index, anchor_node, component_kind, encode_ir_prop, encode_merged_prop_sources,
+    encode_simple_expr,
+};
 use crate::term_encoding::{
     decode_json_value, error_term, nil_term, ok_term, EncodedBundleCssResult,
     EncodedCompileSfcResult, EncodedCssAstResult, EncodedCssCompileResult, EncodedLintDiagnostic,
@@ -131,6 +134,18 @@ mod atoms {
         camel,
         prop_modifier,
         is_component,
+        value_kind,
+        expression,
+        model_update,
+        model_modifiers,
+        display_string,
+        forwarded_slots,
+        handler_modifiers,
+        keys,
+        non_keys,
+        options,
+        capture,
+        passive,
         components,
         directives,
         kind,
@@ -174,6 +189,12 @@ mod atoms {
         get_text_child,
         child_ref,
         next_ref,
+        set_merged_props,
+        set_jsx_children,
+        sources,
+        object,
+        group,
+        anchor_index,
 
         // Split result fields
         statics,
@@ -190,6 +211,8 @@ mod atoms {
         teleport,
         keep_alive,
         suspense,
+        transition,
+        transition_group,
         dynamic,
     }
 }
@@ -224,7 +247,7 @@ fn analyze_sfc_nif<'a>(env: Env<'a>, source: &str, mode: &str) -> NifResult<Term
         Err(error) => return Ok(error_term(env, error.message.as_str())),
     };
 
-    let allocator = Bump::new();
+    let allocator = Allocator::default();
     let template_ast = descriptor.template.as_ref().map(|template| {
         let (root, _errors) = parse_with_options(
             &allocator,
@@ -421,6 +444,27 @@ fn compile_sfc_nif<'a>(
     }
 }
 
+fn fatal_compiler_messages(diagnostics: &[vize_atelier_core::CompilerError]) -> Vec<String> {
+    diagnostics
+        .iter()
+        .filter(|diagnostic| !diagnostic.is_recoverable())
+        .map(|diagnostic| diagnostic.message.to_string())
+        .collect()
+}
+
+fn with_compiler_diagnostics<'a>(
+    env: Env<'a>,
+    result: Term<'a>,
+    diagnostics: &[vize_atelier_core::CompilerError],
+    source: &str,
+) -> NifResult<Term<'a>> {
+    let diagnostics: Vec<Term<'a>> = diagnostics
+        .iter()
+        .map(|diagnostic| encode_compiler_error(env, diagnostic, source))
+        .collect();
+    result.map_put(atoms::diagnostics(), diagnostics)
+}
+
 // ── Template Compilation ──
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -430,12 +474,12 @@ fn compile_template_nif<'a>(
     mode: &str,
     ssr: bool,
 ) -> NifResult<Term<'a>> {
-    let allocator = Bump::new();
-    let (mut root, errors) = parse(&allocator, source);
+    let allocator = Allocator::default();
+    let (mut root, mut diagnostics) = parse(&allocator, source);
 
-    if !errors.is_empty() {
-        let msgs: Vec<std::string::String> = errors.iter().map(|e| e.message.to_string()).collect();
-        return Ok(error_term(env, msgs));
+    let messages = fatal_compiler_messages(&diagnostics);
+    if !messages.is_empty() {
+        return Ok(error_term(env, messages));
     }
 
     let is_module = mode == "module";
@@ -444,7 +488,11 @@ fn compile_template_nif<'a>(
         ssr,
         ..Default::default()
     };
-    transform(&allocator, &mut root, transform_opts, None);
+    diagnostics.extend(transform(&allocator, &mut root, transform_opts, None));
+    let messages = fatal_compiler_messages(&diagnostics);
+    if !messages.is_empty() {
+        return Ok(error_term(env, messages));
+    }
 
     let codegen_opts = CodegenOptions {
         mode: if is_module {
@@ -459,13 +507,16 @@ fn compile_template_nif<'a>(
 
     let helpers: Vec<&str> = root.helpers.iter().map(|h| h.name()).collect();
 
+    let result = EncodedTemplateCompileResult {
+        code: result.code.as_str(),
+        preamble: result.preamble.as_str(),
+        helpers,
+    }
+    .encode(env);
+
     Ok(ok_term(
         env,
-        EncodedTemplateCompileResult {
-            code: result.code.as_str(),
-            preamble: result.preamble.as_str(),
-            helpers,
-        },
+        with_compiler_diagnostics(env, result, &diagnostics, source)?,
     ))
 }
 
@@ -473,7 +524,7 @@ fn compile_template_nif<'a>(
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn compile_ssr_nif<'a>(env: Env<'a>, source: &str) -> NifResult<Term<'a>> {
-    let allocator = Bump::new();
+    let allocator = Allocator::default();
     let (_root, errors, result) = compile_ssr(&allocator, source);
 
     if !errors.is_empty() {
@@ -492,26 +543,37 @@ fn compile_ssr_nif<'a>(env: Env<'a>, source: &str) -> NifResult<Term<'a>> {
 
 // ── Vapor Compilation ──
 
-fn encode_position<'a>(env: Env<'a>, position: &vize_atelier_core::Position) -> Term<'a> {
+fn source_position(source: &str, offset: u32) -> (u32, u32) {
+    let (line, column) = vize_carton::line_index::LineIndex::new(source).line_col(offset as usize);
+    (line + 1, column + 1)
+}
+
+fn encode_position<'a>(env: Env<'a>, source: &str, offset: u32) -> Term<'a> {
+    let (line, column) = source_position(source, offset);
     term_map!(env, {
-        atoms::offset() => position.offset,
-        atoms::line() => position.line,
-        atoms::column() => position.column,
+        atoms::offset() => offset,
+        atoms::line() => line,
+        atoms::column() => column,
     })
 }
 
 fn encode_source_location<'a>(
     env: Env<'a>,
     location: &vize_atelier_core::SourceLocation,
+    source: &str,
 ) -> Term<'a> {
     term_map!(env, {
-        atoms::start() => encode_position(env, &location.start),
-        atoms::end_() => encode_position(env, &location.end),
-        atoms::source() => location.source.as_str(),
+        atoms::start() => encode_position(env, source, location.span.start),
+        atoms::end_() => encode_position(env, source, location.span.end),
+        atoms::source() => location.span.slice(source),
     })
 }
 
-fn encode_compiler_error<'a>(env: Env<'a>, error: &vize_atelier_core::CompilerError) -> Term<'a> {
+fn encode_compiler_error<'a>(
+    env: Env<'a>,
+    error: &vize_atelier_core::CompilerError,
+    source: &str,
+) -> Term<'a> {
     term_map!(env, {
         atoms::code() => format!("{:?}", error.code),
         atoms::message() => error.message.as_str(),
@@ -519,7 +581,7 @@ fn encode_compiler_error<'a>(env: Env<'a>, error: &vize_atelier_core::CompilerEr
         atoms::location() => error
             .loc
             .as_ref()
-            .map(|location| encode_source_location(env, location))
+            .map(|location| encode_source_location(env, location, source))
             .unwrap_or_else(|| nil_term(env)),
     })
 }
@@ -539,7 +601,7 @@ fn compile_vapor_nif<'a>(
     diagnostics: bool,
     template_syntax: &str,
 ) -> NifResult<Term<'a>> {
-    let allocator = Bump::new();
+    let allocator = Allocator::default();
     let opts = VaporCompilerOptions {
         ssr,
         ..Default::default()
@@ -552,7 +614,7 @@ fn compile_vapor_nif<'a>(
 
         let mut diagnostic_terms: Vec<Term<'a>> = parser_diagnostics
             .iter()
-            .map(|diagnostic| encode_compiler_error(env, diagnostic))
+            .map(|diagnostic| encode_compiler_error(env, diagnostic, source))
             .collect();
 
         if !result.error_messages.is_empty() {
@@ -608,7 +670,7 @@ fn encode_operation<'a>(env: Env<'a>, op: &OperationNode) -> Term<'a> {
             term_map!(env, {
                 atoms::kind() => atoms::set_prop(),
                 atoms::element() => node.element,
-                atoms::tag() => node.tag.as_str(),
+                atoms::tag() => node.tag,
                 atoms::camel() => node.camel,
                 atoms::prop_modifier() => node.prop_modifier,
                 atoms::value() => prop,
@@ -626,6 +688,20 @@ fn encode_operation<'a>(env: Env<'a>, op: &OperationNode) -> Term<'a> {
                 atoms::props() => props,
             })
         }
+        OperationNode::SetMergedProps(node) => {
+            let sources = encode_merged_prop_sources(env, &node.sources);
+            term_map!(env, {
+                atoms::kind() => atoms::set_merged_props(),
+                atoms::element() => node.element,
+                atoms::sources() => sources,
+            })
+        }
+        OperationNode::SetJsxChildren(node) => term_map!(env, {
+            atoms::kind() => atoms::set_jsx_children(),
+            atoms::element() => node.text.element,
+            atoms::values() => node.text.values.iter().map(|value| encode_simple_expr(env, value)).collect::<Vec<_>>(),
+            atoms::once() => node.once,
+        }),
         OperationNode::SetText(node) => {
             let values: Vec<Term<'a>> = node
                 .values
@@ -661,7 +737,7 @@ fn encode_operation<'a>(env: Env<'a>, op: &OperationNode) -> Term<'a> {
             atoms::value() => encode_simple_expr(env, &node.value),
         }),
         OperationNode::InsertNode(node) => {
-            let elements: Vec<usize> = node.elements.clone();
+            let elements: Vec<usize> = node.elements.iter().copied().collect();
             term_map!(env, {
                 atoms::kind() => atoms::insert_node(),
                 atoms::element() => elements,
@@ -670,7 +746,7 @@ fn encode_operation<'a>(env: Env<'a>, op: &OperationNode) -> Term<'a> {
             })
         }
         OperationNode::PrependNode(node) => {
-            let elements: Vec<usize> = node.elements.clone();
+            let elements: Vec<usize> = node.elements.iter().copied().collect();
             term_map!(env, {
                 atoms::kind() => atoms::prepend_node(),
                 atoms::element() => elements,
@@ -679,28 +755,31 @@ fn encode_operation<'a>(env: Env<'a>, op: &OperationNode) -> Term<'a> {
         }
         OperationNode::If(if_node) => encode_if_node(env, if_node),
         OperationNode::For(for_node) => encode_for_node(env, for_node),
+        OperationNode::Key(node) => term_map!(env, {
+            atoms::kind() => atoms::key(),
+            atoms::value() => encode_simple_expr(env, &node.value),
+            atoms::render() => encode_block(env, &node.render),
+            atoms::parent() => node.parent,
+            atoms::anchor() => anchor_node(node.anchor),
+            atoms::anchor_index() => anchor_index(node.anchor),
+        }),
         OperationNode::CreateComponent(node) => {
             let props: Vec<Term<'a>> = node
                 .props
                 .iter()
                 .map(|prop| encode_ir_prop(env, prop))
                 .collect();
-            let kind_atom = match node.kind {
-                ComponentKind::Regular => atoms::regular(),
-                ComponentKind::Teleport => atoms::teleport(),
-                ComponentKind::KeepAlive => atoms::keep_alive(),
-                ComponentKind::Suspense => atoms::suspense(),
-                ComponentKind::Dynamic => atoms::dynamic(),
-            };
+            let kind_atom = component_kind(node.kind);
             term_map!(env, {
                 atoms::kind() => atoms::create_component(),
-                atoms::tag() => node.tag.as_str(),
+                atoms::tag() => node.tag,
                 atoms::props() => props,
                 atoms::asset() => node.asset,
                 atoms::once() => node.once,
                 atoms::dynamic_slots() => node.dynamic_slots,
                 atoms::parent() => node.parent,
-                atoms::anchor() => node.anchor,
+                atoms::anchor() => anchor_node(node.anchor),
+                atoms::anchor_index() => anchor_index(node.anchor),
                 atoms::value() => kind_atom,
             })
         }
@@ -744,8 +823,8 @@ fn encode_operation<'a>(env: Env<'a>, op: &OperationNode) -> Term<'a> {
             term_map!(env, {
                 atoms::kind() => atoms::directive(),
                 atoms::element() => node.element,
-                atoms::name() => node.name.as_str(),
-                atoms::tag() => node.tag.as_str(),
+                atoms::name() => node.name,
+                atoms::tag() => node.tag,
                 atoms::value() => exp,
             })
         }
@@ -811,7 +890,8 @@ fn encode_if_node<'a>(env: Env<'a>, if_node: &IfIRNode) -> Term<'a> {
         atoms::negative() => negative,
         atoms::once() => if_node.once,
         atoms::parent() => if_node.parent,
-        atoms::anchor() => if_node.anchor,
+        atoms::anchor() => anchor_node(if_node.anchor),
+        atoms::anchor_index() => anchor_index(if_node.anchor),
     })
 }
 
@@ -842,32 +922,37 @@ fn encode_for_node<'a>(env: Env<'a>, for_node: &ForIRNode) -> Term<'a> {
         atoms::render() => encode_block(env, &for_node.render),
         atoms::once() => for_node.once,
         atoms::parent() => for_node.parent,
-        atoms::anchor() => for_node.anchor,
+        atoms::anchor() => anchor_node(for_node.anchor),
+        atoms::anchor_index() => anchor_index(for_node.anchor),
     })
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn vapor_ir_nif<'a>(env: Env<'a>, source: &str) -> NifResult<Term<'a>> {
-    let allocator = Bump::new();
+    let allocator = Allocator::default();
     let parser_opts = ParserOptions::default();
-    let (mut root, errors) = parse_with_options(&allocator, source, parser_opts);
+    let (mut root, mut diagnostics) = parse_with_options(&allocator, source, parser_opts);
 
-    if !errors.is_empty() {
-        let msgs: Vec<std::string::String> = errors.iter().map(|e| e.message.to_string()).collect();
-        return Ok(error_term(env, msgs));
+    let messages = fatal_compiler_messages(&diagnostics);
+    if !messages.is_empty() {
+        return Ok(error_term(env, messages));
     }
 
     let transform_opts = TransformOptions {
         vapor: true,
         ..Default::default()
     };
-    transform(&allocator, &mut root, transform_opts, None);
+    diagnostics.extend(transform(&allocator, &mut root, transform_opts, None));
+    let messages = fatal_compiler_messages(&diagnostics);
+    if !messages.is_empty() {
+        return Ok(error_term(env, messages));
+    }
 
-    let ir = transform_to_ir(&allocator, &root);
+    let ir = transform_to_ir(&allocator, &root, source);
 
-    let templates: Vec<&str> = ir.templates.iter().map(|s| s.as_str()).collect();
-    let components: Vec<&str> = ir.component.iter().map(|s| s.as_str()).collect();
-    let directives: Vec<&str> = ir.directive.iter().map(|s| s.as_str()).collect();
+    let templates: Vec<&str> = ir.templates.iter().copied().collect();
+    let components: Vec<&str> = ir.component.iter().copied().collect();
+    let directives: Vec<&str> = ir.directive.iter().copied().collect();
 
     let etm_keys: Vec<usize> = ir.element_template_map.keys().copied().collect();
     let etm_vals: Vec<usize> = etm_keys
@@ -896,7 +981,10 @@ fn vapor_ir_nif<'a>(env: Env<'a>, source: &str) -> NifResult<Term<'a>> {
     )
     .unwrap();
 
-    Ok(ok_term(env, map))
+    Ok(ok_term(
+        env,
+        with_compiler_diagnostics(env, map, &diagnostics, source)?,
+    ))
 }
 
 // ── Linting ──
@@ -953,7 +1041,7 @@ fn css_parser_options<'a>(
     filename: &'a str,
     custom_media: bool,
     css_modules: bool,
-) -> CssParserOptions<'a, 'a> {
+) -> CssParserOptions<'a> {
     let mut flags = CssParserFlags::NESTING | CssParserFlags::DEEP_SELECTOR_COMBINATOR;
     if custom_media {
         flags |= CssParserFlags::CUSTOM_MEDIA;
@@ -1309,29 +1397,32 @@ fn bundle_css_nif<'a>(
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn vapor_split_nif<'a>(env: Env<'a>, source: &str) -> NifResult<Term<'a>> {
-    let allocator = Bump::new();
+    let allocator = Allocator::default();
     let parser_opts = ParserOptions::default();
-    let (mut root, errors) = parse_with_options(&allocator, source, parser_opts);
+    let (mut root, mut diagnostics) = parse_with_options(&allocator, source, parser_opts);
 
-    if !errors.is_empty() {
-        let msgs: std::vec::Vec<std::string::String> =
-            errors.iter().map(|e| e.message.to_string()).collect();
-        return Ok(error_term(env, msgs));
+    let messages = fatal_compiler_messages(&diagnostics);
+    if !messages.is_empty() {
+        return Ok(error_term(env, messages));
     }
 
     let transform_opts = TransformOptions {
         vapor: true,
         ..Default::default()
     };
-    transform(&allocator, &mut root, transform_opts, None);
+    diagnostics.extend(transform(&allocator, &mut root, transform_opts, None));
+    let messages = fatal_compiler_messages(&diagnostics);
+    if !messages.is_empty() {
+        return Ok(error_term(env, messages));
+    }
 
-    let ir = transform_to_ir(&allocator, &root);
+    let ir = transform_to_ir(&allocator, &root, source);
 
     let (statics, slots) = process_block(env, &ir.block, &ir);
 
     let statics_term: std::vec::Vec<Term<'a>> =
         statics.iter().map(|s| s.as_str().encode(env)).collect();
-    let templates: std::vec::Vec<&str> = ir.templates.iter().map(|s| s.as_str()).collect();
+    let templates: std::vec::Vec<&str> = ir.templates.iter().copied().collect();
     let element_template_map: std::vec::Vec<(usize, usize)> = ir
         .element_template_map
         .iter()
@@ -1355,7 +1446,10 @@ fn vapor_split_nif<'a>(env: Env<'a>, source: &str) -> NifResult<Term<'a>> {
     )
     .unwrap();
 
-    Ok(ok_term(env, result))
+    Ok(ok_term(
+        env,
+        with_compiler_diagnostics(env, result, &diagnostics, source)?,
+    ))
 }
 
 // ── Declaration .d.ts Generation ──

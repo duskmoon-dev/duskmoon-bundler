@@ -223,12 +223,15 @@ fn build_minify_options(drop_console: bool) -> RawMinifyOptions {
         mangle: Some(RawMangleOptions {
             top_level: Some(false),
             keep_names: None,
+            ..RawMangleOptions::default()
         }),
         compress: Some(RawCompressOptions {
             drop_console: Some(true),
             ..RawCompressOptions::default()
         }),
         remove_whitespace: true,
+        mangle_properties: None,
+        ascii_only: false,
     })
 }
 

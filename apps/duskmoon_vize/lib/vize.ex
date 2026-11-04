@@ -50,7 +50,8 @@ defmodule Vize do
   @type template_result :: %{
           code: String.t(),
           preamble: String.t(),
-          helpers: [String.t()]
+          helpers: [String.t()],
+          diagnostics: [Vize.Diagnostic.input()]
         }
 
   @type vapor_result :: Vize.Vapor.Result.t()
@@ -65,7 +66,8 @@ defmodule Vize do
           components: [String.t()],
           directives: [String.t()],
           block: map(),
-          element_template_map: [{non_neg_integer(), non_neg_integer()}]
+          element_template_map: [{non_neg_integer(), non_neg_integer()}],
+          diagnostics: [Vize.Diagnostic.input()]
         }
 
   @type diagnostic :: %{message: String.t(), name: String.t() | nil}
@@ -329,7 +331,7 @@ defmodule Vize do
     * `:block` — the root block with operations, effects, and returns
     * `:element_template_map` — list of `{element_id, template_index}` tuples
 
-  Expressions are either plain strings (dynamic) or `{:static, value}`
+  Expressions are either plain strings (dynamic) or `{:static_, value}`
   tuples (compile-time constants).
 
   Each operation has a `:kind` field indicating its type:

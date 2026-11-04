@@ -337,8 +337,8 @@ pub fn transform_source(source: &str, filename: &str, opts: &TransformInput) -> 
         .with_options(parser_options())
         .parse();
 
-    if !ret.errors.is_empty() {
-        return TransformOutput::Error(format_errors(&ret.errors));
+    if !ret.diagnostics.is_empty() {
+        return TransformOutput::Error(format_errors(&ret.diagnostics));
     }
 
     let mut program = ret.program;
@@ -374,8 +374,8 @@ pub fn transform_source(source: &str, filename: &str, opts: &TransformInput) -> 
     let result =
         Transformer::new(&allocator, path, &options).build_with_scoping(scoping, &mut program);
 
-    if !result.errors.is_empty() {
-        return TransformOutput::Error(format_errors(&result.errors));
+    if !result.diagnostics.is_empty() {
+        return TransformOutput::Error(format_errors(&result.diagnostics));
     }
 
     if opts.sourcemap {
@@ -411,11 +411,11 @@ pub fn parse<'a>(env: Env<'a>, source_term: Term<'a>, filename: &str) -> NifResu
         .with_options(parser_options())
         .parse();
 
-    if !ret.errors.is_empty() {
-        return error_to_term(env, &format_errors(&ret.errors));
+    if !ret.diagnostics.is_empty() {
+        return error_to_term(env, &format_errors(&ret.diagnostics));
     }
 
-    let json_str = ret.program.to_estree_ts_json(false);
+    let json_str = ret.program.to_estree_json(true, false);
     let term = match json_str_to_term(env, &json_str) {
         Ok(term) => term,
         Err(error) => {
@@ -432,7 +432,7 @@ pub fn valid(source_term: Term<'_>, filename: &str) -> NifResult<bool> {
     let allocator = Allocator::default();
     let source_type = SourceType::from_path(filename).unwrap_or_default();
     let ret = Parser::new(&allocator, source, source_type).parse();
-    Ok(ret.errors.is_empty())
+    Ok(ret.diagnostics.is_empty())
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -465,14 +465,15 @@ pub fn minify<'a>(
         .with_options(parser_options())
         .parse();
 
-    if !ret.errors.is_empty() {
-        return error_to_term(env, &format_errors(&ret.errors));
+    if !ret.diagnostics.is_empty() {
+        return error_to_term(env, &format_errors(&ret.diagnostics));
     }
 
     let mut program = ret.program;
     let result = Minifier::new(MinifierOptions {
         mangle: opts.mangle.then(MangleOptions::default),
         compress: Some(CompressOptions::default()),
+        ..MinifierOptions::default()
     })
     .minify(&allocator, &mut program);
 

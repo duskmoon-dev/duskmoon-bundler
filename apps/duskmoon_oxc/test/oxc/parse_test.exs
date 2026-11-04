@@ -159,6 +159,37 @@ defmodule OXC.ParseTest do
     end
   end
 
+  test "codegen preserves arrow bodies, class heritage and module export forms" do
+    for source <- [
+          "const value = (input) => input + 1;",
+          "const value = (input) => { return input + 1; };",
+          "class View extends Base { render() { return this.value; } }",
+          "const View = class extends Base { value = 1; };",
+          "export default class View extends Base {}",
+          "export const value = 1;",
+          "const value = 1; export { value };",
+          ~S(export { value as result } from "./source.js";),
+          "try { run(); } catch (error) { report(error); } finally { finish(); }",
+          "function create() { return new.target; } const url = import.meta.url;"
+        ] do
+      assert {:ok, ast} = OXC.parse(source, "roundtrip.js")
+      assert {:ok, generated} = OXC.codegen(ast)
+      assert {:ok, reparsed} = OXC.parse(generated, "roundtrip.js")
+      assert without_source_positions(reparsed) == without_source_positions(ast), source
+    end
+  end
+
+  defp without_source_positions(value) when is_map(value) do
+    value
+    |> Map.drop([:start, :end, :raw])
+    |> Map.new(fn {key, value} -> {key, without_source_positions(value)} end)
+  end
+
+  defp without_source_positions(value) when is_list(value),
+    do: Enum.map(value, &without_source_positions/1)
+
+  defp without_source_positions(value), do: value
+
   @tag :tmp_dir
   test "parses deep expressions without crashing while preserving strings and numbers", %{
     tmp_dir: tmp_dir

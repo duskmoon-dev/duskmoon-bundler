@@ -1,12 +1,9 @@
-use std::cell::Cell;
-
 use oxc_allocator::{Allocator, Box as OxcBox, Vec as OxcVec};
-use oxc_ast::{ast::*, AstBuilder, NONE};
+use oxc_ast::{ast::*, builder::AstBuilder};
 use oxc_codegen::{Codegen, CodegenReturn};
 use oxc_span::{SourceType, SPAN};
-use oxc_str::Str as OxcStr;
+use oxc_str::{Ident, JSStr, JSStrBuilder, Str as OxcStr};
 use oxc_syntax::{
-    node::NodeId,
     number::{BigintBase, NumberBase},
     operator::{
         AssignmentOperator, BinaryOperator, LogicalOperator, UnaryOperator, UpdateOperator,
@@ -73,47 +70,36 @@ fn err<T>(msg: impl Into<String>) -> R<T> {
 include!("generated_term_helpers.rs");
 include!("generated_ast_decoders.rs");
 
-fn nid() -> Cell<NodeId> {
-    Cell::new(NodeId::DUMMY)
+fn oxc_s<'a>(b: &AstBuilder<'a>, s: &str) -> OxcStr<'a> {
+    OxcStr::from_str_in(s, b)
 }
 
-fn oxc_s<'a>(b: AstBuilder<'a>, s: &str) -> OxcStr<'a> {
-    b.str(s)
+fn ident_name<'a>(b: &AstBuilder<'a>, s: &str) -> IdentifierName<'a> {
+    IdentifierName::new(SPAN, Ident::from_str_in(s, b), b)
 }
 
-fn ident_name<'a>(b: AstBuilder<'a>, s: &str) -> IdentifierName<'a> {
-    b.identifier_name(SPAN, b.ident(s))
-}
-
-fn js_string_value(term: Term<'_>) -> R<(String, bool)> {
+fn js_string_value<'a>(b: &AstBuilder<'a>, term: Term<'_>) -> R<JSStr<'a>> {
     let binary = term
         .decode_as_binary()
         .map_err(|_| "Expected a JavaScript string binary".to_string())?;
     let mut bytes = binary.as_slice();
-    if let Ok(value) = std::str::from_utf8(bytes) {
-        return Ok((value.to_string(), false));
-    }
-
-    // OXC marks lone UTF-16 surrogates as U+FFFD followed by four hex digits.
-    // Literal U+FFFD characters must also be escaped when this mode is active.
-    let mut value = String::with_capacity(bytes.len());
+    let mut value = JSStrBuilder::with_capacity_in(bytes.len(), b);
     loop {
         match std::str::from_utf8(bytes) {
             Ok(suffix) => {
-                value.push_str(&suffix.replace('\u{fffd}', "\u{fffd}fffd"));
-                return Ok((value, true));
+                value.push_str(suffix);
+                return Ok(value.into_js_str());
             }
             Err(error) => {
                 let prefix = std::str::from_utf8(&bytes[..error.valid_up_to()])
                     .map_err(|_| "Invalid JavaScript string bytes".to_string())?;
-                value.push_str(&prefix.replace('\u{fffd}', "\u{fffd}fffd"));
+                value.push_str(prefix);
                 bytes = &bytes[error.valid_up_to()..];
                 match bytes {
                     [0xed, second @ 0xa0..=0xbf, third @ 0x80..=0xbf, rest @ ..] => {
                         let surrogate =
                             0xd000 | ((*second as u16 & 0x3f) << 6) | (*third as u16 & 0x3f);
-                        value.push('\u{fffd}');
-                        value.push_str(&format!("{surrogate:04x}"));
+                        value.push_code_unit(surrogate);
                         bytes = rest;
                     }
                     _ => return err("Invalid UTF-8/WTF-8 JavaScript string bytes"),
@@ -123,52 +109,54 @@ fn js_string_value(term: Term<'_>) -> R<(String, bool)> {
     }
 }
 
-fn beam_str_lit<'a>(b: AstBuilder<'a>, term: Term<'_>) -> R<StringLiteral<'a>> {
-    let (value, lone_surrogates) = js_string_value(term)?;
-    Ok(b.string_literal_with_lone_surrogates(SPAN, b.str(&value), None, lone_surrogates))
+fn beam_str_lit<'a>(b: &AstBuilder<'a>, term: Term<'_>) -> R<StringLiteral<'a>> {
+    Ok(StringLiteral::new(SPAN, js_string_value(b, term)?, None, b))
 }
 
-fn module_source_lit<'a>(b: AstBuilder<'a>, term: Term<'_>) -> R<StringLiteral<'a>> {
+fn module_source_lit<'a>(b: &AstBuilder<'a>, term: Term<'_>) -> R<StringLiteral<'a>> {
     let binary = term
         .decode_as_binary()
         .map_err(|_| "Expected a module source string binary".to_string())?;
-    // OXC's module-source printer does not handle the lone-surrogate flag.
-    // Reject unsupported values instead of printing its internal marker text.
+    // Preserve the module-source contract: only UTF-8 module names are supported.
     let value = std::str::from_utf8(binary.as_slice())
         .map_err(|_| "Codegen does not support non-UTF-8 module source strings".to_string())?;
-    Ok(b.string_literal(SPAN, b.str(value), None))
+    Ok(StringLiteral::new(
+        SPAN,
+        JSStr::from_str_in(value, b),
+        None,
+        b,
+    ))
 }
 
-fn opt_binding_id<'a>(b: AstBuilder<'a>, term: Term) -> Option<BindingIdentifier<'a>> {
+fn opt_binding_id<'a>(b: &AstBuilder<'a>, term: Term) -> Option<BindingIdentifier<'a>> {
     opt(term, a::id()).map(|t| {
         let n = str_val(t, a::name());
-        b.binding_identifier(SPAN, b.ident(&n))
+        BindingIdentifier::new(SPAN, Ident::from_str_in(&n, b), b)
     })
 }
 
 fn static_member<'a>(
-    b: AstBuilder<'a>,
+    b: &AstBuilder<'a>,
     object: Expression<'a>,
     prop: &str,
     optional: bool,
 ) -> Expression<'a> {
-    Expression::StaticMemberExpression(b.alloc(b.static_member_expression(
-        SPAN,
-        object,
-        ident_name(b, prop),
-        optional,
-    )))
+    Expression::StaticMemberExpression(OxcBox::new_in(
+        StaticMemberExpression::new(SPAN, object, ident_name(b, prop), optional, b),
+        b,
+    ))
 }
 
 fn computed_member<'a>(
-    b: AstBuilder<'a>,
+    b: &AstBuilder<'a>,
     object: Expression<'a>,
     prop: Expression<'a>,
     optional: bool,
 ) -> Expression<'a> {
-    Expression::ComputedMemberExpression(
-        b.alloc(b.computed_member_expression(SPAN, object, prop, optional)),
-    )
+    Expression::ComputedMemberExpression(OxcBox::new_in(
+        ComputedMemberExpression::new(SPAN, object, prop, optional, b),
+        b,
+    ))
 }
 
 // ── NIF entry point ──
@@ -180,7 +168,7 @@ pub fn codegen<'a>(env: Env<'a>, ast: Term<'a>) -> NifResult<Term<'a>> {
 
     let input = decode_program_input(ast)?;
 
-    match build_program(b, input.body) {
+    match build_program(&b, input.body) {
         Ok(program) => {
             let CodegenReturn { code, .. } = Codegen::new().build(&program);
             Ok((atoms::ok(), code).encode(env))
@@ -191,39 +179,58 @@ pub fn codegen<'a>(env: Env<'a>, ast: Term<'a>) -> NifResult<Term<'a>> {
 
 // ── Program ──
 
-fn build_program<'a>(b: AstBuilder<'a>, body_terms: Vec<Term>) -> R<Program<'a>> {
+fn build_program<'a>(b: &AstBuilder<'a>, body_terms: Vec<Term>) -> R<Program<'a>> {
     let body = build_stmts(b, body_terms)?;
-    Ok(b.program(SPAN, SourceType::mjs(), "", b.vec(), None, b.vec(), body))
+    Ok(Program::new(
+        SPAN,
+        SourceType::mjs(),
+        "",
+        OxcVec::new_in(b),
+        None,
+        OxcVec::new_in(b),
+        body,
+        b,
+    ))
 }
 
 // ── Statements ──
 
-fn build_stmt<'a>(b: AstBuilder<'a>, term: Term) -> R<Statement<'a>> {
+fn build_stmt<'a>(b: &AstBuilder<'a>, term: Term) -> R<Statement<'a>> {
     let ty = type_atom(term).ok_or_else(|| "Missing :type on statement".to_string())?;
 
     if ty == a::expression_statement() {
-        return Ok(b.statement_expression(
+        return Ok(Statement::new_expression_statement(
             SPAN,
             build_expr(b, get(term, a::expression()).ok_or("Missing :expression")?)?,
+            b,
         ));
     }
     if ty == a::block_statement() {
-        return Ok(b.statement_block(SPAN, build_stmts(b, list_val(term, a::body()))?));
+        return Ok(Statement::new_block_statement(
+            SPAN,
+            build_stmts(b, list_val(term, a::body()))?,
+            b,
+        ));
     }
     if ty == a::return_statement() {
-        return Ok(b.statement_return(SPAN, opt_expr(b, term, a::argument())?));
+        return Ok(Statement::new_return_statement(
+            SPAN,
+            opt_expr(b, term, a::argument())?,
+            b,
+        ));
     }
     if ty == a::throw_statement() {
-        return Ok(b.statement_throw(
+        return Ok(Statement::new_throw_statement(
             SPAN,
             build_expr(b, get(term, a::argument()).ok_or("Missing :argument")?)?,
+            b,
         ));
     }
     if ty == a::empty_statement() {
-        return Ok(b.statement_empty(SPAN));
+        return Ok(Statement::new_empty_statement(SPAN, b));
     }
     if ty == a::debugger_statement() {
-        return Ok(b.statement_debugger(SPAN));
+        return Ok(Statement::new_debugger_statement(SPAN, b));
     }
 
     if ty == a::variable_declaration() {
@@ -244,7 +251,7 @@ fn build_stmt<'a>(b: AstBuilder<'a>, term: Term) -> R<Statement<'a>> {
             Some(t) if !is_nil(t) => Some(build_stmt(b, t)?),
             _ => None,
         };
-        return Ok(b.statement_if(SPAN, test, cons, alt));
+        return Ok(Statement::new_if_statement(SPAN, test, cons, alt, b));
     }
     if ty == a::for_statement() {
         let init = match opt(term, a::init()) {
@@ -257,30 +264,34 @@ fn build_stmt<'a>(b: AstBuilder<'a>, term: Term) -> R<Statement<'a>> {
         let test = opt_expr(b, term, a::test())?;
         let update = opt_expr(b, term, a::update())?;
         let body = build_stmt(b, get(term, a::body()).ok_or("Missing :body")?)?;
-        return Ok(b.statement_for(SPAN, init, test, update, body));
+        return Ok(Statement::new_for_statement(
+            SPAN, init, test, update, body, b,
+        ));
     }
     if ty == a::for_in_statement() {
         let left = build_for_left(b, get(term, a::left()).ok_or("Missing :left")?)?;
         let right = build_expr(b, get(term, a::right()).ok_or("Missing :right")?)?;
         let body = build_stmt(b, get(term, a::body()).ok_or("Missing :body")?)?;
-        return Ok(b.statement_for_in(SPAN, left, right, body));
+        return Ok(Statement::new_for_in_statement(SPAN, left, right, body, b));
     }
     if ty == a::for_of_statement() {
         let aw = bool_val(term, a::await_field());
         let left = build_for_left(b, get(term, a::left()).ok_or("Missing :left")?)?;
         let right = build_expr(b, get(term, a::right()).ok_or("Missing :right")?)?;
         let body = build_stmt(b, get(term, a::body()).ok_or("Missing :body")?)?;
-        return Ok(b.statement_for_of(SPAN, aw, left, right, body));
+        return Ok(Statement::new_for_of_statement(
+            SPAN, aw, left, right, body, b,
+        ));
     }
     if ty == a::while_statement() {
         let test = build_expr(b, get(term, a::test()).ok_or("Missing :test")?)?;
         let body = build_stmt(b, get(term, a::body()).ok_or("Missing :body")?)?;
-        return Ok(b.statement_while(SPAN, test, body));
+        return Ok(Statement::new_while_statement(SPAN, test, body, b));
     }
     if ty == a::do_while_statement() {
         let body = build_stmt(b, get(term, a::body()).ok_or("Missing :body")?)?;
         let test = build_expr(b, get(term, a::test()).ok_or("Missing :test")?)?;
-        return Ok(b.statement_do_while(SPAN, body, test));
+        return Ok(Statement::new_do_while_statement(SPAN, body, test, b));
     }
     if ty == a::switch_statement() {
         let disc = build_expr(
@@ -288,13 +299,13 @@ fn build_stmt<'a>(b: AstBuilder<'a>, term: Term) -> R<Statement<'a>> {
             get(term, a::discriminant()).ok_or("Missing :discriminant")?,
         )?;
         let cases_list = list_val(term, a::cases());
-        let mut cases = b.vec_with_capacity(cases_list.len());
+        let mut cases = OxcVec::with_capacity_in(cases_list.len(), b);
         for c in &cases_list {
             let test = opt_expr(b, *c, a::test())?;
             let cons = build_stmts(b, list_val(*c, a::consequent()))?;
-            cases.push(b.switch_case(SPAN, test, cons));
+            cases.push(SwitchCase::new(SPAN, test, cons, b));
         }
-        return Ok(b.statement_switch(SPAN, disc, cases));
+        return Ok(Statement::new_switch_statement(SPAN, disc, cases, b));
     }
     if ty == a::try_statement() {
         let block_term = opt(term, a::block())
@@ -304,16 +315,11 @@ fn build_stmt<'a>(b: AstBuilder<'a>, term: Term) -> R<Statement<'a>> {
         let handler = match opt(term, a::handler()) {
             Some(h) => {
                 let param = match opt(h, a::param()) {
-                    Some(p) => Some(CatchParameter {
-                        node_id: nid(),
-                        span: SPAN,
-                        pattern: build_binding_pat(b, p)?,
-                        type_annotation: None,
-                    }),
+                    Some(p) => Some(CatchParameter::new(SPAN, build_binding_pat(b, p)?, None, b)),
                     None => None,
                 };
                 let hbody = build_block(b, get(h, a::body()).ok_or("Missing catch body")?)?;
-                Some(b.catch_clause(SPAN, param, hbody))
+                Some(CatchClause::new(SPAN, param, OxcBox::new_in(hbody, b), b))
             }
             None => None,
         };
@@ -321,28 +327,34 @@ fn build_stmt<'a>(b: AstBuilder<'a>, term: Term) -> R<Statement<'a>> {
             Some(f) => Some(build_block(b, f)?),
             None => None,
         };
-        return Ok(b.statement_try(SPAN, block, handler, finalizer));
+        return Ok(Statement::new_try_statement(
+            SPAN,
+            OxcBox::new_in(block, b),
+            handler.map(|h| OxcBox::new_in(h, b)),
+            finalizer.map(|f| OxcBox::new_in(f, b)),
+            b,
+        ));
     }
     if ty == a::break_statement() {
-        return Ok(b.statement_break(SPAN, opt_label(b, term)));
+        return Ok(Statement::new_break_statement(SPAN, opt_label(b, term), b));
     }
     if ty == a::continue_statement() {
-        return Ok(b.statement_continue(SPAN, opt_label(b, term)));
+        return Ok(Statement::new_continue_statement(
+            SPAN,
+            opt_label(b, term),
+            b,
+        ));
     }
     if ty == a::labeled_statement() {
         let lt = get(term, a::label()).ok_or("Missing :label")?;
-        let label = LabelIdentifier {
-            node_id: nid(),
-            span: SPAN,
-            name: b.ident(&str_val(lt, a::name())),
-        };
+        let label = LabelIdentifier::new(SPAN, Ident::from_str_in(&str_val(lt, a::name()), b), b);
         let body = build_stmt(b, get(term, a::body()).ok_or("Missing :body")?)?;
-        return Ok(b.statement_labeled(SPAN, label, body));
+        return Ok(Statement::new_labeled_statement(SPAN, label, body, b));
     }
     if ty == a::with_statement() {
         let obj = build_expr(b, get(term, a::object()).ok_or("Missing :object")?)?;
         let body = build_stmt(b, get(term, a::body()).ok_or("Missing :body")?)?;
-        return Ok(b.statement_with(SPAN, obj, body));
+        return Ok(Statement::new_with_statement(SPAN, obj, body, b));
     }
     if ty == a::import_declaration() {
         return Ok(Statement::from(build_import(b, term)?));
@@ -360,56 +372,73 @@ fn build_stmt<'a>(b: AstBuilder<'a>, term: Term) -> R<Statement<'a>> {
     err(format!("Unsupported statement: {}", type_str(term)))
 }
 
-fn build_stmts<'a>(b: AstBuilder<'a>, list: Vec<Term>) -> R<OxcVec<'a, Statement<'a>>> {
-    let mut out = b.vec_with_capacity(list.len());
+fn build_stmts<'a>(b: &AstBuilder<'a>, list: Vec<Term>) -> R<OxcVec<'a, Statement<'a>>> {
+    let mut out = OxcVec::with_capacity_in(list.len(), b);
     for t in &list {
         out.push(build_stmt(b, *t)?);
     }
     Ok(out)
 }
 
-fn build_block<'a>(b: AstBuilder<'a>, term: Term) -> R<BlockStatement<'a>> {
-    Ok(BlockStatement {
-        node_id: nid(),
-        span: SPAN,
-        body: build_stmts(b, list_val(term, a::body()))?,
-        scope_id: Default::default(),
-    })
+fn build_block<'a>(b: &AstBuilder<'a>, term: Term) -> R<BlockStatement<'a>> {
+    Ok(BlockStatement::new(
+        SPAN,
+        build_stmts(b, list_val(term, a::body()))?,
+        b,
+    ))
 }
 
 // ── Expressions ──
 
-fn build_expr<'a>(b: AstBuilder<'a>, term: Term) -> R<Expression<'a>> {
+fn build_expr<'a>(b: &AstBuilder<'a>, term: Term) -> R<Expression<'a>> {
     let ty = type_atom(term).ok_or_else(|| "Missing :type on expression".to_string())?;
 
     if ty == a::identifier() || ty == a::identifier_reference() {
         let n = str_val(term, a::name());
-        return Ok(b.expression_identifier(SPAN, b.ident(&n)));
+        return Ok(Expression::new_identifier(
+            SPAN,
+            Ident::from_str_in(&n, b),
+            b,
+        ));
     }
     if ty == a::literal() {
         return build_generic_lit(b, term);
     }
     if ty == a::numeric_literal() {
-        return Ok(b.expression_numeric_literal(
+        return Ok(Expression::new_numeric_literal(
             SPAN,
             f64_val(term, a::value()),
             None,
             NumberBase::Decimal,
+            b,
         ));
     }
     if ty == a::string_literal() {
         let value = get(term, a::value()).ok_or("Missing string literal :value")?;
-        return Ok(Expression::StringLiteral(b.alloc(beam_str_lit(b, value)?)));
+        return Ok(Expression::StringLiteral(OxcBox::new_in(
+            beam_str_lit(b, value)?,
+            b,
+        )));
     }
     if ty == a::boolean_literal() {
-        return Ok(b.expression_boolean_literal(SPAN, bool_val(term, a::value())));
+        return Ok(Expression::new_boolean_literal(
+            SPAN,
+            bool_val(term, a::value()),
+            b,
+        ));
     }
     if ty == a::null_literal() {
-        return Ok(b.expression_null_literal(SPAN));
+        return Ok(Expression::new_null_literal(SPAN, b));
     }
     if ty == a::big_int_literal() {
         let v = str_val(term, a::value());
-        return Ok(b.expression_big_int_literal(SPAN, oxc_s(b, &v), None, BigintBase::Decimal));
+        return Ok(Expression::new_big_int_literal(
+            SPAN,
+            oxc_s(b, &v),
+            None,
+            BigintBase::Decimal,
+            b,
+        ));
     }
     if ty == a::reg_exp_literal() {
         return build_regexp(b, term);
@@ -419,49 +448,59 @@ fn build_expr<'a>(b: AstBuilder<'a>, term: Term) -> R<Expression<'a>> {
         let l = build_expr(b, get(term, a::left()).ok_or("Missing :left")?)?;
         let op = parse_bin_op(&str_val(term, a::operator()))?;
         let r = build_expr(b, get(term, a::right()).ok_or("Missing :right")?)?;
-        return Ok(b.expression_binary(SPAN, l, op, r));
+        return Ok(Expression::new_binary_expression(SPAN, l, op, r, b));
     }
     if ty == a::logical_expression() {
         let l = build_expr(b, get(term, a::left()).ok_or("Missing :left")?)?;
         let op = parse_log_op(&str_val(term, a::operator()))?;
         let r = build_expr(b, get(term, a::right()).ok_or("Missing :right")?)?;
-        return Ok(b.expression_logical(SPAN, l, op, r));
+        return Ok(Expression::new_logical_expression(SPAN, l, op, r, b));
     }
     if ty == a::unary_expression() {
         let op = parse_unary_op(&str_val(term, a::operator()))?;
-        return Ok(b.expression_unary(
+        return Ok(Expression::new_unary_expression(
             SPAN,
             op,
             build_expr(b, get(term, a::argument()).ok_or("Missing :argument")?)?,
+            b,
         ));
     }
     if ty == a::update_expression() {
         let op = parse_update_op(&str_val(term, a::operator()))?;
         let prefix = bool_val(term, a::prefix());
         let arg = build_simple_target(b, get(term, a::argument()).ok_or("Missing :argument")?)?;
-        return Ok(b.expression_update(SPAN, op, prefix, arg));
+        return Ok(Expression::new_update_expression(SPAN, op, prefix, arg, b));
     }
     if ty == a::assignment_expression() {
         let op = parse_assign_op(&str_val(term, a::operator()))?;
         let l = build_assign_target(b, get(term, a::left()).ok_or("Missing :left")?)?;
         let r = build_expr(b, get(term, a::right()).ok_or("Missing :right")?)?;
-        return Ok(b.expression_assignment(SPAN, op, l, r));
+        return Ok(Expression::new_assignment_expression(SPAN, op, l, r, b));
     }
     if ty == a::conditional_expression() {
         let test = build_expr(b, get(term, a::test()).ok_or("Missing :test")?)?;
         let cons = build_expr(b, get(term, a::consequent()).ok_or("Missing :consequent")?)?;
         let alt = build_expr(b, get(term, a::alternate()).ok_or("Missing :alternate")?)?;
-        return Ok(b.expression_conditional(SPAN, test, cons, alt));
+        return Ok(Expression::new_conditional_expression(
+            SPAN, test, cons, alt, b,
+        ));
     }
     if ty == a::call_expression() {
         let callee = build_expr(b, get(term, a::callee()).ok_or("Missing :callee")?)?;
         let args = build_args(b, list_val(term, a::arguments()))?;
-        return Ok(b.expression_call(SPAN, callee, NONE, args, bool_val(term, a::optional())));
+        return Ok(Expression::new_call_expression(
+            SPAN,
+            callee,
+            None,
+            args,
+            bool_val(term, a::optional()),
+            b,
+        ));
     }
     if ty == a::new_expression() {
         let callee = build_expr(b, get(term, a::callee()).ok_or("Missing :callee")?)?;
         let args = build_args(b, list_val(term, a::arguments()))?;
-        return Ok(b.expression_new(SPAN, callee, NONE, args));
+        return Ok(Expression::new_new_expression(SPAN, callee, None, args, b));
     }
     if ty == a::member_expression() || ty == a::static_member_expression() {
         return build_member(b, term);
@@ -481,27 +520,32 @@ fn build_expr<'a>(b: AstBuilder<'a>, term: Term) -> R<Expression<'a>> {
         return build_chain(b, inner);
     }
     if ty == a::object_expression() {
-        return Ok(b.expression_object(SPAN, build_obj_props(b, list_val(term, a::properties()))?));
+        return Ok(Expression::new_object_expression(
+            SPAN,
+            build_obj_props(b, list_val(term, a::properties()))?,
+            b,
+        ));
     }
     if ty == a::array_expression() {
         let elems_list = list_val(term, a::elements());
-        let mut elems = b.vec_with_capacity(elems_list.len());
+        let mut elems = OxcVec::with_capacity_in(elems_list.len(), b);
         for e in &elems_list {
             if is_nil(*e) {
-                elems.push(ArrayExpressionElement::Elision(b.alloc(Elision {
-                    node_id: nid(),
-                    span: SPAN,
-                })));
+                elems.push(ArrayExpressionElement::Elision(OxcBox::new_in(
+                    Elision::new(SPAN, b),
+                    b,
+                )));
             } else if type_eq(*e, a::spread_element()) {
                 let arg = build_expr(b, get(*e, a::argument()).ok_or("Missing spread :argument")?)?;
-                elems.push(ArrayExpressionElement::SpreadElement(
-                    b.alloc(b.spread_element(SPAN, arg)),
-                ));
+                elems.push(ArrayExpressionElement::SpreadElement(OxcBox::new_in(
+                    SpreadElement::new(SPAN, arg, b),
+                    b,
+                )));
             } else {
                 elems.push(ArrayExpressionElement::from(build_expr(b, *e)?));
             }
         }
-        return Ok(b.expression_array(SPAN, elems));
+        return Ok(Expression::new_array_expression(SPAN, elems, b));
     }
     if ty == a::arrow_function_expression() {
         let is_async = bool_val(term, a::async_field());
@@ -510,46 +554,58 @@ fn build_expr<'a>(b: AstBuilder<'a>, term: Term) -> R<Expression<'a>> {
         let body_term = get(term, a::body()).ok_or("Missing arrow body")?;
         let body = if is_expr && !type_eq(body_term, a::block_statement()) {
             let expr = build_expr(b, body_term)?;
-            b.function_body(SPAN, b.vec(), b.vec1(b.statement_expression(SPAN, expr)))
+            ArrowFunctionBody::from(expr)
         } else {
-            build_fn_body(b, body_term)?
+            ArrowFunctionBody::FunctionBody(OxcBox::new_in(build_fn_body(b, body_term)?, b))
         };
-        return Ok(b.expression_arrow_function(SPAN, is_expr, is_async, NONE, params, NONE, body));
+        return Ok(Expression::new_arrow_function_expression(
+            SPAN,
+            is_async,
+            None,
+            OxcBox::new_in(params, b),
+            None,
+            body,
+            b,
+        ));
     }
     if ty == a::function_expression() {
         let id = opt_binding_id(b, term);
         let params = build_params(b, term)?;
         let body = build_fn_body(b, get(term, a::body()).ok_or("Missing fn body")?)?;
-        return Ok(b.expression_function(
+        return Ok(Expression::new_function_expression(
             SPAN,
             FunctionType::FunctionExpression,
             id,
             bool_val(term, a::generator()),
             bool_val(term, a::async_field()),
             false,
-            NONE,
-            NONE,
-            params,
-            NONE,
-            Some(b.alloc(body)),
+            None,
+            None,
+            OxcBox::new_in(params, b),
+            None,
+            Some(OxcBox::new_in(body, b)),
+            b,
         ));
     }
     if ty == a::class_expression() {
         let id = opt_binding_id(b, term);
         let sc = opt_expr(b, term, a::super_class())?;
         let body = build_class_body(b, get(term, a::body()).ok_or("Missing class body")?)?;
-        return Ok(b.expression_class(
+        return Ok(Expression::new_class_expression(
             SPAN,
             ClassType::ClassExpression,
-            b.vec(),
+            OxcVec::new_in(b),
             id,
-            NONE,
-            sc,
-            NONE,
-            b.vec(),
-            body,
+            None,
+            sc.map(|expression| ClassHeritage {
+                expression,
+                type_arguments: None,
+            }),
+            OxcVec::new_in(b),
+            OxcBox::new_in(body, b),
             false,
             false,
+            b,
         ));
     }
     if ty == a::template_literal() {
@@ -560,73 +616,80 @@ fn build_expr<'a>(b: AstBuilder<'a>, term: Term) -> R<Expression<'a>> {
         let qt = get(term, a::quasi()).ok_or("Missing :quasi")?;
         let quasis = build_quasis(b, list_val(qt, a::quasis()))?;
         let exprs = build_exprs(b, list_val(qt, a::expressions()))?;
-        return Ok(b.expression_tagged_template(
+        return Ok(Expression::new_tagged_template_expression(
             SPAN,
             tag,
-            NONE,
-            b.template_literal(SPAN, quasis, exprs),
+            None,
+            TemplateLiteral::new(SPAN, quasis, exprs, b),
+            b,
         ));
     }
     if ty == a::sequence_expression() {
-        return Ok(b.expression_sequence(SPAN, build_exprs(b, list_val(term, a::expressions()))?));
+        return Ok(Expression::new_sequence_expression(
+            SPAN,
+            build_exprs(b, list_val(term, a::expressions()))?,
+            b,
+        ));
     }
     if ty == a::this_expression() {
-        return Ok(b.expression_this(SPAN));
+        return Ok(Expression::new_this_expression(SPAN, b));
     }
     if ty == a::super_expr() {
-        return Ok(Expression::Super(b.alloc(Super {
-            node_id: nid(),
-            span: SPAN,
-        })));
+        return Ok(Expression::Super(OxcBox::new_in(Super::new(SPAN, b), b)));
     }
     if ty == a::await_expression() {
-        return Ok(b.expression_await(
+        return Ok(Expression::new_await_expression(
             SPAN,
             build_expr(b, get(term, a::argument()).ok_or("Missing :argument")?)?,
+            b,
         ));
     }
     if ty == a::yield_expression() {
-        return Ok(b.expression_yield(
+        return Ok(Expression::new_yield_expression(
             SPAN,
             bool_val(term, a::delegate()),
             opt_expr(b, term, a::argument())?,
+            b,
         ));
     }
     if ty == a::import_expression() {
-        return Ok(b.expression_import(
+        return Ok(Expression::new_import_expression(
             SPAN,
             build_expr(b, get(term, a::source()).ok_or("Missing :source")?)?,
             None,
             None,
+            b,
         ));
     }
     if ty == a::meta_property() {
-        let m = ident_name(b, &str_val(get(term, a::meta()).unwrap_or(term), a::name()));
-        let p = ident_name(
-            b,
-            &str_val(get(term, a::property()).unwrap_or(term), a::name()),
-        );
-        return Ok(b.expression_meta_property(SPAN, m, p));
+        let meta = str_val(get(term, a::meta()).unwrap_or(term), a::name());
+        let property = str_val(get(term, a::property()).unwrap_or(term), a::name());
+        return match (meta.as_str(), property.as_str()) {
+            ("import", "meta") => Ok(Expression::new_import_meta(SPAN, b)),
+            ("new", "target") => Ok(Expression::new_new_target(SPAN, b)),
+            _ => err("Unsupported meta property"),
+        };
     }
     if ty == a::parenthesized_expression() {
-        return Ok(b.expression_parenthesized(
+        return Ok(Expression::new_parenthesized_expression(
             SPAN,
             build_expr(b, get(term, a::expression()).ok_or("Missing :expression")?)?,
+            b,
         ));
     }
 
     err(format!("Unsupported expression: {}", type_str(term)))
 }
 
-fn opt_expr<'a>(b: AstBuilder<'a>, term: Term, key: rustler::Atom) -> R<Option<Expression<'a>>> {
+fn opt_expr<'a>(b: &AstBuilder<'a>, term: Term, key: rustler::Atom) -> R<Option<Expression<'a>>> {
     match opt(term, key) {
         Some(t) => Ok(Some(build_expr(b, t)?)),
         None => Ok(None),
     }
 }
 
-fn build_exprs<'a>(b: AstBuilder<'a>, list: Vec<Term>) -> R<OxcVec<'a, Expression<'a>>> {
-    let mut out = b.vec_with_capacity(list.len());
+fn build_exprs<'a>(b: &AstBuilder<'a>, list: Vec<Term>) -> R<OxcVec<'a, Expression<'a>>> {
+    let mut out = OxcVec::with_capacity_in(list.len(), b);
     for t in &list {
         out.push(build_expr(b, *t)?);
     }
@@ -635,59 +698,83 @@ fn build_exprs<'a>(b: AstBuilder<'a>, list: Vec<Term>) -> R<OxcVec<'a, Expressio
 
 // ── Literals ──
 
-fn build_generic_lit<'a>(b: AstBuilder<'a>, term: Term) -> R<Expression<'a>> {
+fn build_generic_lit<'a>(b: &AstBuilder<'a>, term: Term) -> R<Expression<'a>> {
     if let Some(rx) = opt(term, a::regex()) {
         return build_regexp_from(b, rx);
     }
     if opt(term, a::bigint()).is_some() {
         let v = str_val(term, a::bigint());
-        return Ok(b.expression_big_int_literal(SPAN, oxc_s(b, &v), None, BigintBase::Decimal));
+        return Ok(Expression::new_big_int_literal(
+            SPAN,
+            oxc_s(b, &v),
+            None,
+            BigintBase::Decimal,
+            b,
+        ));
     }
     match get(term, a::value()) {
-        None => Ok(b.expression_null_literal(SPAN)),
-        Some(t) if is_nil(t) => Ok(b.expression_null_literal(SPAN)),
+        None => Ok(Expression::new_null_literal(SPAN, b)),
+        Some(t) if is_nil(t) => Ok(Expression::new_null_literal(SPAN, b)),
         Some(t) => {
             if let Ok(v) = t.decode::<bool>() {
-                return Ok(b.expression_boolean_literal(SPAN, v));
+                return Ok(Expression::new_boolean_literal(SPAN, v, b));
             }
             if let Ok(v) = t.decode::<f64>() {
-                return Ok(b.expression_numeric_literal(SPAN, v, None, NumberBase::Decimal));
+                return Ok(Expression::new_numeric_literal(
+                    SPAN,
+                    v,
+                    None,
+                    NumberBase::Decimal,
+                    b,
+                ));
             }
             if let Ok(v) = t.decode::<i64>() {
-                return Ok(b.expression_numeric_literal(SPAN, v as f64, None, NumberBase::Decimal));
+                return Ok(Expression::new_numeric_literal(
+                    SPAN,
+                    v as f64,
+                    None,
+                    NumberBase::Decimal,
+                    b,
+                ));
             }
             if t.decode_as_binary().is_ok() {
-                return Ok(Expression::StringLiteral(b.alloc(beam_str_lit(b, t)?)));
+                return Ok(Expression::StringLiteral(OxcBox::new_in(
+                    beam_str_lit(b, t)?,
+                    b,
+                )));
             }
             err("Unsupported literal value")
         }
     }
 }
 
-fn build_regexp<'a>(b: AstBuilder<'a>, term: Term) -> R<Expression<'a>> {
+fn build_regexp<'a>(b: &AstBuilder<'a>, term: Term) -> R<Expression<'a>> {
     build_regexp_from(b, get(term, a::regex()).unwrap_or(term))
 }
 
-fn build_regexp_from<'a>(b: AstBuilder<'a>, rx: Term) -> R<Expression<'a>> {
+fn build_regexp_from<'a>(b: &AstBuilder<'a>, rx: Term) -> R<Expression<'a>> {
     let pat = str_val(rx, a::pattern());
     let fl = str_val(rx, a::flags());
-    Ok(Expression::RegExpLiteral(b.alloc(RegExpLiteral {
-        node_id: nid(),
-        span: SPAN,
-        raw: None,
-        regex: RegExp {
-            pattern: RegExpPattern {
-                text: oxc_s(b, &pat),
-                pattern: None,
+    Ok(Expression::RegExpLiteral(OxcBox::new_in(
+        RegExpLiteral::new(
+            SPAN,
+            RegExp {
+                pattern: RegExpPattern {
+                    text: oxc_s(b, &pat),
+                    pattern: None,
+                },
+                flags: parse_regex_flags(&fl),
             },
-            flags: parse_regex_flags(&fl),
-        },
-    })))
+            None,
+            b,
+        ),
+        b,
+    )))
 }
 
 // ── Member / Chain ──
 
-fn build_member<'a>(b: AstBuilder<'a>, term: Term) -> R<Expression<'a>> {
+fn build_member<'a>(b: &AstBuilder<'a>, term: Term) -> R<Expression<'a>> {
     let obj = build_expr(b, get(term, a::object()).ok_or("Missing :object")?)?;
     let optional = bool_val(term, a::optional());
     if bool_val(term, a::computed()) {
@@ -702,69 +789,63 @@ fn build_member<'a>(b: AstBuilder<'a>, term: Term) -> R<Expression<'a>> {
     }
 }
 
-fn build_chain<'a>(b: AstBuilder<'a>, inner: Term) -> R<Expression<'a>> {
+fn build_chain<'a>(b: &AstBuilder<'a>, inner: Term) -> R<Expression<'a>> {
     let inner_ty = type_atom(inner).ok_or("Missing chain inner type")?;
     let elem = if inner_ty == a::call_expression() {
         let callee = build_expr(b, get(inner, a::callee()).ok_or("Missing :callee")?)?;
         let args = build_args(b, list_val(inner, a::arguments()))?;
-        ChainElement::CallExpression(b.alloc(CallExpression {
-            node_id: nid(),
-            span: SPAN,
-            callee,
-            type_arguments: None,
-            arguments: args,
-            optional: bool_val(inner, a::optional()),
-            pure: false,
-        }))
+        ChainElement::CallExpression(OxcBox::new_in(
+            CallExpression::new(SPAN, callee, None, args, bool_val(inner, a::optional()), b),
+            b,
+        ))
     } else {
         let obj = build_expr(b, get(inner, a::object()).ok_or("Missing :object")?)?;
         let optional = bool_val(inner, a::optional());
         if bool_val(inner, a::computed()) {
             let prop = build_expr(b, get(inner, a::property()).ok_or("Missing :property")?)?;
-            ChainElement::ComputedMemberExpression(
-                b.alloc(b.computed_member_expression(SPAN, obj, prop, optional)),
-            )
+            ChainElement::ComputedMemberExpression(OxcBox::new_in(
+                ComputedMemberExpression::new(SPAN, obj, prop, optional, b),
+                b,
+            ))
         } else {
             let pn = str_val(
                 get(inner, a::property()).ok_or("Missing :property")?,
                 a::name(),
             );
-            ChainElement::StaticMemberExpression(b.alloc(b.static_member_expression(
-                SPAN,
-                obj,
-                ident_name(b, &pn),
-                optional,
-            )))
+            ChainElement::StaticMemberExpression(OxcBox::new_in(
+                StaticMemberExpression::new(SPAN, obj, ident_name(b, &pn), optional, b),
+                b,
+            ))
         }
     };
-    Ok(b.expression_chain(SPAN, elem))
+    Ok(Expression::new_chain_expression(SPAN, elem, b))
 }
 
 // ── Template literals ──
 
-fn build_template<'a>(b: AstBuilder<'a>, term: Term) -> R<Expression<'a>> {
+fn build_template<'a>(b: &AstBuilder<'a>, term: Term) -> R<Expression<'a>> {
     let quasis = build_quasis(b, list_val(term, a::quasis()))?;
     let exprs = build_exprs(b, list_val(term, a::expressions()))?;
-    Ok(b.expression_template_literal(SPAN, quasis, exprs))
+    Ok(Expression::new_template_literal(SPAN, quasis, exprs, b))
 }
 
-fn build_quasis<'a>(b: AstBuilder<'a>, list: Vec<Term>) -> R<OxcVec<'a, TemplateElement<'a>>> {
-    let mut out = b.vec_with_capacity(list.len());
+fn build_quasis<'a>(b: &AstBuilder<'a>, list: Vec<Term>) -> R<OxcVec<'a, TemplateElement<'a>>> {
+    let mut out = OxcVec::with_capacity_in(list.len(), b);
     for q in &list {
         let vt = get(*q, a::value()).unwrap_or(*q);
         let raw = str_val(vt, a::raw());
-        let cooked = opt(vt, a::cooked()).map(js_string_value).transpose()?;
-        let lone_surrogates = cooked.as_ref().is_some_and(|(_, lone)| *lone);
+        let cooked = opt(vt, a::cooked())
+            .map(|t| js_string_value(b, t))
+            .transpose()?;
         let tail = bool_val(*q, a::tail());
-        out.push(b.template_element_with_lone_surrogates(
+        out.push(TemplateElement::new(
             SPAN,
             TemplateElementValue {
                 raw: oxc_s(b, &raw),
-                cooked: cooked.as_ref().map(|(s, _)| oxc_s(b, s)),
+                cooked,
             },
             tail,
-            lone_surrogates,
-            false,
+            b,
         ));
     }
     Ok(out)
@@ -772,7 +853,7 @@ fn build_quasis<'a>(b: AstBuilder<'a>, list: Vec<Term>) -> R<OxcVec<'a, Template
 
 // ── Declarations ──
 
-fn build_var_decl<'a>(b: AstBuilder<'a>, term: Term) -> R<Declaration<'a>> {
+fn build_var_decl<'a>(b: &AstBuilder<'a>, term: Term) -> R<Declaration<'a>> {
     let kind = match str_val(term, a::kind()).as_str() {
         "let" => VariableDeclarationKind::Let,
         "var" => VariableDeclarationKind::Var,
@@ -781,17 +862,19 @@ fn build_var_decl<'a>(b: AstBuilder<'a>, term: Term) -> R<Declaration<'a>> {
         _ => VariableDeclarationKind::Const,
     };
     let dl = list_val(term, a::declarations());
-    let mut decls = b.vec_with_capacity(dl.len());
+    let mut decls = OxcVec::with_capacity_in(dl.len(), b);
     for d in &dl {
         let id = build_binding_pat(b, get(*d, a::id()).ok_or("Missing declarator :id")?)?;
         let init = opt_expr(b, *d, a::init())?;
-        decls.push(b.variable_declarator(SPAN, kind, id, NONE, init, false));
+        decls.push(VariableDeclarator::new(SPAN, id, None, init, false, b));
     }
-    Ok(b.declaration_variable(SPAN, kind, decls, false))
+    Ok(Declaration::new_variable_declaration(
+        SPAN, kind, decls, false, b,
+    ))
 }
 
 fn build_var_decl_boxed<'a>(
-    b: AstBuilder<'a>,
+    b: &AstBuilder<'a>,
     term: Term,
 ) -> R<OxcBox<'a, VariableDeclaration<'a>>> {
     let kind = match str_val(term, a::kind()).as_str() {
@@ -802,58 +885,65 @@ fn build_var_decl_boxed<'a>(
         _ => VariableDeclarationKind::Const,
     };
     let dl = list_val(term, a::declarations());
-    let mut decls = b.vec_with_capacity(dl.len());
+    let mut decls = OxcVec::with_capacity_in(dl.len(), b);
     for d in &dl {
         let id = build_binding_pat(b, get(*d, a::id()).ok_or("Missing declarator :id")?)?;
         let init = opt_expr(b, *d, a::init())?;
-        decls.push(b.variable_declarator(SPAN, kind, id, NONE, init, false));
+        decls.push(VariableDeclarator::new(SPAN, id, None, init, false, b));
     }
-    Ok(b.alloc(b.variable_declaration(SPAN, kind, decls, false)))
+    Ok(OxcBox::new_in(
+        VariableDeclaration::new(SPAN, kind, decls, false, b),
+        b,
+    ))
 }
 
-fn build_fn_decl<'a>(b: AstBuilder<'a>, term: Term) -> R<Declaration<'a>> {
+fn build_fn_decl<'a>(b: &AstBuilder<'a>, term: Term) -> R<Declaration<'a>> {
     let id = opt_binding_id(b, term);
     let params = build_params(b, term)?;
     let body = build_fn_body(b, get(term, a::body()).ok_or("Missing fn body")?)?;
-    Ok(b.declaration_function(
+    Ok(Declaration::new_function_declaration(
         SPAN,
         FunctionType::FunctionDeclaration,
         id,
         bool_val(term, a::generator()),
         bool_val(term, a::async_field()),
         false,
-        NONE,
-        NONE,
-        params,
-        NONE,
-        Some(b.alloc(body)),
+        None,
+        None,
+        OxcBox::new_in(params, b),
+        None,
+        Some(OxcBox::new_in(body, b)),
+        b,
     ))
 }
 
-fn build_class_decl<'a>(b: AstBuilder<'a>, term: Term) -> R<Declaration<'a>> {
+fn build_class_decl<'a>(b: &AstBuilder<'a>, term: Term) -> R<Declaration<'a>> {
     let id = opt_binding_id(b, term);
     let sc = opt_expr(b, term, a::super_class())?;
     let body = build_class_body(b, get(term, a::body()).ok_or("Missing class body")?)?;
-    Ok(b.declaration_class(
+    Ok(Declaration::new_class_declaration(
         SPAN,
         ClassType::ClassDeclaration,
-        b.vec(),
+        OxcVec::new_in(b),
         id,
-        NONE,
-        sc,
-        NONE,
-        b.vec(),
-        body,
+        None,
+        sc.map(|expression| ClassHeritage {
+            expression,
+            type_arguments: None,
+        }),
+        OxcVec::new_in(b),
+        OxcBox::new_in(body, b),
         false,
         false,
+        b,
     ))
 }
 
 // ── Class body ──
 
-fn build_class_body<'a>(b: AstBuilder<'a>, term: Term) -> R<ClassBody<'a>> {
+fn build_class_body<'a>(b: &AstBuilder<'a>, term: Term) -> R<ClassBody<'a>> {
     let bl = list_val(term, a::body());
-    let mut elems = b.vec_with_capacity(bl.len());
+    let mut elems = OxcVec::with_capacity_in(bl.len(), b);
     for e in &bl {
         let ty = type_atom(*e).ok_or("Missing class element type")?;
         if ty == a::method_definition() {
@@ -870,48 +960,47 @@ fn build_class_body<'a>(b: AstBuilder<'a>, term: Term) -> R<ClassBody<'a>> {
             let vt = get(*e, a::value()).ok_or("Missing method value")?;
             let params = build_params(b, vt)?;
             let body = build_fn_body(b, get(vt, a::body()).ok_or("Missing method body")?)?;
-            let func = Function {
-                node_id: nid(),
-                span: SPAN,
-                r#type: FunctionType::FunctionExpression,
-                id: None,
-                generator: bool_val(vt, a::generator()),
-                r#async: bool_val(vt, a::async_field()),
-                declare: false,
-                type_parameters: None,
-                this_param: None,
-                params: b.alloc(params),
-                return_type: None,
-                body: Some(b.alloc(body)),
-                scope_id: Default::default(),
-                pure: false,
-                pife: false,
-            };
-            elems.push(ClassElement::MethodDefinition(b.alloc(
-                b.method_definition(
+            let func = Function::new(
+                SPAN,
+                FunctionType::FunctionExpression,
+                None,
+                bool_val(vt, a::generator()),
+                bool_val(vt, a::async_field()),
+                false,
+                None,
+                None,
+                OxcBox::new_in(params, b),
+                None,
+                Some(OxcBox::new_in(body, b)),
+                b,
+            );
+            elems.push(ClassElement::MethodDefinition(OxcBox::new_in(
+                MethodDefinition::new(
                     SPAN,
                     MethodDefinitionType::MethodDefinition,
-                    b.vec(),
+                    OxcVec::new_in(b),
                     key,
-                    func,
+                    OxcBox::new_in(func, b),
                     kind,
                     is_computed,
                     is_static,
                     false,
                     false,
                     None,
+                    b,
                 ),
+                b,
             )));
         } else if ty == a::property_definition() {
             let key = build_prop_key(b, get(*e, a::key()).ok_or("Missing property key")?)?;
             let val = opt_expr(b, *e, a::value())?;
-            elems.push(ClassElement::PropertyDefinition(b.alloc(
-                b.property_definition(
+            elems.push(ClassElement::PropertyDefinition(OxcBox::new_in(
+                PropertyDefinition::new(
                     SPAN,
                     PropertyDefinitionType::PropertyDefinition,
-                    b.vec(),
+                    OxcVec::new_in(b),
                     key,
-                    NONE,
+                    None,
                     val,
                     bool_val(*e, a::computed()),
                     bool_val(*e, a::static_field()),
@@ -921,26 +1010,26 @@ fn build_class_body<'a>(b: AstBuilder<'a>, term: Term) -> R<ClassBody<'a>> {
                     false,
                     false,
                     None,
+                    b,
                 ),
+                b,
             )));
         } else if ty == a::static_block() {
             let body = build_stmts(b, list_val(*e, a::body()))?;
-            elems.push(ClassElement::StaticBlock(b.alloc(StaticBlock {
-                node_id: nid(),
-                span: SPAN,
-                body,
-                scope_id: Default::default(),
-            })));
+            elems.push(ClassElement::StaticBlock(OxcBox::new_in(
+                StaticBlock::new(SPAN, body, b),
+                b,
+            )));
         } else {
             return err(format!("Unsupported class element: {}", type_str(*e)));
         }
     }
-    Ok(b.class_body(SPAN, elems))
+    Ok(ClassBody::new(SPAN, elems, b))
 }
 
 // ── Module declarations ──
 
-fn build_import<'a>(b: AstBuilder<'a>, term: Term) -> R<ModuleDeclaration<'a>> {
+fn build_import<'a>(b: &AstBuilder<'a>, term: Term) -> R<ModuleDeclaration<'a>> {
     let source = get(term, a::source()).ok_or("Missing import :source")?;
     let sl = module_source_lit(
         b,
@@ -951,35 +1040,44 @@ fn build_import<'a>(b: AstBuilder<'a>, term: Term) -> R<ModuleDeclaration<'a>> {
         if get(term, a::specifiers()).is_none_or(|t| is_nil(t)) {
             None
         } else {
-            Some(b.vec())
+            Some(OxcVec::new_in(b))
         }
     } else {
-        let mut specs = b.vec_with_capacity(specs_list.len());
+        let mut specs = OxcVec::with_capacity_in(specs_list.len(), b);
         for s in &specs_list {
             let ty = type_atom(*s).ok_or("Missing specifier type")?;
             if ty == a::import_specifier() {
                 let imp_name = str_val(get(*s, a::imported()).unwrap_or(*s), a::name());
                 let loc_name = str_val(get(*s, a::local()).unwrap_or(*s), a::name());
                 let imported = ModuleExportName::IdentifierName(ident_name(b, &imp_name));
-                let local = b.binding_identifier(SPAN, b.ident(&loc_name));
-                specs.push(ImportDeclarationSpecifier::ImportSpecifier(b.alloc(
-                    b.import_specifier(SPAN, imported, local, ImportOrExportKind::Value),
+                let local = BindingIdentifier::new(SPAN, Ident::from_str_in(&loc_name, b), b);
+                specs.push(ImportDeclarationSpecifier::ImportSpecifier(OxcBox::new_in(
+                    ImportSpecifier::new(SPAN, imported, local, ImportOrExportKind::Value, b),
+                    b,
                 )));
             } else if ty == a::import_default_specifier() {
                 let loc_name = str_val(get(*s, a::local()).unwrap_or(*s), a::name());
-                specs.push(ImportDeclarationSpecifier::ImportDefaultSpecifier(b.alloc(
-                    b.import_default_specifier(
-                        SPAN,
-                        b.binding_identifier(SPAN, b.ident(&loc_name)),
+                specs.push(ImportDeclarationSpecifier::ImportDefaultSpecifier(
+                    OxcBox::new_in(
+                        ImportDefaultSpecifier::new(
+                            SPAN,
+                            BindingIdentifier::new(SPAN, Ident::from_str_in(&loc_name, b), b),
+                            b,
+                        ),
+                        b,
                     ),
-                )));
+                ));
             } else if ty == a::import_namespace_specifier() {
                 let loc_name = str_val(get(*s, a::local()).unwrap_or(*s), a::name());
                 specs.push(ImportDeclarationSpecifier::ImportNamespaceSpecifier(
-                    b.alloc(b.import_namespace_specifier(
-                        SPAN,
-                        b.binding_identifier(SPAN, b.ident(&loc_name)),
-                    )),
+                    OxcBox::new_in(
+                        ImportNamespaceSpecifier::new(
+                            SPAN,
+                            BindingIdentifier::new(SPAN, Ident::from_str_in(&loc_name, b), b),
+                            b,
+                        ),
+                        b,
+                    ),
                 ));
             } else {
                 return err(format!("Unsupported import specifier: {}", type_str(*s)));
@@ -987,12 +1085,21 @@ fn build_import<'a>(b: AstBuilder<'a>, term: Term) -> R<ModuleDeclaration<'a>> {
         }
         Some(specs)
     };
-    Ok(ModuleDeclaration::ImportDeclaration(b.alloc(
-        b.import_declaration(SPAN, specifiers, sl, None, NONE, ImportOrExportKind::Value),
+    Ok(ModuleDeclaration::ImportDeclaration(OxcBox::new_in(
+        ImportDeclaration::new(
+            SPAN,
+            specifiers,
+            sl,
+            None,
+            None,
+            ImportOrExportKind::Value,
+            b,
+        ),
+        b,
     )))
 }
 
-fn build_export_named<'a>(b: AstBuilder<'a>, term: Term) -> R<ModuleDeclaration<'a>> {
+fn build_export_named<'a>(b: &AstBuilder<'a>, term: Term) -> R<ModuleDeclaration<'a>> {
     let declaration = match opt(term, a::declaration()) {
         Some(t) => {
             let ty = type_atom(t).ok_or("Missing export decl type")?;
@@ -1009,86 +1116,96 @@ fn build_export_named<'a>(b: AstBuilder<'a>, term: Term) -> R<ModuleDeclaration<
         None => None,
     };
     let sl = list_val(term, a::specifiers());
-    let mut specifiers = b.vec_with_capacity(sl.len());
+    let mut specifiers = OxcVec::with_capacity_in(sl.len(), b);
     for s in &sl {
         let loc = str_val(get(*s, a::local()).unwrap_or(*s), a::name());
         let exp = str_val(get(*s, a::exported()).unwrap_or(*s), a::name());
-        specifiers.push(b.export_specifier(
+        specifiers.push(ExportSpecifier::new(
             SPAN,
             ModuleExportName::IdentifierName(ident_name(b, &loc)),
             ModuleExportName::IdentifierName(ident_name(b, &exp)),
             ImportOrExportKind::Value,
+            b,
         ));
     }
     let source = opt(term, a::source())
         .map(|t| module_source_lit(b, get(t, a::value()).ok_or("Missing export source :value")?))
         .transpose()?;
-    Ok(ModuleDeclaration::ExportNamedDeclaration(b.alloc(
-        b.export_named_declaration(
-            SPAN,
-            declaration,
-            specifiers,
-            source,
-            ImportOrExportKind::Value,
-            NONE,
-        ),
-    )))
+    if let Some(declaration) = declaration {
+        return Ok(ModuleDeclaration::ExportDeclaration(
+            ExportDeclaration::boxed(SPAN, declaration, b),
+        ));
+    }
+    if let Some(source) = source {
+        return Ok(ModuleDeclaration::ExportFromDeclaration(
+            ExportFromDeclaration::boxed(
+                SPAN,
+                specifiers,
+                source,
+                ImportOrExportKind::Value,
+                None,
+                b,
+            ),
+        ));
+    }
+    Ok(ModuleDeclaration::ExportNamedDeclaration(
+        ExportNamedDeclaration::boxed(SPAN, specifiers, ImportOrExportKind::Value, b),
+    ))
 }
 
-fn build_export_default<'a>(b: AstBuilder<'a>, term: Term) -> R<ModuleDeclaration<'a>> {
+fn build_export_default<'a>(b: &AstBuilder<'a>, term: Term) -> R<ModuleDeclaration<'a>> {
     let dt = get(term, a::declaration()).ok_or("Missing default export declaration")?;
     let ty = type_atom(dt).ok_or("Missing declaration type")?;
     let kind = if ty == a::function_declaration() {
         let id = opt_binding_id(b, dt);
         let params = build_params(b, dt)?;
         let body = build_fn_body(b, get(dt, a::body()).ok_or("Missing fn body")?)?;
-        let func = Function {
-            node_id: nid(),
-            span: SPAN,
-            r#type: FunctionType::FunctionDeclaration,
+        let func = Function::new(
+            SPAN,
+            FunctionType::FunctionDeclaration,
             id,
-            generator: bool_val(dt, a::generator()),
-            r#async: bool_val(dt, a::async_field()),
-            declare: false,
-            type_parameters: None,
-            this_param: None,
-            params: b.alloc(params),
-            return_type: None,
-            body: Some(b.alloc(body)),
-            scope_id: Default::default(),
-            pure: false,
-            pife: false,
-        };
-        ExportDefaultDeclarationKind::FunctionDeclaration(b.alloc(func))
+            bool_val(dt, a::generator()),
+            bool_val(dt, a::async_field()),
+            false,
+            None,
+            None,
+            OxcBox::new_in(params, b),
+            None,
+            Some(OxcBox::new_in(body, b)),
+            b,
+        );
+        ExportDefaultDeclarationKind::FunctionDeclaration(OxcBox::new_in(func, b))
     } else if ty == a::class_declaration() {
         let id = opt_binding_id(b, dt);
         let sc = opt_expr(b, dt, a::super_class())?;
         let body = build_class_body(b, get(dt, a::body()).ok_or("Missing class body")?)?;
-        let class = Class {
-            node_id: nid(),
-            span: SPAN,
-            r#type: ClassType::ClassDeclaration,
-            decorators: b.vec(),
+        let class = Class::new(
+            SPAN,
+            ClassType::ClassDeclaration,
+            OxcVec::new_in(b),
             id,
-            type_parameters: None,
-            super_class: sc,
-            super_type_arguments: None,
-            implements: b.vec(),
-            body: b.alloc(body),
-            r#abstract: false,
-            declare: false,
-            scope_id: Default::default(),
-        };
-        ExportDefaultDeclarationKind::ClassDeclaration(b.alloc(class))
+            None,
+            sc.map(|expression| ClassHeritage {
+                expression,
+                type_arguments: None,
+            }),
+            OxcVec::new_in(b),
+            OxcBox::new_in(body, b),
+            false,
+            false,
+            b,
+        );
+        ExportDefaultDeclarationKind::ClassDeclaration(OxcBox::new_in(class, b))
     } else {
         ExportDefaultDeclarationKind::from(build_expr(b, dt)?)
     };
-    Ok(ModuleDeclaration::ExportDefaultDeclaration(
-        b.alloc(b.export_default_declaration(SPAN, kind)),
-    ))
+    Ok(ModuleDeclaration::ExportDefaultDeclaration(OxcBox::new_in(
+        ExportDefaultDeclaration::new(SPAN, kind, b),
+        b,
+    )))
 }
 
-fn build_export_all<'a>(b: AstBuilder<'a>, term: Term) -> R<ModuleDeclaration<'a>> {
+fn build_export_all<'a>(b: &AstBuilder<'a>, term: Term) -> R<ModuleDeclaration<'a>> {
     let source = get(term, a::source()).ok_or("Missing export :source")?;
     let source = module_source_lit(
         b,
@@ -1096,51 +1213,52 @@ fn build_export_all<'a>(b: AstBuilder<'a>, term: Term) -> R<ModuleDeclaration<'a
     )?;
     let exported = opt(term, a::exported())
         .map(|t| ModuleExportName::IdentifierName(ident_name(b, &str_val(t, a::name()))));
-    Ok(ModuleDeclaration::ExportAllDeclaration(b.alloc(
-        b.export_all_declaration(SPAN, exported, source, NONE, ImportOrExportKind::Value),
+    Ok(ModuleDeclaration::ExportAllDeclaration(OxcBox::new_in(
+        ExportAllDeclaration::new(SPAN, exported, source, None, ImportOrExportKind::Value, b),
+        b,
     )))
 }
 
 // ── Patterns ──
 
-fn build_binding_pat<'a>(b: AstBuilder<'a>, term: Term) -> R<BindingPattern<'a>> {
+fn build_binding_pat<'a>(b: &AstBuilder<'a>, term: Term) -> R<BindingPattern<'a>> {
     let ty = type_atom(term).ok_or("Missing pattern type")?;
     if ty == a::identifier() {
         let n = str_val(term, a::name());
-        return Ok(b.binding_pattern_binding_identifier(SPAN, b.ident(&n)));
+        return Ok(BindingPattern::new_binding_identifier(
+            SPAN,
+            Ident::from_str_in(&n, b),
+            b,
+        ));
     }
     if ty == a::object_pattern() {
         let pl = list_val(term, a::properties());
-        let mut props = b.vec_with_capacity(pl.len());
+        let mut props = OxcVec::with_capacity_in(pl.len(), b);
         let mut rest = None;
         for p in &pl {
             if type_eq(*p, a::rest_element()) {
                 let arg =
                     build_binding_pat(b, get(*p, a::argument()).ok_or("Missing rest :argument")?)?;
-                rest = Some(b.alloc(BindingRestElement {
-                    node_id: nid(),
-                    span: SPAN,
-                    argument: arg,
-                }));
+                rest = Some(OxcBox::new_in(BindingRestElement::new(SPAN, arg, b), b));
             } else {
                 let key = build_prop_key(b, get(*p, a::key()).ok_or("Missing property :key")?)?;
                 let val =
                     build_binding_pat(b, get(*p, a::value()).ok_or("Missing property :value")?)?;
-                props.push(BindingProperty {
-                    node_id: nid(),
-                    span: SPAN,
+                props.push(BindingProperty::new(
+                    SPAN,
                     key,
-                    value: val,
-                    shorthand: bool_val(*p, a::shorthand()),
-                    computed: bool_val(*p, a::computed()),
-                });
+                    val,
+                    bool_val(*p, a::shorthand()),
+                    bool_val(*p, a::computed()),
+                    b,
+                ));
             }
         }
-        return Ok(b.binding_pattern_object_pattern(SPAN, props, rest));
+        return Ok(BindingPattern::new_object_pattern(SPAN, props, rest, b));
     }
     if ty == a::array_pattern() {
         let el = list_val(term, a::elements());
-        let mut elems = b.vec_with_capacity(el.len());
+        let mut elems = OxcVec::with_capacity_in(el.len(), b);
         let mut rest = None;
         for e in &el {
             if is_nil(*e) {
@@ -1148,37 +1266,31 @@ fn build_binding_pat<'a>(b: AstBuilder<'a>, term: Term) -> R<BindingPattern<'a>>
             } else if type_eq(*e, a::rest_element()) {
                 let arg =
                     build_binding_pat(b, get(*e, a::argument()).ok_or("Missing rest :argument")?)?;
-                rest = Some(b.alloc(BindingRestElement {
-                    node_id: nid(),
-                    span: SPAN,
-                    argument: arg,
-                }));
+                rest = Some(OxcBox::new_in(BindingRestElement::new(SPAN, arg, b), b));
             } else {
                 elems.push(Some(build_binding_pat(b, *e)?));
             }
         }
-        return Ok(b.binding_pattern_array_pattern(SPAN, elems, rest));
+        return Ok(BindingPattern::new_array_pattern(SPAN, elems, rest, b));
     }
     if ty == a::assignment_pattern() {
         let left = build_binding_pat(b, get(term, a::left()).ok_or("Missing :left")?)?;
         let right = build_expr(b, get(term, a::right()).ok_or("Missing :right")?)?;
-        return Ok(b.binding_pattern_assignment_pattern(SPAN, left, right));
+        return Ok(BindingPattern::new_assignment_pattern(SPAN, left, right, b));
     }
     err(format!("Unsupported binding pattern: {}", type_str(term)))
 }
 
-fn build_assign_target<'a>(b: AstBuilder<'a>, term: Term) -> R<AssignmentTarget<'a>> {
+fn build_assign_target<'a>(b: &AstBuilder<'a>, term: Term) -> R<AssignmentTarget<'a>> {
     let ty = type_atom(term).ok_or("Missing target type")?;
     if ty == a::identifier() || ty == a::identifier_reference() {
         let n = str_val(term, a::name());
-        return Ok(AssignmentTarget::AssignmentTargetIdentifier(b.alloc(
-            IdentifierReference {
-                node_id: nid(),
-                span: SPAN,
-                name: b.ident(&n),
-                reference_id: Default::default(),
-            },
-        )));
+        return Ok(AssignmentTarget::AssignmentTargetIdentifier(
+            OxcBox::new_in(
+                IdentifierReference::new(SPAN, Ident::from_str_in(&n, b), b),
+                b,
+            ),
+        ));
     }
     if ty == a::member_expression()
         || ty == a::static_member_expression()
@@ -1193,33 +1305,33 @@ fn build_assign_target<'a>(b: AstBuilder<'a>, term: Term) -> R<AssignmentTarget<
                     .or_else(|| get(term, a::expression()))
                     .ok_or("Missing prop")?,
             )?;
-            return Ok(AssignmentTarget::ComputedMemberExpression(
-                b.alloc(b.computed_member_expression(SPAN, obj, prop, optional)),
-            ));
+            return Ok(AssignmentTarget::ComputedMemberExpression(OxcBox::new_in(
+                ComputedMemberExpression::new(SPAN, obj, prop, optional, b),
+                b,
+            )));
         }
         let pn = str_val(
             get(term, a::property()).ok_or("Missing :property")?,
             a::name(),
         );
-        return Ok(AssignmentTarget::StaticMemberExpression(b.alloc(
-            b.static_member_expression(SPAN, obj, ident_name(b, &pn), optional),
+        return Ok(AssignmentTarget::StaticMemberExpression(OxcBox::new_in(
+            StaticMemberExpression::new(SPAN, obj, ident_name(b, &pn), optional, b),
+            b,
         )));
     }
     err(format!("Unsupported assignment target: {}", type_str(term)))
 }
 
-fn build_simple_target<'a>(b: AstBuilder<'a>, term: Term) -> R<SimpleAssignmentTarget<'a>> {
+fn build_simple_target<'a>(b: &AstBuilder<'a>, term: Term) -> R<SimpleAssignmentTarget<'a>> {
     let ty = type_atom(term).ok_or("Missing target type")?;
     if ty == a::identifier() || ty == a::identifier_reference() {
         let n = str_val(term, a::name());
-        return Ok(SimpleAssignmentTarget::AssignmentTargetIdentifier(b.alloc(
-            IdentifierReference {
-                node_id: nid(),
-                span: SPAN,
-                name: b.ident(&n),
-                reference_id: Default::default(),
-            },
-        )));
+        return Ok(SimpleAssignmentTarget::AssignmentTargetIdentifier(
+            OxcBox::new_in(
+                IdentifierReference::new(SPAN, Ident::from_str_in(&n, b), b),
+                b,
+            ),
+        ));
     }
     if ty == a::member_expression()
         || ty == a::static_member_expression()
@@ -1235,66 +1347,76 @@ fn build_simple_target<'a>(b: AstBuilder<'a>, term: Term) -> R<SimpleAssignmentT
                     .ok_or("Missing prop")?,
             )?;
             return Ok(SimpleAssignmentTarget::ComputedMemberExpression(
-                b.alloc(b.computed_member_expression(SPAN, obj, prop, optional)),
+                OxcBox::new_in(
+                    ComputedMemberExpression::new(SPAN, obj, prop, optional, b),
+                    b,
+                ),
             ));
         }
         let pn = str_val(
             get(term, a::property()).ok_or("Missing :property")?,
             a::name(),
         );
-        return Ok(SimpleAssignmentTarget::StaticMemberExpression(b.alloc(
-            b.static_member_expression(SPAN, obj, ident_name(b, &pn), optional),
-        )));
+        return Ok(SimpleAssignmentTarget::StaticMemberExpression(
+            OxcBox::new_in(
+                StaticMemberExpression::new(SPAN, obj, ident_name(b, &pn), optional, b),
+                b,
+            ),
+        ));
     }
     err(format!("Unsupported simple target: {}", type_str(term)))
 }
 
 // ── Helpers ──
 
-fn build_params<'a>(b: AstBuilder<'a>, term: Term) -> R<FormalParameters<'a>> {
+fn build_params<'a>(b: &AstBuilder<'a>, term: Term) -> R<FormalParameters<'a>> {
     let pl = list_val(term, a::params());
-    let mut items = b.vec_with_capacity(pl.len());
+    let mut items = OxcVec::with_capacity_in(pl.len(), b);
     let mut rest = None;
     for p in &pl {
         if type_eq(*p, a::rest_element()) {
             let arg =
                 build_binding_pat(b, get(*p, a::argument()).ok_or("Missing rest :argument")?)?;
-            let rest_elem = BindingRestElement {
-                node_id: nid(),
-                span: SPAN,
-                argument: arg,
-            };
-            rest = Some(b.alloc(FormalParameterRest {
-                node_id: nid(),
-                span: SPAN,
-                decorators: b.vec(),
-                rest: rest_elem,
-                type_annotation: None,
-            }));
+            let rest_elem = BindingRestElement::new(SPAN, arg, b);
+            rest = Some(OxcBox::new_in(
+                FormalParameterRest::new(SPAN, OxcVec::new_in(b), rest_elem, None, b),
+                b,
+            ));
         } else {
             let pat = build_binding_pat(b, *p)?;
-            items.push(FormalParameter {
-                node_id: nid(),
-                span: SPAN,
-                decorators: b.vec(),
-                pattern: pat,
-                type_annotation: None,
-                initializer: None,
-                optional: false,
-                accessibility: None,
-                readonly: false,
-                r#override: false,
-            });
+            items.push(FormalParameter::new(
+                SPAN,
+                OxcVec::new_in(b),
+                pat,
+                None,
+                None,
+                false,
+                None,
+                false,
+                false,
+                b,
+            ));
         }
     }
-    Ok(b.formal_parameters(SPAN, FormalParameterKind::FormalParameter, items, rest))
+    Ok(FormalParameters::new(
+        SPAN,
+        FormalParameterKind::FormalParameter,
+        items,
+        rest,
+        b,
+    ))
 }
 
-fn build_fn_body<'a>(b: AstBuilder<'a>, term: Term) -> R<FunctionBody<'a>> {
-    Ok(b.function_body(SPAN, b.vec(), build_stmts(b, list_val(term, a::body()))?))
+fn build_fn_body<'a>(b: &AstBuilder<'a>, term: Term) -> R<FunctionBody<'a>> {
+    Ok(FunctionBody::new(
+        SPAN,
+        OxcVec::new_in(b),
+        build_stmts(b, list_val(term, a::body()))?,
+        b,
+    ))
 }
 
-fn build_for_left<'a>(b: AstBuilder<'a>, term: Term) -> R<ForStatementLeft<'a>> {
+fn build_for_left<'a>(b: &AstBuilder<'a>, term: Term) -> R<ForStatementLeft<'a>> {
     if type_eq(term, a::variable_declaration()) {
         Ok(ForStatementLeft::VariableDeclaration(build_var_decl_boxed(
             b, term,
@@ -1304,73 +1426,71 @@ fn build_for_left<'a>(b: AstBuilder<'a>, term: Term) -> R<ForStatementLeft<'a>> 
     }
 }
 
-fn opt_label<'a>(b: AstBuilder<'a>, term: Term) -> Option<LabelIdentifier<'a>> {
+fn opt_label<'a>(b: &AstBuilder<'a>, term: Term) -> Option<LabelIdentifier<'a>> {
     opt(term, a::label()).map(|t| {
         let n = str_val(t, a::name());
-        LabelIdentifier {
-            node_id: nid(),
-            span: SPAN,
-            name: b.ident(&n),
-        }
+        LabelIdentifier::new(SPAN, Ident::from_str_in(&n, b), b)
     })
 }
 
-fn build_prop_key<'a>(b: AstBuilder<'a>, term: Term) -> R<PropertyKey<'a>> {
+fn build_prop_key<'a>(b: &AstBuilder<'a>, term: Term) -> R<PropertyKey<'a>> {
     let ty = type_atom(term).ok_or("Missing key type")?;
     if ty == a::identifier() {
-        return Ok(PropertyKey::StaticIdentifier(
-            b.alloc(ident_name(b, &str_val(term, a::name()))),
-        ));
+        return Ok(PropertyKey::StaticIdentifier(OxcBox::new_in(
+            ident_name(b, &str_val(term, a::name())),
+            b,
+        )));
     }
     if ty == a::literal() || ty == a::string_literal() {
         let vt = get(term, a::value());
         if let Some(t) = vt {
             if t.decode_as_binary().is_ok() {
-                return Ok(PropertyKey::StringLiteral(b.alloc(beam_str_lit(b, t)?)));
+                return Ok(PropertyKey::StringLiteral(OxcBox::new_in(
+                    beam_str_lit(b, t)?,
+                    b,
+                )));
             }
             if let Ok(n) = t.decode::<f64>() {
-                return Ok(PropertyKey::NumericLiteral(b.alloc(NumericLiteral {
-                    node_id: nid(),
-                    span: SPAN,
-                    value: n,
-                    raw: None,
-                    base: NumberBase::Decimal,
-                })));
+                return Ok(PropertyKey::NumericLiteral(OxcBox::new_in(
+                    NumericLiteral::new(SPAN, n, None, NumberBase::Decimal, b),
+                    b,
+                )));
             }
             if let Ok(n) = t.decode::<i64>() {
-                return Ok(PropertyKey::NumericLiteral(b.alloc(NumericLiteral {
-                    node_id: nid(),
-                    span: SPAN,
-                    value: n as f64,
-                    raw: None,
-                    base: NumberBase::Decimal,
-                })));
+                return Ok(PropertyKey::NumericLiteral(OxcBox::new_in(
+                    NumericLiteral::new(SPAN, n as f64, None, NumberBase::Decimal, b),
+                    b,
+                )));
             }
         }
     }
     if ty == a::numeric_literal() {
-        return Ok(PropertyKey::NumericLiteral(b.alloc(NumericLiteral {
-            node_id: nid(),
-            span: SPAN,
-            value: f64_val(term, a::value()),
-            raw: None,
-            base: NumberBase::Decimal,
-        })));
+        return Ok(PropertyKey::NumericLiteral(OxcBox::new_in(
+            NumericLiteral::new(
+                SPAN,
+                f64_val(term, a::value()),
+                None,
+                NumberBase::Decimal,
+                b,
+            ),
+            b,
+        )));
     }
     Ok(PropertyKey::from(build_expr(b, term)?))
 }
 
 fn build_obj_props<'a>(
-    b: AstBuilder<'a>,
+    b: &AstBuilder<'a>,
     list: Vec<Term>,
 ) -> R<OxcVec<'a, ObjectPropertyKind<'a>>> {
-    let mut out = b.vec_with_capacity(list.len());
+    let mut out = OxcVec::with_capacity_in(list.len(), b);
     for p in &list {
         if type_eq(*p, a::spread_element()) {
             let arg = build_expr(b, get(*p, a::argument()).ok_or("Missing spread :argument")?)?;
-            out.push(ObjectPropertyKind::SpreadProperty(
-                b.alloc(b.spread_element(SPAN, arg)),
-            ));
+            out.push(ObjectPropertyKind::SpreadProperty(OxcBox::new_in(
+                SpreadElement::new(SPAN, arg, b),
+                b,
+            )));
         } else {
             let key = build_prop_key(b, get(*p, a::key()).ok_or("Missing :key")?)?;
             let val = build_expr(b, get(*p, a::value()).ok_or("Missing :value")?)?;
@@ -1380,8 +1500,8 @@ fn build_obj_props<'a>(
                 "set" => PropertyKind::Set,
                 _ => PropertyKind::Init,
             };
-            out.push(ObjectPropertyKind::ObjectProperty(b.alloc(
-                b.object_property(
+            out.push(ObjectPropertyKind::ObjectProperty(OxcBox::new_in(
+                ObjectProperty::new(
                     SPAN,
                     kind,
                     key,
@@ -1389,24 +1509,27 @@ fn build_obj_props<'a>(
                     bool_val(*p, a::method()),
                     bool_val(*p, a::shorthand()),
                     bool_val(*p, a::computed()),
+                    b,
                 ),
+                b,
             )));
         }
     }
     Ok(out)
 }
 
-fn build_args<'a>(b: AstBuilder<'a>, list: Vec<Term>) -> R<OxcVec<'a, Argument<'a>>> {
-    let mut out = b.vec_with_capacity(list.len());
+fn build_args<'a>(b: &AstBuilder<'a>, list: Vec<Term>) -> R<OxcVec<'a, Argument<'a>>> {
+    let mut out = OxcVec::with_capacity_in(list.len(), b);
     for a_term in &list {
         if type_eq(*a_term, a::spread_element()) {
             let arg = build_expr(
                 b,
                 get(*a_term, a::argument()).ok_or("Missing spread :argument")?,
             )?;
-            out.push(Argument::SpreadElement(
-                b.alloc(b.spread_element(SPAN, arg)),
-            ));
+            out.push(Argument::SpreadElement(OxcBox::new_in(
+                SpreadElement::new(SPAN, arg, b),
+                b,
+            )));
         } else {
             out.push(Argument::from(build_expr(b, *a_term)?));
         }

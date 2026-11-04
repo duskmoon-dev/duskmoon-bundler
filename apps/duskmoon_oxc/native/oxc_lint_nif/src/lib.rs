@@ -164,8 +164,12 @@ fn lint<'a>(
         })
         .parse();
 
-    if !ret.errors.is_empty() {
-        let error_msgs: Vec<String> = ret.errors.iter().map(|e| e.message.to_string()).collect();
+    if !ret.diagnostics.is_empty() {
+        let error_msgs: Vec<String> = ret
+            .diagnostics
+            .iter()
+            .map(|e| e.message.to_string())
+            .collect();
         return Ok((atoms::error(), error_msgs).encode(env));
     }
 
@@ -185,10 +189,7 @@ fn lint<'a>(
         None,
     );
 
-    let semantic = SemanticBuilder::new()
-        .with_cfg(true)
-        .build(&ret.program)
-        .semantic;
+    let semantic = SemanticBuilder::new_linter().build(&ret.program).semantic;
 
     let module_record = Arc::new(ModuleRecord::default());
     let ctx_host = oxc_linter::ContextSubHost::new(semantic, module_record, 0, Default::default());
@@ -212,14 +213,9 @@ fn lint<'a>(
                 labels: msg
                     .error
                     .labels
-                    .as_ref()
-                    .map(|labels| {
-                        labels
-                            .iter()
-                            .map(|l| (l.offset() as u32, (l.offset() + l.len()) as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                    .iter()
+                    .map(|label| (label.offset() as u32, (label.offset() + label.len()) as u32))
+                    .collect(),
                 help: msg.error.help.as_ref().map(|h| h.to_string()),
             }
         })

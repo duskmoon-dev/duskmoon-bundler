@@ -1,8 +1,12 @@
 { pkgs, lib, config, inputs, ... }:
-let pkgs-stable = import inputs.nixpkgs-stable { system = pkgs.stdenv.system; };
+let
+  pkgs-stable = import inputs.nixpkgs-stable { system = pkgs.stdenv.system; };
+  pkgs-rust = import inputs.nixpkgs-rust { system = pkgs.stdenv.system; };
 in {
   env.DUSKMOON_NATIVE_MODE = "source";
-  packages = with pkgs-stable; [ git tailwindcss_4 zig_0_16 cargo rustc clang pkg-config ]
+  packages = with pkgs-stable; [ git tailwindcss_4 zig_0_16 clang pkg-config ]
+    # Vize requires Rust 1.99; keep the other toolchains on the stable baseline.
+    ++ [ pkgs-rust.cargo pkgs-rust.rustc ]
     ++ lib.optionals stdenv.isLinux [ inotify-tools ];
   languages.elixir.enable = true;
   languages.elixir.package = pkgs-stable.beam28Packages.elixir;

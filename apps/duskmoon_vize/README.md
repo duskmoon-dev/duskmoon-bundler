@@ -98,14 +98,28 @@ The IR exposes every Vue construct as Elixir maps with `:kind` atoms:
 | `:set_prop` | `:attr="expr"` |
 | `:set_html` | `v-html` |
 | `:set_dynamic_props` | `v-bind="obj"` |
+| `:set_merged_props` | Ordered literal, computed-key, and `v-bind` object sources |
 | `:set_event` | `@event="handler"` |
 | `:if_node` | `v-if` / `v-else-if` / `v-else` |
 | `:for_node` | `v-for` |
+| `:key` | Reactive keyed sub-block |
 | `:create_component` | `<Component />` |
 | `:directive` | `v-show`, `v-model`, custom |
 
-Static expressions are tagged as `{:static, "value"}` tuples,
+Static expressions are tagged as `{:static_, "value"}` tuples,
 dynamic expressions are plain strings.
+
+Vize 0.680 exposes ordered `:sources` for merged props and distinguishes a
+sibling node `:anchor` from a numeric insertion `:anchor_index`. Component
+props include `:value_kind` and optional `:handler_modifiers`. In raw IR,
+`:model_update` values contain the authored assignment target and
+`:model_modifiers` values contain the modifier object expression, replacing
+the older generated `__RAW__` callback strings. IR consumers must interpret
+that provenance; `compile_sfc/2` and `compile_vapor/2` generate the callbacks.
+
+`compile_template/2`, `vapor_ir/1`, and `vapor_split/1` follow Vize's standard
+recovery policy: fatal diagnostics return errors, while accepted input such
+as Vue's `<div />` retains recoverable notices in the result's `:diagnostics`.
 
 ### Vapor Split (for Phoenix LiveView)
 
