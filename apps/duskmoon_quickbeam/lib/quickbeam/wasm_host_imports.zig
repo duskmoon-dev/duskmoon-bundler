@@ -154,7 +154,7 @@ pub fn prepare(imports: []const ImportSpec, runtime_data: ?*anyopaque, mode: Cal
 
     for (imports, 0..) |import, index| {
         const module_index = find_module_index(module_names_list.items, import.module_name) orelse blk: {
-            const module_name = try std.heap.c_allocator.dupeZ(u8, import.module_name);
+            const module_name = try std.heap.c_allocator.dupeSentinel(u8, import.module_name, 0);
             try module_names_list.append(std.heap.c_allocator, module_name);
             try module_counts.append(std.heap.c_allocator, 0);
             break :blk module_names_list.items.len - 1;
@@ -198,9 +198,9 @@ pub fn prepare(imports: []const ImportSpec, runtime_data: ?*anyopaque, mode: Cal
         const symbol_index = module_offsets[module_index];
         module_offsets[module_index] += 1;
 
-        const symbol_name = try std.heap.c_allocator.dupeZ(u8, import.symbol);
-        const signature = try std.heap.c_allocator.dupeZ(u8, import.signature);
-        const callback_name = try std.heap.c_allocator.dupeZ(u8, import.callback_name);
+        const symbol_name = try std.heap.c_allocator.dupeSentinel(u8, import.symbol, 0);
+        const signature = try std.heap.c_allocator.dupeSentinel(u8, import.signature, 0);
+        const callback_name = try std.heap.c_allocator.dupeSentinel(u8, import.callback_name, 0);
         const attachment = try std.heap.c_allocator.create(Attachment);
 
         attachment.* = .{

@@ -47,6 +47,10 @@ defmodule PackageStageTest do
     end
 
     assert File.exists?(Path.join([output, "duskmoon_quickbeam", "priv/c_src/quickjs.c"]))
+    quickbeam = Path.join(output, "duskmoon_quickbeam")
+    assert File.regular?(Path.join(quickbeam, "lib/quickbeam/vm.ex"))
+    assert File.regular?(Path.join(quickbeam, "priv/vendor/unicode-segmenter/LICENSE"))
+    refute File.exists?(Path.join(quickbeam, "lib/quickbeam/.Elixir.QuickBEAM.Native.zig"))
     assert File.exists?(Path.join([output, "duskmoon_oxc", "native/oxc_ex_nif/src/lib.rs"]))
     assert File.exists?(Path.join([output, "duskmoon_bundler", "priv/ts/dev/hmr-client.ts"]))
     assert File.exists?(Path.join([output, "duskmoon_bundler_runtime", "LICENSE"]))

@@ -25,7 +25,7 @@ pub export fn napi_create_threadsafe_function(
     call_js_cb: ?nt.napi_threadsafe_function_call_js,
     result: ?*napi_threadsafe_function,
 ) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
 
     const tsfn = gpa.create(ThreadSafeFunction) catch return env.genericFailure();
@@ -44,12 +44,12 @@ pub export fn napi_create_threadsafe_function(
 }
 
 pub export fn napi_call_threadsafe_function(func_: napi_threadsafe_function, data: ?*anyopaque, is_blocking: nt.napi_threadsafe_function_call_mode) callconv(.c) napi_status {
-    const func: *ThreadSafeFunction = func_ orelse return @intFromEnum(Status.invalid_arg);
+    const func: *ThreadSafeFunction = func_ orelse return @backingInt(Status.invalid_arg);
     func.lock.lock();
 
     if (func.closing.load(.seq_cst)) {
         func.lock.unlock();
-        return @intFromEnum(Status.closing);
+        return @backingInt(Status.closing);
     }
 
     if (is_blocking == nt.napi_tsfn_blocking) {
@@ -57,19 +57,19 @@ pub export fn napi_call_threadsafe_function(func_: napi_threadsafe_function, dat
             func.condvar.wait(&func.lock);
             if (func.closing.load(.seq_cst)) {
                 func.lock.unlock();
-                return @intFromEnum(Status.closing);
+                return @backingInt(Status.closing);
             }
         }
     } else {
         if (func.max_queue_size > 0 and func.queue.items.len >= func.max_queue_size) {
             func.lock.unlock();
-            return @intFromEnum(Status.queue_full);
+            return @backingInt(Status.queue_full);
         }
     }
 
     func.queue.append(gpa, data) catch {
         func.lock.unlock();
-        return @intFromEnum(Status.generic_failure);
+        return @backingInt(Status.generic_failure);
     };
     func.lock.unlock();
 
@@ -77,36 +77,36 @@ pub export fn napi_call_threadsafe_function(func_: napi_threadsafe_function, dat
         types.enqueue(rd, .{ .napi_tsfn_call = .{ .tsfn = func, .data = null } });
     }
 
-    return @intFromEnum(Status.ok);
+    return @backingInt(Status.ok);
 }
 
 pub export fn napi_acquire_threadsafe_function(func_: napi_threadsafe_function) callconv(.c) napi_status {
-    const func: *ThreadSafeFunction = func_ orelse return @intFromEnum(Status.invalid_arg);
+    const func: *ThreadSafeFunction = func_ orelse return @backingInt(Status.invalid_arg);
     _ = func.thread_count.fetchAdd(1, .seq_cst);
-    return @intFromEnum(Status.ok);
+    return @backingInt(Status.ok);
 }
 
 pub export fn napi_release_threadsafe_function(func_: napi_threadsafe_function, mode: nt.napi_threadsafe_function_release_mode) callconv(.c) napi_status {
-    const func: *ThreadSafeFunction = func_ orelse return @intFromEnum(Status.invalid_arg);
+    const func: *ThreadSafeFunction = func_ orelse return @backingInt(Status.invalid_arg);
     const prev = func.thread_count.fetchSub(1, .seq_cst);
     if (mode == .abort or prev == 1) {
         func.closing.store(true, .seq_cst);
         func.condvar.broadcast();
     }
-    return @intFromEnum(Status.ok);
+    return @backingInt(Status.ok);
 }
 
 pub export fn napi_ref_threadsafe_function(_: napi_env, _: napi_threadsafe_function) callconv(.c) napi_status {
-    return @intFromEnum(Status.ok);
+    return @backingInt(Status.ok);
 }
 
 pub export fn napi_unref_threadsafe_function(_: napi_env, _: napi_threadsafe_function) callconv(.c) napi_status {
-    return @intFromEnum(Status.ok);
+    return @backingInt(Status.ok);
 }
 
 pub export fn napi_get_threadsafe_function_context(func_: napi_threadsafe_function, result: ?*?*anyopaque) callconv(.c) napi_status {
-    const func: *ThreadSafeFunction = func_ orelse return @intFromEnum(Status.invalid_arg);
-    const r = result orelse return @intFromEnum(Status.invalid_arg);
+    const func: *ThreadSafeFunction = func_ orelse return @backingInt(Status.invalid_arg);
+    const r = result orelse return @backingInt(Status.invalid_arg);
     r.* = func.ctx;
-    return @intFromEnum(Status.ok);
+    return @backingInt(Status.ok);
 }

@@ -41,7 +41,11 @@ defmodule QuickBEAM do
       automatically bundled — imports are resolved from the filesystem and
       `node_modules/`, then compiled into a single script via OXC.
     * `:memory_limit` — maximum JS heap in bytes (default: 256 MB)
-    * `:max_stack_size` — maximum JS call stack in bytes (default: 4 MB)
+    * `:max_stack_size` — maximum JS call stack in bytes (default: 8 MB)
+    * `:wasm_stack_size` — WASM operand stack in bytes for guests started via the JS
+      `WebAssembly.instantiate` path (default: 65536). Distinct from `:max_stack_size`
+      (the JS call stack); raise it for guests whose deep init overflows the 64 KB default.
+    * `:wasm_heap_size` — WASM auxiliary heap in bytes for the same path (default: 65536)
     * `:max_convert_depth` — maximum nesting depth for JS→BEAM value conversion (default: 32)
     * `:max_convert_nodes` — maximum total nodes for JS→BEAM value conversion (default: 10,000)
 
@@ -83,6 +87,10 @@ defmodule QuickBEAM do
 
     * `:memory_limit` — maximum JS heap in bytes (default: 256 MB)
     * `:max_stack_size` — maximum JS call stack in bytes (default: 8 MB)
+    * `:wasm_stack_size` — WASM operand stack in bytes for guests started via the JS
+      `WebAssembly.instantiate` path (default: 65536). Distinct from `:max_stack_size`
+      (the JS call stack); raise it for guests whose deep init overflows the 64 KB default.
+    * `:wasm_heap_size` — WASM auxiliary heap in bytes for the same path (default: 65536)
     * `:max_convert_depth` — maximum nesting depth for JS→BEAM value conversion (default: 32)
     * `:max_convert_nodes` — maximum total nodes for JS→BEAM value conversion (default: 10,000)
   """
@@ -231,10 +239,20 @@ defmodule QuickBEAM do
   `napi_module_register`) entry point is called. Returns the addon's exports
   as an Elixir term.
 
+  Addon initialization is process-global native state. QuickBEAM initializes a
+  canonical addon path once per BEAM instance. Loading that path again in the
+  same runtime reuses its cached exports, so multiple global aliases are safe.
+  Loading it in another runtime, or after `reset/1`, returns
+  `{:error, {:addon_already_initialized, canonical_path}}` by default.
+
   ## Options
 
     * `:as` - set the addon's exports as a global JS variable with this name,
       making the functions callable from `eval/3` and `call/3`
+    * `:allow_reinitialization` - opt into calling the native initializer again
+      in a different JavaScript context. Defaults to `false`. Only enable this
+      when the addon explicitly documents multi-environment initialization as
+      safe; incompatible addons can terminate the BEAM VM.
 
   ## Examples
 
@@ -363,7 +381,7 @@ defmodule QuickBEAM do
   """
   @spec get_global(runtime(), String.t()) :: js_result()
   def get_global(runtime, name) when is_binary(name) do
-    GenServer.call(runtime, {:get_global, name}, :infinity)
+    QuickBEAM.Runtime.get_global(runtime, name)
   end
 
   @doc """
@@ -381,7 +399,7 @@ defmodule QuickBEAM do
   """
   @spec set_global(runtime(), String.t(), term()) :: :ok
   def set_global(runtime, name, value) when is_binary(name) do
-    GenServer.call(runtime, {:set_global, name, value}, :infinity)
+    QuickBEAM.Runtime.set_global(runtime, name, value)
   end
 
   @doc """

@@ -17,7 +17,10 @@ runs:
     - uses: jdx/mise-action@v5.2.2
       with:
         tool_versions: |
-          zig 0.16.0
+          zig 0.17.1
+    - name: Select Zig patch toolchain
+      shell: bash
+      run: echo "ZIG_EXECUTABLE_PATH=$(command -v zig)" >> "$GITHUB_ENV"
     - uses: oven-sh/setup-bun@v2
       with:
         bun-version: 1.4.0
@@ -28,7 +31,7 @@ runs:
     - uses: actions/cache@v6
       with:
         path: deps
-        key: ${{ github.repository }}-${{ runner.os }}-${{ runner.arch }}-glibc-source-elixir1.18-otp${{ inputs.otp }}-rust-stable-zig0.16-${{ hashFiles('mix.lock', '**/Cargo.lock') }}
+        key: ${{ github.repository }}-${{ runner.os }}-${{ runner.arch }}-glibc-source-elixir1.18-otp${{ inputs.otp }}-rust-stable-zig0.17.1-${{ hashFiles('mix.lock', '**/Cargo.lock') }}
     - name: Fingerprint native build toolchain
       id: native-toolchain
       shell: bash
@@ -64,9 +67,10 @@ runs:
     - uses: actions/cache@v6
       with:
         path: ~/.bun/install/cache
-        key: ${{ github.repository }}-bun1.4.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock') }}
+        key: ${{ github.repository }}-bun1.4.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock', 'apps/duskmoon_quickbeam/bun.lock') }}
     - name: Install locked toolchain dependencies
       shell: bash
       run: |
         mix deps.get --check-locked
         bun install --frozen-lockfile
+        bun install --cwd apps/duskmoon_quickbeam --frozen-lockfile

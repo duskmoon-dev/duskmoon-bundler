@@ -19,7 +19,7 @@ pub export fn napi_create_async_work(
     data: ?*anyopaque,
     result: ?*napi_async_work,
 ) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const execute = execute_ orelse return env.invalidArg();
 
@@ -36,7 +36,7 @@ pub export fn napi_create_async_work(
 }
 
 pub export fn napi_delete_async_work(env_: napi_env, work_: napi_async_work) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const work: *AsyncWork = work_ orelse return env.invalidArg();
     if (work.status.load(.seq_cst) == .started and work.thread == null) return env.genericFailure();
     work.deinit();
@@ -44,7 +44,7 @@ pub export fn napi_delete_async_work(env_: napi_env, work_: napi_async_work) cal
 }
 
 pub export fn napi_queue_async_work(env_: napi_env, work_: napi_async_work) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const work: *AsyncWork = work_ orelse return env.invalidArg();
     if (work.rd == null) return env.genericFailure();
 
@@ -67,7 +67,7 @@ fn asyncWorkRunner(work: *AsyncWork) void {
 }
 
 pub export fn napi_cancel_async_work(env_: napi_env, work_: napi_async_work) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const work: *AsyncWork = work_ orelse return env.invalidArg();
     if (work.status.cmpxchgStrong(.pending, .cancelled, .seq_cst, .seq_cst) == null) {
         return env.ok();

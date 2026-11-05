@@ -17,7 +17,14 @@ end
 
 Published packages use precompiled NIFs on supported platforms, including Linux
 amd64 and arm64 with either GNU libc or musl (Alpine). Zig is only needed when
-building from source; use the repository's Zig 0.16 toolchain for source builds.
+building from source; use the repository's Zig 0.17.1 toolchain for source builds.
+Outside `devenv`, set `ZIG_EXECUTABLE_PATH` to the Zig 0.17.1 executable;
+Zigler's default PATH lookup expects exactly 0.17.0.
+
+Precompiled NIFs use a portable CPU baseline. Native development and CI set
+`DUSKMOON_NATIVE_MODE=source`; strict consumers set `DUSKMOON_NATIVE_MODE=precompiled`
+to require a checksum-verified release artifact. Force recompilation after changing
+CPU or optimization settings.
 
 Alpine consumers require 9.16.10 or later, which fixes QuickJS initialization on musl.
 
@@ -34,6 +41,64 @@ QuickBEAM.eval(rt, "function greet(name) { return 'hi ' + name }")
 
 QuickBEAM.stop(rt)
 ```
+
+## Isolated BEAM execution
+
+`QuickBEAM.VM` decodes QuickJS bytecode and evaluates it with an isolated BEAM
+interpreter. Each evaluation owns its JavaScript heap, globals, jobs, handlers,
+and resource accounting. Long-lived SSR bundles can be pinned explicitly so
+request processes copy only a lightweight handle:
+
+```elixir
+{:ok, source} = File.read("priv/server.js")
+{:ok, program} = QuickBEAM.VM.compile(source, filename: "server.js")
+{:ok, pinned} = QuickBEAM.VM.pin(program)
+
+try do
+  QuickBEAM.VM.call(pinned, "render", [%{title: "Catalog"}],
+    profile: :ssr,
+    handlers: %{"load_props" => fn [] -> %{title: "Catalog"} end},
+    max_steps: 20_000_000,
+    memory_limit: 64 * 1024 * 1024,
+    timeout: 2_000
+  )
+after
+  QuickBEAM.VM.unpin(pinned)
+end
+```
+
+The program store is fixed-capacity and has no implicit eviction or fallback.
+Applications should have one supervised lifecycle owner pin each bundle during
+startup and unpin it during replacement or normal shutdown.
+
+`QuickBEAM.VM.call/4` deliberately mirrors `QuickBEAM.call/4`, but their
+lifecycles differ: native calls reuse persistent JavaScript state, while every
+VM call initializes a fresh heap from the immutable program before invoking the
+global function.
+
+### Isolated VM limitations
+
+- Programs and serialized bytecode are locked to the exact vendored QuickJS
+  bytecode version and ABI fingerprint. Recompile programs when upgrading.
+- Source compilation uses a short-lived native QuickJS compiler; execution is
+  performed by the BEAM interpreter.
+- Each `eval` or `call` owns fresh globals, heap objects, jobs, and handlers.
+  Mutations never persist into another evaluation.
+- The BEAM interpreter implements a bounded, tested JavaScript subset rather
+  than every native QuickJS feature. Unsupported bytecode and semantics fail
+  explicitly without falling back to native execution.
+- `memory_limit` bounds deterministic logical VM allocation. It is distinct
+  from endpoint BEAM process memory, which is reported by `measure/2` and
+  `measure_call/4`. Each evaluation permits at most 64 concurrently outstanding
+  asynchronous `Beam.call` handler operations.
+- `:core` and `:ssr` select fixed builtin profiles. They do not expose the full
+  browser, Node.js, DOM, WASM, or native-addon surfaces of a native runtime.
+- Pinned storage has fixed capacity and residency budgets, no implicit eviction,
+  and no stale-handle fallback.
+
+The bounded BEAM compiler remains an internal, release-quarantined benchmark
+and conformance tier. It is not selectable through the public `QuickBEAM.VM`
+evaluation options; production evaluation always uses the interpreter.
 
 ## BEAM integration
 
@@ -186,7 +251,7 @@ QuickBEAM.Context.start_link(pool: pool)                         # 429 KB (all b
 ```
 
 Available groups: `:fetch`, `:websocket`, `:worker`, `:channel`,
-`:eventsource`, `:url`, `:crypto`, `:compression`, `:buffer`, `:dom`,
+`:eventsource`, `:intl`, `:url`, `:crypto`, `:compression`, `:buffer`, `:dom`,
 `:console`, `:storage`, `:locks`. Dependencies auto-resolve.
 
 ### Per-context resource limits
@@ -358,8 +423,9 @@ Standard browser APIs backed by BEAM primitives, not JS polyfills:
 | `BroadcastChannel` | `:pg` (distributed) |
 | `navigator.locks` | GenServer + monitors |
 | `localStorage` | ETS |
+| `Intl.Segmenter` (`grapheme` granularity) | `unicode-segmenter` 0.17.0 |
 | `crypto.subtle` | `:crypto` |
-| `crypto.getRandomValues`, `randomUUID` | Zig `std.crypto.random` |
+| `crypto.getRandomValues`, `randomUUID` | Native Zig secure randomness |
 | `ReadableStream`, `WritableStream`, `TransformStream` | Pure TS with `pipeThrough`/`pipeTo` |
 | `TextEncoder`, `TextDecoder` | Native Zig (UTF-8) |
 | `TextEncoderStream`, `TextDecoderStream` | Stream + Zig encoding |
@@ -448,7 +514,7 @@ files = [
 
 ## npm packages
 
-QuickBEAM can use [`npm_ex`](https://hex.pm/packages/npm) to install npm packages without Node.js. Add it when you want Mix-powered npm installs:
+QuickBEAM can use [`duskmoon_npm`](https://hex.pm/packages/duskmoon_npm) to install npm packages without Node.js. Add it when you want Mix-powered npm installs:
 
 ```elixir
 def deps do
@@ -522,6 +588,18 @@ See [`bench/`](https://github.com/elixir-volt/quickbeam/tree/master/bench) for d
 | Sandboxed user code | `QuickBEAM` or `Context` with `apis: false` | Memory limits, reduction limits, timeouts |
 
 ## Development
+
+From the repository root, install the app-local test fixtures:
+
+```sh
+bun install --cwd apps/duskmoon_quickbeam --frozen-lockfile
+```
+
+The Svelte fixture keeps upstream QuickBEAM 0.11.3's `devalue` 5.8.1 pin.
+Later versions access `ArrayBuffer` during initialization, which the isolated
+BEAM interpreter does not implement.
+
+Run the project quality gate:
 
 ```sh
 mix ci

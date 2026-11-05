@@ -80,13 +80,19 @@ defmodule DuskmoonToolchain.PackageStage do
     source = Path.join([root, "apps", to_string(app)])
     target = Path.join(output, to_string(app))
     config = Mix.Project.in_project(app, source, fn _ -> Mix.Project.config() end)
-    patterns = Keyword.fetch!(config, :package) |> Keyword.fetch!(:files)
+    package = Keyword.fetch!(config, :package)
+    patterns = Keyword.fetch!(package, :files)
+    exclusions = package |> Keyword.get(:exclude_patterns, []) |> Enum.map(&Regex.compile!/1)
 
     paths =
       (patterns ++ ["native", ".cargo"])
       |> Enum.flat_map(&Path.wildcard(Path.join(source, &1), match_dot: true))
       |> Enum.flat_map(&package_files/1)
       |> Enum.filter(&File.regular?/1)
+      |> Enum.reject(fn path ->
+        relative = Path.relative_to(path, source)
+        Enum.any?(exclusions, &Regex.match?(&1, relative))
+      end)
       |> Enum.reject(fn path ->
         Enum.any?(
           Path.split(Path.relative_to(path, source)),

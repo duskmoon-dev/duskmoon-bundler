@@ -28,7 +28,7 @@ config :my_app, MyAppWeb.Endpoint,
 
 Use `devenv shell` for the Elixir/OTP, Rust, Zig, Bun and Tailwind toolchains. Development explicitly builds candidate native sources; the ordinary UI consumer requires published artifacts.
 
-Rust source builds require Rust 1.99 or later. The development environment supplies Rust from a separately locked nixpkgs input while retaining Zig 0.16 and the other toolchain inputs.
+Rust source builds require Rust 1.99 or later. QuickBEAM uses Zig 0.17.1 and Zigler 0.17. The development environment supplies Rust and Zig from a separately locked nixpkgs input, with Zig's patch release pinned by source hash. Other toolchains retain their stable baseline.
 
 ```sh
 bun install --frozen-lockfile

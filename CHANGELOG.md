@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Upgrade Zig to 0.17.1 and Zigler to 0.17, and synchronize QuickBEAM with
+  upstream 0.11.3, including QuickJS-NG 0.15.1, isolated BEAM execution,
+  grapheme segmentation, and native lifecycle fixes.
+
 ## 10.0.10 - 2026-10-30
 
 - Keep Hologram's npm and Hex solver build tools out of the production

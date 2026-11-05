@@ -1,6 +1,8 @@
 defmodule QuickBEAM.Native do
   @moduledoc false
 
+  alias QuickBEAM.Native.Platform
+
   @native_version Mix.Project.config()[:version]
   @build_from_source QuickBEAM.NativePolicy.force_build!(
                        :duskmoon_quickbeam,
@@ -10,25 +12,28 @@ defmodule QuickBEAM.Native do
                      )
 
   @c_src_dir Application.app_dir(:duskmoon_quickbeam, "priv/c_src")
+  @platform Platform.current()
   @hidden_cflags ["-fvisibility=hidden"]
+  @lexbor_port @platform.lexbor_port
   @lexbor_base_cflags [
     "-std=c99",
     "-DLEXBOR_STATIC",
     "-I#{@c_src_dir}",
-    "-I#{@c_src_dir}/lexbor/ports/posix"
+    "-I#{@c_src_dir}/lexbor/ports/#{@lexbor_port}"
   ]
-  @lexbor_cflags @lexbor_base_cflags ++ @hidden_cflags
+  @lexbor_cflags @lexbor_base_cflags ++ Platform.lexbor_cflags(@platform) ++ @hidden_cflags
 
   @lexbor_src Path.wildcard("priv/c_src/lexbor/{core,dom,html,tag,ns,css,selectors}/**/*.c")
-              |> Enum.concat(Path.wildcard("priv/c_src/lexbor/ports/posix/**/*.c"))
+              |> Enum.concat(Path.wildcard("priv/c_src/lexbor/ports/#{@lexbor_port}/**/*.c"))
               |> Enum.sort()
               |> Enum.map(fn path ->
                 {:priv, String.replace_prefix(path, "priv/", ""), @lexbor_cflags}
               end)
 
+  @wamr_platform @platform.wamr_platform
+
   @wamr_base_cflags [
     "-std=c11",
-    "-D_GNU_SOURCE",
     "-DWASM_ENABLE_INTERP=1",
     "-DWASM_ENABLE_AOT=0",
     "-DWASM_ENABLE_FAST_INTERP=0",
@@ -36,6 +41,7 @@ defmodule QuickBEAM.Native do
     "-DWASM_ENABLE_LIBC_WASI=0",
     "-DWASM_ENABLE_MULTI_MODULE=0",
     "-DWASM_ENABLE_BULK_MEMORY=1",
+    "-DWASM_ENABLE_BULK_MEMORY_OPT=1",
     "-DWASM_ENABLE_REF_TYPES=1",
     "-DWASM_ENABLE_SIMD=0",
     "-DWASM_ENABLE_TAIL_CALL=1",
@@ -71,9 +77,9 @@ defmodule QuickBEAM.Native do
     "-I#{@c_src_dir}/wamr/shared/utils",
     "-I#{@c_src_dir}/wamr/shared/platform/include",
     "-I#{@c_src_dir}/wamr/shared/mem-alloc",
-    "-I#{@c_src_dir}/wamr/shared/platform/#{if(:os.type() == {:unix, :darwin}, do: "darwin", else: "linux")}"
+    "-I#{@c_src_dir}/wamr/shared/platform/#{@wamr_platform}"
   ]
-  @wamr_cflags @wamr_base_cflags ++ @hidden_cflags
+  @wamr_cflags @wamr_base_cflags ++ Platform.wamr_cflags(@platform) ++ @hidden_cflags
 
   @wamr_src (Path.wildcard("priv/c_src/wamr/interpreter/wasm_loader.c") ++
                Path.wildcard("priv/c_src/wamr/interpreter/wasm_interp_classic.c") ++
@@ -98,17 +104,7 @@ defmodule QuickBEAM.Native do
                Path.wildcard("priv/c_src/wamr/shared/utils/runtime_timer.c") ++
                Path.wildcard("priv/c_src/wamr/shared/mem-alloc/mem_alloc.c") ++
                Path.wildcard("priv/c_src/wamr/shared/mem-alloc/ems/*.c") ++
-               Path.wildcard("priv/c_src/wamr/shared/platform/common/posix/posix_malloc.c") ++
-               Path.wildcard("priv/c_src/wamr/shared/platform/common/posix/posix_memmap.c") ++
-               Path.wildcard("priv/c_src/wamr/shared/platform/common/posix/posix_thread.c") ++
-               Path.wildcard("priv/c_src/wamr/shared/platform/common/posix/posix_time.c") ++
-               Path.wildcard("priv/c_src/wamr/shared/platform/common/posix/posix_blocking_op.c") ++
-               [
-                 if(:os.type() == {:unix, :darwin},
-                   do: "priv/c_src/wamr/shared/platform/darwin/platform_init.c",
-                   else: "priv/c_src/wamr/shared/platform/linux/platform_init.c"
-                 )
-               ] ++
+               Platform.wamr_sources(@platform) ++
                ["priv/c_src/wamr/common/arch/invokeNative_general.c"] ++
                ["priv/c_src/wamr/shared/platform/common/memory/mremap.c"] ++
                ["priv/c_src/wamr_bridge.c"])
@@ -120,14 +116,15 @@ defmodule QuickBEAM.Native do
   @quickjs_cflags if System.get_env("QUICKBEAM_UBSAN") == "1",
                     do: [
                       "-std=c11",
-                      "-D_GNU_SOURCE",
                       "-fsanitize=undefined",
                       "-fno-sanitize=function,unsigned-integer-overflow",
                       "-fsanitize-trap=undefined"
                     ],
-                    else: ["-std=c11", "-D_GNU_SOURCE"]
+                    else: ["-std=c11"]
 
-  @quickjs_cflags @quickjs_cflags ++ @hidden_cflags
+  # Bytecode disassembly needs opcode names even when release builds define NDEBUG.
+  @quickjs_cflags @quickjs_cflags ++
+                    ["-DENABLE_DUMPS"] ++ Platform.quickjs_cflags(@platform) ++ @hidden_cflags
 
   if @build_from_source and
        is_nil(System.get_env("ZIG_LOCAL_CACHE_DIR")) do
@@ -135,6 +132,12 @@ defmodule QuickBEAM.Native do
     File.mkdir_p!(zig_local_cache_dir)
     System.put_env("ZIG_LOCAL_CACHE_DIR", zig_local_cache_dir)
   end
+
+  # Release artifacts must not inherit the build runner's CPU features.
+  @build_flags (case System.get_env("QUICKBEAM_CPU") do
+                  nil -> []
+                  cpu -> ["-Dcpu=#{cpu}"]
+                end)
 
   use ZiglerPrecompiled,
     otp_app: :duskmoon_quickbeam,
@@ -152,22 +155,15 @@ defmodule QuickBEAM.Native do
     ),
     zig_code_path: "quickbeam.zig",
     optimize: :env,
+    build_flags: @build_flags,
     c: [
       headers: [
         qjs: {:priv, "c_src/quickjs.h"},
         lxb: {:priv, "c_src/lexbor_bridge.h"},
         wamr: {:priv, "c_src/wamr_zig.h"}
       ],
-      include_dirs: [
-        {:priv, "c_src"},
-        {:priv, "c_src/lexbor/ports/posix"},
-        {:priv, "c_src/wamr/include"},
-        {:priv, "c_src/wamr/interpreter"},
-        {:priv, "c_src/wamr/common"},
-        {:priv, "c_src/wamr/shared/utils"},
-        {:priv, "c_src/wamr/shared/platform/include"},
-        {:priv, "c_src/wamr/shared/mem-alloc"}
-      ],
+      include_dirs: Platform.include_dirs(@platform),
+      link_lib: Platform.link_libraries(@platform),
       src:
         [
           {:priv, "c_src/quickjs.c", @quickjs_cflags},
@@ -222,7 +218,7 @@ defmodule QuickBEAM.Native do
       pool_dom_text: 3,
       pool_dom_html: 2,
       disasm_bytecode: 1,
-      load_addon: 3,
+      load_addon: 4,
       wasm_compile: 1,
       wasm_start: 3,
       wasm_start_with_imports: 5,

@@ -157,7 +157,7 @@ fn convert_list(ctx: *qjs.JSContext, env: ?*e.ErlNifEnv, term: e.ErlNifTerm, dep
 
 fn map_iterator_first() e.ErlNifMapIteratorEntry {
     return switch (@typeInfo(e.ErlNifMapIteratorEntry)) {
-        .@"enum" => @as(e.ErlNifMapIteratorEntry, @enumFromInt(1)),
+        .@"enum" => @as(e.ErlNifMapIteratorEntry, @fromBackingInt(@intCast(1))),
         else => std.mem.zeroes(e.ErlNifMapIteratorEntry),
     };
 }

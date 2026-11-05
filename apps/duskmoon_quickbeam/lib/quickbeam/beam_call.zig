@@ -137,7 +137,7 @@ fn beam_call_sync_impl(
             // Extract error reason string from the term
             if (inspect_binary(result_env, slot.result_term.?)) |bin| {
                 if (bin.size > 0) {
-                    const msg = gpa.dupeZ(u8, bin.data[0..bin.size]) catch
+                    const msg = gpa.dupeSentinel(u8, bin.data[0..bin.size], 0) catch
                         return qjs.JS_ThrowInternalError(ctx, "Beam.callSync failed");
                     defer gpa.free(msg);
                     return qjs.JS_ThrowInternalError(ctx, msg.ptr);

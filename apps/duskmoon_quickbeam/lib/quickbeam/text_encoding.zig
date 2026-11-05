@@ -580,7 +580,7 @@ fn throw_invalid_char_error(ctx: ?*qjs.JSContext) qjs.JSValue {
 }
 
 const b64_decode_table = blk: {
-    var table: [256]u8 = [_]u8{0xFF} ** 256;
+    var table: [256]u8 = @splat(0xFF);
     for (b64_alphabet, 0..) |c, i| {
         table[c] = @intCast(i);
     }

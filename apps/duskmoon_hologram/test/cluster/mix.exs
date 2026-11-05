@@ -28,7 +28,7 @@ defmodule HologramClusterTests.MixProject do
       {:http_fetch, "~> 0.21.16"},
       {:phoenix, "~> 1.7"},
       {:wallaby, "~> 0.30", only: :test},
-      {:zigler, "~> 0.16.0", only: :test, runtime: false}
+      {:zigler, "~> 0.17.0", only: :test, runtime: false}
     ]
   end
 

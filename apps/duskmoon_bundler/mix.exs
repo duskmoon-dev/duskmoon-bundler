@@ -43,7 +43,7 @@ defmodule DuskmoonBundler.MixProject do
       {:duskmoon_vize, in_umbrella: true},
       {:duskmoon_oxide, in_umbrella: true},
       {:duskmoon_quickbeam, in_umbrella: true},
-      {:zigler, "~> 0.16.0", only: [:dev, :test], runtime: false},
+      {:zigler, "~> 0.17.0", only: [:dev, :test], runtime: false},
       {:rustler, "~> 0.36 or ~> 0.37 or ~> 0.38", optional: true, runtime: false},
       {:dotenvy, "~> 1.1"},
       {:lazy_html, "~> 0.1.0"},

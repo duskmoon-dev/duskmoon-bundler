@@ -44,21 +44,21 @@ fn toVal(v: napi_value) qjs.JSValue {
 // ──────────────────── Globals / Version ────────────────────
 
 pub export fn napi_get_undefined(env_: napi_env, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     r.* = env.createNapiValue(js.js_undefined());
     return env.ok();
 }
 
 pub export fn napi_get_null(env_: napi_env, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     r.* = env.createNapiValue(js.js_null());
     return env.ok();
 }
 
 pub export fn napi_get_global(env_: napi_env, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const global = qjs.JS_GetGlobalObject(env.ctx);
     r.* = env.createNapiValue(global);
@@ -66,7 +66,7 @@ pub export fn napi_get_global(env_: napi_env, result: ?*napi_value) callconv(.c)
 }
 
 pub export fn napi_get_boolean(env_: napi_env, value: bool, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     r.* = env.createNapiValue(if (value) js.js_true() else js.js_false());
     return env.ok();
@@ -75,35 +75,35 @@ pub export fn napi_get_boolean(env_: napi_env, value: bool, result: ?*napi_value
 // ──────────────────── Value Creation ────────────────────
 
 pub export fn napi_create_int32(env_: napi_env, value: i32, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     r.* = env.createNapiValue(qjs.JS_NewInt32(env.ctx, value));
     return env.ok();
 }
 
 pub export fn napi_create_uint32(env_: napi_env, value: u32, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     r.* = env.createNapiValue(qjs.JS_NewUint32(env.ctx, value));
     return env.ok();
 }
 
 pub export fn napi_create_int64(env_: napi_env, value: i64, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     r.* = env.createNapiValue(qjs.JS_NewInt64(env.ctx, value));
     return env.ok();
 }
 
 pub export fn napi_create_double(env_: napi_env, value: f64, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     r.* = env.createNapiValue(qjs.JS_NewFloat64(env.ctx, value));
     return env.ok();
 }
 
 pub export fn napi_create_string_utf8(env_: napi_env, str: ?[*]const u8, length: usize, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const slice = napiSpan(str, length) orelse return env.invalidArg();
     const val = qjs.JS_NewStringLen(env.ctx, slice.ptr, slice.len);
@@ -117,7 +117,7 @@ pub export fn napi_create_string_latin1(env_: napi_env, str: ?[*]const u8, lengt
 }
 
 pub export fn napi_create_string_utf16(env_: napi_env, str: ?[*]const u16, length: usize, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
 
     const slice: []const u16 = blk: {
@@ -158,7 +158,7 @@ pub export fn napi_create_string_utf16(env_: napi_env, str: ?[*]const u16, lengt
 }
 
 pub export fn napi_create_symbol(env_: napi_env, description: napi_value, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
 
     const desc_val = toVal(description);
@@ -180,7 +180,7 @@ pub export fn napi_create_symbol(env_: napi_env, description: napi_value, result
 }
 
 pub export fn napi_create_object(env_: napi_env, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const obj = qjs.JS_NewObject(env.ctx);
     r.* = env.createNapiValue(obj);
@@ -188,7 +188,7 @@ pub export fn napi_create_object(env_: napi_env, result: ?*napi_value) callconv(
 }
 
 pub export fn napi_create_array(env_: napi_env, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const arr = qjs.JS_NewArray(env.ctx);
     r.* = env.createNapiValue(arr);
@@ -196,7 +196,7 @@ pub export fn napi_create_array(env_: napi_env, result: ?*napi_value) callconv(.
 }
 
 pub export fn napi_create_array_with_length(env_: napi_env, length: usize, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const arr = qjs.JS_NewArray(env.ctx);
     if (length > 0) {
@@ -209,7 +209,7 @@ pub export fn napi_create_array_with_length(env_: napi_env, length: usize, resul
 // ──────────────────── Value Getters ────────────────────
 
 pub export fn napi_get_value_double(env_: napi_env, value: napi_value, result: ?*f64) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const val = toVal(value);
     var d: f64 = 0;
@@ -219,7 +219,7 @@ pub export fn napi_get_value_double(env_: napi_env, value: napi_value, result: ?
 }
 
 pub export fn napi_get_value_int32(env_: napi_env, value: napi_value, result: ?*i32) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const val = toVal(value);
     var i: i32 = 0;
@@ -229,7 +229,7 @@ pub export fn napi_get_value_int32(env_: napi_env, value: napi_value, result: ?*
 }
 
 pub export fn napi_get_value_uint32(env_: napi_env, value: napi_value, result: ?*u32) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const val = toVal(value);
     var u: u32 = 0;
@@ -239,7 +239,7 @@ pub export fn napi_get_value_uint32(env_: napi_env, value: napi_value, result: ?
 }
 
 pub export fn napi_get_value_int64(env_: napi_env, value: napi_value, result: ?*i64) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const val = toVal(value);
     var i: i64 = 0;
@@ -249,7 +249,7 @@ pub export fn napi_get_value_int64(env_: napi_env, value: napi_value, result: ?*
 }
 
 pub export fn napi_get_value_bool(env_: napi_env, value: napi_value, result: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const val = toVal(value);
     if (!qjs.JS_IsBool(val)) return env.setLastError(.boolean_expected);
@@ -258,7 +258,7 @@ pub export fn napi_get_value_bool(env_: napi_env, value: napi_value, result: ?*b
 }
 
 pub export fn napi_get_value_string_utf8(env_: napi_env, value: napi_value, buf: ?[*]u8, bufsize: usize, result_ptr: ?*usize) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const val = toVal(value);
     if (!qjs.JS_IsString(val)) return env.setLastError(.string_expected);
 
@@ -285,7 +285,7 @@ pub export fn napi_get_value_string_latin1(env_: napi_env, value: napi_value, bu
 }
 
 pub export fn napi_get_value_string_utf16(env_: napi_env, value: napi_value, buf: ?[*]u16, bufsize: usize, result_ptr: ?*usize) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const val = toVal(value);
     if (!qjs.JS_IsString(val)) return env.setLastError(.string_expected);
 
@@ -335,7 +335,7 @@ pub export fn napi_get_value_string_utf16(env_: napi_env, value: napi_value, buf
 // ──────────────────── Type Checks ────────────────────
 
 pub export fn napi_typeof(env_: napi_env, value: napi_value, result: ?*napi_valuetype) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const val = toVal(value);
 
@@ -359,21 +359,21 @@ pub export fn napi_typeof(env_: napi_env, value: napi_value, result: ?*napi_valu
 }
 
 pub export fn napi_is_array(env_: napi_env, value: napi_value, result: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     r.* = qjs.JS_IsArray(toVal(value));
     return env.ok();
 }
 
 pub export fn napi_is_arraybuffer(env_: napi_env, value: napi_value, result: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     r.* = qjs.JS_IsArrayBuffer(toVal(value));
     return env.ok();
 }
 
 pub export fn napi_is_date(env_: napi_env, value: napi_value, result: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const val = toVal(value);
     if (!qjs.JS_IsObject(val)) {
@@ -388,21 +388,21 @@ pub export fn napi_is_date(env_: napi_env, value: napi_value, result: ?*bool) ca
 }
 
 pub export fn napi_is_error(env_: napi_env, value: napi_value, result: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     r.* = qjs.JS_IsError(toVal(value));
     return env.ok();
 }
 
 pub export fn napi_is_promise(env_: napi_env, value: napi_value, result: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     r.* = js.is_promise(env.ctx, toVal(value));
     return env.ok();
 }
 
 pub export fn napi_is_dataview(env_: napi_env, value: napi_value, result: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const val = toVal(value);
     if (!qjs.JS_IsObject(val)) {
@@ -430,7 +430,7 @@ pub export fn napi_is_dataview(env_: napi_env, value: napi_value, result: ?*bool
 }
 
 pub export fn napi_strict_equals(env_: napi_env, lhs: napi_value, rhs: napi_value, result: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const a = toVal(lhs);
     const b = toVal(rhs);
@@ -474,7 +474,7 @@ pub export fn napi_strict_equals(env_: napi_env, lhs: napi_value, rhs: napi_valu
 // ──────────────────── Coercion ────────────────────
 
 pub export fn napi_coerce_to_bool(env_: napi_env, value: napi_value, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const b = qjs.JS_ToBool(env.ctx, toVal(value));
     r.* = env.createNapiValue(if (b != 0) js.js_true() else js.js_false());
@@ -482,7 +482,7 @@ pub export fn napi_coerce_to_bool(env_: napi_env, value: napi_value, result: ?*n
 }
 
 pub export fn napi_coerce_to_number(env_: napi_env, value: napi_value, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     var d: f64 = 0;
     if (qjs.JS_ToFloat64(env.ctx, &d, toVal(value)) < 0) return env.setLastError(.pending_exception);
@@ -492,7 +492,7 @@ pub export fn napi_coerce_to_number(env_: napi_env, value: napi_value, result: ?
 }
 
 pub export fn napi_coerce_to_object(env_: napi_env, value: napi_value, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const val = toVal(value);
     const obj = qjs.JS_ToObject(env.ctx, val);
@@ -502,7 +502,7 @@ pub export fn napi_coerce_to_object(env_: napi_env, value: napi_value, result: ?
 }
 
 pub export fn napi_coerce_to_string(env_: napi_env, value: napi_value, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const val = qjs.JS_ToString(env.ctx, toVal(value));
     if (js.js_is_exception(val)) return env.setLastError(.pending_exception);
@@ -513,7 +513,7 @@ pub export fn napi_coerce_to_string(env_: napi_env, value: napi_value, result: ?
 // ──────────────────── Object Property Access ────────────────────
 
 pub export fn napi_get_property(env_: napi_env, object: napi_value, key: napi_value, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const obj = toVal(object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
@@ -530,7 +530,7 @@ pub export fn napi_get_property(env_: napi_env, object: napi_value, key: napi_va
 }
 
 pub export fn napi_set_property(env_: napi_env, object: napi_value, key: napi_value, value: napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const obj = toVal(object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
 
@@ -546,7 +546,7 @@ pub export fn napi_set_property(env_: napi_env, object: napi_value, key: napi_va
 }
 
 pub export fn napi_has_property(env_: napi_env, object: napi_value, key: napi_value, result: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const obj = toVal(object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
@@ -563,7 +563,7 @@ pub export fn napi_has_property(env_: napi_env, object: napi_value, key: napi_va
 }
 
 pub export fn napi_delete_property(env_: napi_env, object: napi_value, key: napi_value, result: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const obj = toVal(object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
 
@@ -578,7 +578,7 @@ pub export fn napi_delete_property(env_: napi_env, object: napi_value, key: napi
 }
 
 pub export fn napi_get_named_property(env_: napi_env, object: napi_value, utf8name: [*c]const u8, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const obj = toVal(object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
@@ -591,7 +591,7 @@ pub export fn napi_get_named_property(env_: napi_env, object: napi_value, utf8na
 }
 
 pub export fn napi_set_named_property(env_: napi_env, object: napi_value, utf8name: [*c]const u8, value: napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const obj = toVal(object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
     if (utf8name == null) return env.invalidArg();
@@ -603,7 +603,7 @@ pub export fn napi_set_named_property(env_: napi_env, object: napi_value, utf8na
 }
 
 pub export fn napi_has_named_property(env_: napi_env, object: napi_value, utf8name: [*c]const u8, result: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const obj = toVal(object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
@@ -617,7 +617,7 @@ pub export fn napi_has_named_property(env_: napi_env, object: napi_value, utf8na
 }
 
 pub export fn napi_has_own_property(env_: napi_env, object: napi_value, key: napi_value, result: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const obj = toVal(object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
@@ -643,7 +643,7 @@ pub export fn napi_has_own_property(env_: napi_env, object: napi_value, key: nap
 // ──────────────────── Array Element Access ────────────────────
 
 pub export fn napi_set_element(env_: napi_env, object: napi_value, index: u32, value: napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const obj = toVal(object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
     const v = toVal(value);
@@ -653,7 +653,7 @@ pub export fn napi_set_element(env_: napi_env, object: napi_value, index: u32, v
 }
 
 pub export fn napi_get_element(env_: napi_env, object: napi_value, index: u32, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const obj = toVal(object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
@@ -664,7 +664,7 @@ pub export fn napi_get_element(env_: napi_env, object: napi_value, index: u32, r
 }
 
 pub export fn napi_has_element(env_: napi_env, object: napi_value, index: u32, result: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const obj = toVal(object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
@@ -676,7 +676,7 @@ pub export fn napi_has_element(env_: napi_env, object: napi_value, index: u32, r
 }
 
 pub export fn napi_delete_element(env_: napi_env, object: napi_value, index: u32, result: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const obj = toVal(object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
     const atom = qjs.JS_NewAtomUInt32(env.ctx, index);
@@ -687,7 +687,7 @@ pub export fn napi_delete_element(env_: napi_env, object: napi_value, index: u32
 }
 
 pub export fn napi_get_array_length(env_: napi_env, value: napi_value, result: ?*u32) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const val = toVal(value);
     const len_val = qjs.JS_GetPropertyStr(env.ctx, val, "length");
@@ -701,7 +701,7 @@ pub export fn napi_get_array_length(env_: napi_env, value: napi_value, result: ?
 // ──────────────────── Prototype ────────────────────
 
 pub export fn napi_get_prototype(env_: napi_env, object: napi_value, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const obj = toVal(object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
@@ -713,7 +713,7 @@ pub export fn napi_get_prototype(env_: napi_env, object: napi_value, result: ?*n
 // ──────────────────── Handle Scopes ────────────────────
 
 pub export fn napi_open_handle_scope(env_: napi_env, result: ?*napi_handle_scope) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const scope = HandleScope.init(false);
     env.scope_stack.append(gpa, scope) catch return env.genericFailure();
@@ -722,7 +722,7 @@ pub export fn napi_open_handle_scope(env_: napi_env, result: ?*napi_handle_scope
 }
 
 pub export fn napi_close_handle_scope(env_: napi_env, scope_: napi_handle_scope) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const scope = scope_ orelse return env.invalidArg();
     if (env.scope_stack.items.len > 0 and env.scope_stack.items[env.scope_stack.items.len - 1] == scope) {
         _ = env.scope_stack.pop();
@@ -733,7 +733,7 @@ pub export fn napi_close_handle_scope(env_: napi_env, scope_: napi_handle_scope)
 }
 
 pub export fn napi_open_escapable_handle_scope(env_: napi_env, result: ?*napi_escapable_handle_scope) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const scope = HandleScope.init(true);
     env.scope_stack.append(gpa, scope) catch return env.genericFailure();
@@ -746,7 +746,7 @@ pub export fn napi_close_escapable_handle_scope(env_: napi_env, scope_: napi_esc
 }
 
 pub export fn napi_escape_handle(env_: napi_env, scope_: napi_escapable_handle_scope, escapee: napi_value, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const scope = scope_ orelse return env.invalidArg();
     const r = result orelse return env.invalidArg();
     if (!scope.escapable) return env.invalidArg();
@@ -767,7 +767,7 @@ pub export fn napi_escape_handle(env_: napi_env, scope_: napi_escapable_handle_s
 // ──────────────────── Error Handling ────────────────────
 
 pub export fn napi_throw(env_: napi_env, @"error": napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const val = toVal(@"error");
     _ = qjs.JS_Throw(env.ctx, qjs.JS_DupValue(env.ctx, val));
     env.setPendingException(val);
@@ -775,7 +775,7 @@ pub export fn napi_throw(env_: napi_env, @"error": napi_value) callconv(.c) napi
 }
 
 pub export fn napi_throw_error(env_: napi_env, code: [*c]const u8, msg: [*c]const u8) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     _ = code;
     const err = qjs.JS_ThrowInternalError(env.ctx, msg orelse "Unknown error");
     _ = err;
@@ -783,21 +783,21 @@ pub export fn napi_throw_error(env_: napi_env, code: [*c]const u8, msg: [*c]cons
 }
 
 pub export fn napi_throw_type_error(env_: napi_env, code: [*c]const u8, msg: [*c]const u8) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     _ = code;
     _ = qjs.JS_ThrowTypeError(env.ctx, msg orelse "Type error");
     return env.ok();
 }
 
 pub export fn napi_throw_range_error(env_: napi_env, code: [*c]const u8, msg: [*c]const u8) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     _ = code;
     _ = qjs.JS_ThrowRangeError(env.ctx, msg orelse "Range error");
     return env.ok();
 }
 
 pub export fn napi_create_error(env_: napi_env, code: napi_value, msg: napi_value, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     _ = code;
     const msg_val = toVal(msg);
@@ -818,14 +818,14 @@ pub export fn napi_create_range_error(env_: napi_env, code: napi_value, msg: nap
 }
 
 pub export fn napi_is_exception_pending(env_: napi_env, result: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     r.* = env.has_pending_exception;
     return env.ok();
 }
 
 pub export fn napi_get_and_clear_last_exception(env_: napi_env, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     if (env.has_pending_exception) {
         r.* = env.createNapiValue(env.pending_exception);
@@ -837,10 +837,10 @@ pub export fn napi_get_and_clear_last_exception(env_: napi_env, result: ?*napi_v
 }
 
 pub export fn napi_get_last_error_info(env_: napi_env, result: ?*[*c]const nt.napi_extended_error_info) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     r.* = &env.last_error;
-    return @intFromEnum(Status.ok);
+    return @backingInt(Status.ok);
 }
 
 // ──────────────────── Function Creation & Calling ────────────────────
@@ -853,7 +853,7 @@ pub export fn napi_create_function(
     data: ?*anyopaque,
     result: ?*napi_value,
 ) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const callback = cb orelse return env.invalidArg();
     _ = length;
@@ -932,7 +932,7 @@ pub export fn napi_call_function(
     argv: [*c]const napi_value,
     result: ?*napi_value,
 ) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const func_val = toVal(func);
     if (!qjs.JS_IsFunction(env.ctx, func_val)) return env.setLastError(.function_expected);
 
@@ -968,7 +968,7 @@ pub export fn napi_get_cb_info(
     this_arg: ?*napi_value,
     data: ?*?*anyopaque,
 ) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const info: *CallbackInfo = cbinfo_ orelse return env.invalidArg();
 
     if (argc) |ac| {
@@ -1000,7 +1000,7 @@ pub export fn napi_get_cb_info(
 }
 
 pub export fn napi_get_new_target(env_: napi_env, cbinfo_: napi_callback_info, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const info: *CallbackInfo = cbinfo_ orelse return env.invalidArg();
     const r = result orelse return env.invalidArg();
     r.* = env.createNapiValue(info.new_target);
@@ -1010,7 +1010,7 @@ pub export fn napi_get_new_target(env_: napi_env, cbinfo_: napi_callback_info, r
 // ──────────────────── Instanceof ────────────────────
 
 pub export fn napi_instanceof(env_: napi_env, object: napi_value, constructor: napi_value, result: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const ret = qjs.JS_IsInstanceOf(env.ctx, toVal(object), toVal(constructor));
     if (ret < 0) return env.setLastError(.pending_exception);
@@ -1021,7 +1021,7 @@ pub export fn napi_instanceof(env_: napi_env, object: napi_value, constructor: n
 // ──────────────────── References ────────────────────
 
 pub export fn napi_create_reference(env_: napi_env, value: napi_value, initial_refcount: u32, result: ?*napi_ref) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const val = toVal(value);
 
@@ -1040,7 +1040,7 @@ pub export fn napi_create_reference(env_: napi_env, value: napi_value, initial_r
 }
 
 pub export fn napi_delete_reference(env_: napi_env, ref_: napi_ref) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const ref_obj: *NapiReference = ref_ orelse return env.invalidArg();
     // Remove from env tracking
     for (env.refs.items, 0..) |r, i| {
@@ -1054,7 +1054,7 @@ pub export fn napi_delete_reference(env_: napi_env, ref_: napi_ref) callconv(.c)
 }
 
 pub export fn napi_reference_ref(env_: napi_env, ref_: napi_ref, result: ?*u32) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const ref_obj: *NapiReference = ref_ orelse return env.invalidArg();
     ref_obj.ref();
     if (result) |r| r.* = ref_obj.ref_count;
@@ -1062,7 +1062,7 @@ pub export fn napi_reference_ref(env_: napi_env, ref_: napi_ref, result: ?*u32) 
 }
 
 pub export fn napi_reference_unref(env_: napi_env, ref_: napi_ref, result: ?*u32) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const ref_obj: *NapiReference = ref_ orelse return env.invalidArg();
     ref_obj.unref();
     if (result) |r| r.* = ref_obj.ref_count;
@@ -1070,7 +1070,7 @@ pub export fn napi_reference_unref(env_: napi_env, ref_: napi_ref, result: ?*u32
 }
 
 pub export fn napi_get_reference_value(env_: napi_env, ref_: napi_ref, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const ref_obj: *NapiReference = ref_ orelse return env.invalidArg();
     const r = result orelse return env.invalidArg();
     r.* = env.createNapiValue(ref_obj.value);
@@ -1080,7 +1080,7 @@ pub export fn napi_get_reference_value(env_: napi_env, ref_: napi_ref, result: ?
 // ──────────────────── Promises ────────────────────
 
 pub export fn napi_create_promise(env_: napi_env, deferred_: ?*napi_deferred, promise_: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const deferred_out = deferred_ orelse return env.invalidArg();
     const promise_out = promise_ orelse return env.invalidArg();
 
@@ -1106,7 +1106,7 @@ pub export fn napi_create_promise(env_: napi_env, deferred_: ?*napi_deferred, pr
 }
 
 pub export fn napi_resolve_deferred(env_: napi_env, deferred_: napi_deferred, resolution: napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const d: *Deferred = deferred_ orelse return env.invalidArg();
     const val = toVal(resolution);
     var args = [_]qjs.JSValue{val};
@@ -1117,7 +1117,7 @@ pub export fn napi_resolve_deferred(env_: napi_env, deferred_: napi_deferred, re
 }
 
 pub export fn napi_reject_deferred(env_: napi_env, deferred_: napi_deferred, rejection: napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const d: *Deferred = deferred_ orelse return env.invalidArg();
     const val = toVal(rejection);
     var args = [_]qjs.JSValue{val};
@@ -1130,7 +1130,7 @@ pub export fn napi_reject_deferred(env_: napi_env, deferred_: napi_deferred, rej
 // ──────────────────── Run Script ────────────────────
 
 pub export fn napi_run_script(env_: napi_env, script: napi_value, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const script_val = toVal(script);
     if (!qjs.JS_IsString(script_val)) return env.setLastError(.string_expected);
@@ -1154,7 +1154,7 @@ pub export fn napi_run_script(env_: napi_env, script: napi_value, result: ?*napi
 // ──────────────────── Version ────────────────────
 
 pub export fn napi_get_version(env_: napi_env, result: ?*u32) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     r.* = nt.NAPI_VERSION;
     return env.ok();
@@ -1168,7 +1168,7 @@ const node_version = nt.napi_node_version{
 };
 
 pub export fn napi_get_node_version(env_: napi_env, result: ?*[*c]const nt.napi_node_version) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     r.* = &node_version;
     return env.ok();
@@ -1177,7 +1177,7 @@ pub export fn napi_get_node_version(env_: napi_env, result: ?*[*c]const nt.napi_
 // ──────────────────── Instance Data ────────────────────
 
 pub export fn napi_set_instance_data(env_: napi_env, data: ?*anyopaque, finalize_cb: napi_finalize, finalize_hint: ?*anyopaque) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     env.instance_data = data;
     env.instance_data_finalize = finalize_cb;
     env.instance_data_hint = finalize_hint;
@@ -1185,7 +1185,7 @@ pub export fn napi_set_instance_data(env_: napi_env, data: ?*anyopaque, finalize
 }
 
 pub export fn napi_get_instance_data(env_: napi_env, data: ?*?*anyopaque) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const d = data orelse return env.invalidArg();
     d.* = env.instance_data;
     return env.ok();
@@ -1202,7 +1202,7 @@ pub export fn napi_create_external(
     finalize_hint: ?*anyopaque,
     result: ?*napi_value,
 ) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
 
     const ext_data: *ExternalData = @ptrCast(@alignCast(qjs.js_mallocz(env.ctx, @sizeOf(ExternalData)) orelse return env.genericFailure()));
@@ -1221,7 +1221,7 @@ pub export fn napi_create_external(
 }
 
 pub export fn napi_get_value_external(env_: napi_env, value: napi_value, result: ?*?*anyopaque) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const val = toVal(value);
     const ext_data: ?*ExternalData = @ptrCast(@alignCast(qjs.JS_GetOpaque(val, nt.external_class_id)));
@@ -1233,11 +1233,11 @@ pub export fn napi_get_value_external(env_: napi_env, value: napi_value, result:
 
 pub export fn napi_async_init(_: napi_env, _: napi_value, _: napi_value, result: ?*?*anyopaque) callconv(.c) napi_status {
     if (result) |r| r.* = null;
-    return @intFromEnum(Status.ok);
+    return @backingInt(Status.ok);
 }
 
 pub export fn napi_async_destroy(_: napi_env, _: ?*anyopaque) callconv(.c) napi_status {
-    return @intFromEnum(Status.ok);
+    return @backingInt(Status.ok);
 }
 
 pub export fn napi_make_callback(env_: napi_env, _: ?*anyopaque, recv: napi_value, func: napi_value, argc: usize, argv: [*c]const napi_value, result: ?*napi_value) callconv(.c) napi_status {
@@ -1245,17 +1245,17 @@ pub export fn napi_make_callback(env_: napi_env, _: ?*anyopaque, recv: napi_valu
 }
 
 pub export fn napi_open_callback_scope(_: napi_env, _: napi_value, _: ?*anyopaque, _: ?*anyopaque) callconv(.c) napi_status {
-    return @intFromEnum(Status.ok);
+    return @backingInt(Status.ok);
 }
 
 pub export fn napi_close_callback_scope(_: napi_env, _: ?*anyopaque) callconv(.c) napi_status {
-    return @intFromEnum(Status.ok);
+    return @backingInt(Status.ok);
 }
 
 // ──────────────────── Object freeze/seal ────────────────────
 
 pub export fn napi_object_freeze(env_: napi_env, object: napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const obj = toVal(object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
     // Call Object.freeze via eval
@@ -1272,7 +1272,7 @@ pub export fn napi_object_freeze(env_: napi_env, object: napi_value) callconv(.c
 }
 
 pub export fn napi_object_seal(env_: napi_env, object: napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const obj = toVal(object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
     const global = qjs.JS_GetGlobalObject(env.ctx);
@@ -1290,32 +1290,32 @@ pub export fn napi_object_seal(env_: napi_env, object: napi_value) callconv(.c) 
 // ──────────────────── Misc stubs ────────────────────
 
 pub export fn napi_adjust_external_memory(_: napi_env, _: i64, _: ?*i64) callconv(.c) napi_status {
-    return @intFromEnum(Status.ok);
+    return @backingInt(Status.ok);
 }
 
 pub export fn napi_add_env_cleanup_hook(_: napi_env, _: ?*const fn (?*anyopaque) callconv(.c) void, _: ?*anyopaque) callconv(.c) napi_status {
-    return @intFromEnum(Status.ok);
+    return @backingInt(Status.ok);
 }
 
 pub export fn napi_remove_env_cleanup_hook(_: napi_env, _: ?*const fn (?*anyopaque) callconv(.c) void, _: ?*anyopaque) callconv(.c) napi_status {
-    return @intFromEnum(Status.ok);
+    return @backingInt(Status.ok);
 }
 
 pub export fn napi_add_async_cleanup_hook(_: napi_env, _: ?*const fn (?*anyopaque, ?*anyopaque) callconv(.c) void, _: ?*anyopaque, _: ?*?*anyopaque) callconv(.c) napi_status {
-    return @intFromEnum(Status.ok);
+    return @backingInt(Status.ok);
 }
 
 pub export fn napi_remove_async_cleanup_hook(_: ?*anyopaque) callconv(.c) napi_status {
-    return @intFromEnum(Status.ok);
+    return @backingInt(Status.ok);
 }
 
 pub export fn napi_type_tag_object(_: napi_env, _: napi_value, _: [*c]const nt.napi_type_tag) callconv(.c) napi_status {
-    return @intFromEnum(Status.ok);
+    return @backingInt(Status.ok);
 }
 
 pub export fn napi_check_object_type_tag(_: napi_env, _: napi_value, _: [*c]const nt.napi_type_tag, result: ?*bool) callconv(.c) napi_status {
     if (result) |r| r.* = false;
-    return @intFromEnum(Status.ok);
+    return @backingInt(Status.ok);
 }
 
 pub export fn napi_fatal_error(_: ?[*:0]const u8, _: usize, msg_ptr: ?[*:0]const u8, _: usize) callconv(.c) noreturn {
@@ -1324,7 +1324,7 @@ pub export fn napi_fatal_error(_: ?[*:0]const u8, _: usize, msg_ptr: ?[*:0]const
 }
 
 pub export fn napi_fatal_exception(env_: napi_env, err: napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     env.setPendingException(toVal(err));
     return env.ok();
 }
@@ -1366,7 +1366,7 @@ fn asyncWorkRunner(work: *AsyncWork) void {
 // ──────────────────── ArrayBuffer ────────────────────
 
 pub export fn napi_create_arraybuffer(env_: napi_env, byte_length: usize, data: ?*?[*]u8, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
 
     const buf = gpa.alloc(u8, byte_length) catch return env.genericFailure();
@@ -1384,7 +1384,7 @@ pub export fn napi_create_arraybuffer(env_: napi_env, byte_length: usize, data: 
 }
 
 pub export fn napi_get_arraybuffer_info(env_: napi_env, arraybuffer: napi_value, data: ?*?[*]u8, byte_length: ?*usize) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const val = toVal(arraybuffer);
     var size: usize = 0;
     const ptr = qjs.JS_GetArrayBuffer(env.ctx, &size, val);
@@ -1394,13 +1394,13 @@ pub export fn napi_get_arraybuffer_info(env_: napi_env, arraybuffer: napi_value,
 }
 
 pub export fn napi_detach_arraybuffer(env_: napi_env, arraybuffer: napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     qjs.JS_DetachArrayBuffer(env.ctx, toVal(arraybuffer));
     return env.ok();
 }
 
 pub export fn napi_is_detached_arraybuffer(env_: napi_env, value: napi_value, result: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const val = toVal(value);
     if (!qjs.JS_IsArrayBuffer(val)) {
@@ -1418,7 +1418,7 @@ pub export fn napi_is_detached_arraybuffer(env_: napi_env, value: napi_value, re
 // ──────────────────── Date ────────────────────
 
 pub export fn napi_create_date(env_: napi_env, time: f64, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const date = qjs.JS_NewDate(env.ctx, time);
     if (js.js_is_exception(date)) return env.genericFailure();
@@ -1427,7 +1427,7 @@ pub export fn napi_create_date(env_: napi_env, time: f64, result: ?*napi_value) 
 }
 
 pub export fn napi_get_date_value(env_: napi_env, value: napi_value, result: ?*f64) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const val = toVal(value);
     // Call getTime() on the Date object
@@ -1446,7 +1446,7 @@ pub export fn napi_get_date_value(env_: napi_env, value: napi_value, result: ?*f
 // ──────────────────── BigInt ────────────────────
 
 pub export fn napi_create_bigint_int64(env_: napi_env, value: i64, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const bi = qjs.JS_NewBigInt64(env.ctx, value);
     r.* = env.createNapiValue(bi);
@@ -1454,7 +1454,7 @@ pub export fn napi_create_bigint_int64(env_: napi_env, value: i64, result: ?*nap
 }
 
 pub export fn napi_create_bigint_uint64(env_: napi_env, value: u64, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const bi = qjs.JS_NewBigUint64(env.ctx, value);
     r.* = env.createNapiValue(bi);
@@ -1462,7 +1462,7 @@ pub export fn napi_create_bigint_uint64(env_: napi_env, value: u64, result: ?*na
 }
 
 pub export fn napi_get_value_bigint_int64(env_: napi_env, value: napi_value, result: ?*i64, lossless: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     var i: i64 = 0;
     if (qjs.JS_ToInt64(env.ctx, &i, toVal(value)) < 0) return env.setLastError(.bigint_expected);
@@ -1472,7 +1472,7 @@ pub export fn napi_get_value_bigint_int64(env_: napi_env, value: napi_value, res
 }
 
 pub export fn napi_get_value_bigint_uint64(env_: napi_env, value: napi_value, result: ?*u64, lossless: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     var i: i64 = 0;
     if (qjs.JS_ToInt64(env.ctx, &i, toVal(value)) < 0) return env.setLastError(.bigint_expected);
@@ -1484,7 +1484,7 @@ pub export fn napi_get_value_bigint_uint64(env_: napi_env, value: napi_value, re
 // ──────────────────── Property Definition ────────────────────
 
 pub export fn napi_define_properties(env_: napi_env, object: napi_value, property_count: usize, properties: [*c]const napi_property_descriptor) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const obj = toVal(object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
 
@@ -1517,7 +1517,7 @@ pub export fn napi_define_properties(env_: napi_env, object: napi_value, propert
 }
 
 pub export fn napi_get_property_names(env_: napi_env, object: napi_value, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const obj = toVal(object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
@@ -1554,7 +1554,7 @@ pub export fn napi_get_all_property_names(
 // ──────────────────── New Instance ────────────────────
 
 pub export fn napi_new_instance(env_: napi_env, constructor: napi_value, argc: usize, argv: ?[*]const napi_value, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const ctor = toVal(constructor);
     if (!qjs.JS_IsFunction(env.ctx, ctor)) return env.setLastError(.function_expected);
@@ -1592,7 +1592,7 @@ pub export fn napi_define_class(
     properties: [*c]const napi_property_descriptor,
     result: ?*napi_value,
 ) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const ctor_fn = constructor_cb orelse return env.invalidArg();
     _ = length;
@@ -1658,7 +1658,7 @@ pub export fn napi_create_typedarray(
     byte_offset: usize,
     result: ?*napi_value,
 ) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const ab = toVal(arraybuffer);
 
@@ -1705,7 +1705,7 @@ pub export fn napi_get_typedarray_info(
     maybe_arraybuffer: ?*napi_value,
     maybe_byte_offset: ?*usize,
 ) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const val = toVal(typedarray);
 
     var poffset: usize = 0;
@@ -1766,7 +1766,7 @@ pub export fn napi_create_external_arraybuffer(
     finalize_hint: ?*anyopaque,
     result: ?*napi_value,
 ) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
 
     const ext_wrap = gpa.create(ExternalAbData) catch return env.genericFailure();
@@ -1806,7 +1806,7 @@ pub export fn napi_create_dataview(
     byte_offset: usize,
     result: ?*napi_value,
 ) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
 
     const global = qjs.JS_GetGlobalObject(env.ctx);
@@ -1834,7 +1834,7 @@ pub export fn napi_get_dataview_info(
     maybe_arraybuffer: ?*napi_value,
     maybe_byte_offset: ?*usize,
 ) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const val = toVal(dataview);
 
     if (maybe_bytelength) |bl| {
@@ -1889,7 +1889,7 @@ pub export fn napi_create_external_buffer(
     finalize_hint: ?*anyopaque,
     result: ?*napi_value,
 ) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
 
     const ext_wrap = gpa.create(ExternalAbData) catch return env.genericFailure();
@@ -1914,7 +1914,7 @@ pub export fn napi_create_bigint_words(
     words: [*c]const u64,
     result: ?*napi_value,
 ) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
 
     // For small bigints that fit in i64, use the simple path
@@ -1947,7 +1947,7 @@ pub export fn napi_get_value_bigint_words(
     word_count: ?*usize,
     words: ?[*]u64,
 ) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const wc = word_count orelse return env.invalidArg();
 
     var i: i64 = 0;
@@ -1967,7 +1967,7 @@ pub export fn napi_get_value_bigint_words(
 // ──────────────────── Event Loop Stub ────────────────────
 
 pub export fn napi_get_uv_event_loop(env_: napi_env, _: ?*?*anyopaque) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     return env.genericFailure();
 }
 
@@ -2175,14 +2175,13 @@ pub const napi_symbol_table = [_]*const anyopaque{
 };
 
 pub fn initRuntime(rt: *qjs.JSRuntime) void {
-    if (nt.external_class_id == 0) {
-        _ = qjs.JS_NewClassID(rt, &nt.external_class_id);
-        _ = qjs.JS_NewClass(rt, nt.external_class_id, &external_class_def);
-    }
-    if (wrap_mod.wrap_class_id == 0) {
-        _ = qjs.JS_NewClassID(rt, &wrap_mod.wrap_class_id);
-        _ = qjs.JS_NewClass(rt, wrap_mod.wrap_class_id, &wrap_mod.wrap_class_def);
-    }
+    types.class_ids_mutex.lock();
+    types.reserveClassID(rt, &nt.external_class_id);
+    types.reserveClassID(rt, &wrap_mod.wrap_class_id);
+    types.class_ids_mutex.unlock();
+
+    _ = qjs.JS_NewClass(rt, nt.external_class_id, &external_class_def);
+    _ = qjs.JS_NewClass(rt, wrap_mod.wrap_class_id, &wrap_mod.wrap_class_def);
     std.mem.doNotOptimizeAway(&napi_symbol_table);
 }
 

@@ -103,7 +103,7 @@ pub fn getWrapData(env: *NapiEnv, obj: qjs.JSValue) ?*WrapData {
 }
 
 pub export fn napi_wrap(env_: napi_env, js_object: napi_value, native_object: ?*anyopaque, finalize_cb: napi_finalize, finalize_hint: ?*anyopaque, result: ?*napi_ref) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const obj = c.toVal(js_object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
 
@@ -133,7 +133,7 @@ pub export fn napi_wrap(env_: napi_env, js_object: napi_value, native_object: ?*
 }
 
 pub export fn napi_unwrap(env_: napi_env, js_object: napi_value, result: ?*?*anyopaque) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     const obj = c.toVal(js_object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
@@ -144,7 +144,7 @@ pub export fn napi_unwrap(env_: napi_env, js_object: napi_value, result: ?*?*any
 }
 
 pub export fn napi_remove_wrap(env_: napi_env, js_object: napi_value, result: ?*?*anyopaque) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const obj = c.toVal(js_object);
     if (!qjs.JS_IsObject(obj)) return env.setLastError(.object_expected);
 

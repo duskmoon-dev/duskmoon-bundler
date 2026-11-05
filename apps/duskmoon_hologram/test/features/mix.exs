@@ -30,7 +30,7 @@ defmodule HologramFeatureTests.MixProject do
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
       {:wallaby, "~> 0.30", only: :test},
-      {:zigler, "~> 0.16.0", only: :test, runtime: false}
+      {:zigler, "~> 0.17.0", only: :test, runtime: false}
     ]
   end
 

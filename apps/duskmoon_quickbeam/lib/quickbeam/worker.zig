@@ -1,4 +1,6 @@
 const types = @import("types.zig");
+const sync = @import("sync.zig");
+const DynamicLibrary = @import("dynamic_library.zig").DynamicLibrary;
 const js = @import("js_helpers.zig");
 const globals = @import("globals.zig");
 const js_to_beam = @import("js_to_beam.zig");
@@ -18,6 +20,17 @@ const beam = types.beam;
 const e = types.e;
 const qjs = types.qjs;
 const gpa = types.gpa;
+
+const AddonClaim = struct {
+    library: ?*DynamicLibrary = null,
+};
+
+// Native addon code and static state live for the OS process lifetime. Keep one
+// bounded, serialized handle per canonical path rather than unloading code that
+// may still own process-global callbacks or data.
+const max_addon_claims = 256;
+var addon_load_mutex: sync.Mutex = .{};
+var addon_claims: std.StringHashMapUnmanaged(AddonClaim) = .{};
 
 pub const Result = struct {
     ok: bool = false,
@@ -56,6 +69,7 @@ pub const WorkerState = struct {
     buf: [4096]u8 = @splat(0),
     drain_fn: ?DrainFn = null,
     napi_env: ?*napi_mod.NapiEnv = null,
+    addon_exports: std.StringHashMap(qjs.JSValue),
     max_reductions: i64 = 0,
 
     pub fn deinit(self: *WorkerState) void {
@@ -82,21 +96,32 @@ pub const WorkerState = struct {
             snap.deinit();
         }
 
-        // Release napi JS refs, then free context, then free napi Zig memory
+        // Release cached addon exports and napi JS refs before freeing the context.
+        self.clearAddonExports();
+        self.addon_exports.deinit();
         if (self.napi_env) |nenv| nenv.releaseValues();
         self.atoms.deinit(self.ctx);
 
         wasm_js.destroy_context(self.ctx);
 
-        // Run GC before freeing context to collect cycles
-        qjs.JS_RunGC(self.rt);
         qjs.JS_FreeContext(self.ctx);
+        // Collect cycles after context-owned globals and host objects have run finalizers.
+        qjs.JS_RunGC(self.rt);
 
         if (self.napi_env) |nenv| {
             nenv.deinit();
             gpa.destroy(nenv);
             self.napi_env = null;
         }
+    }
+
+    fn clearAddonExports(self: *WorkerState) void {
+        var iterator = self.addon_exports.iterator();
+        while (iterator.next()) |entry| {
+            qjs.JS_FreeValue(self.ctx, entry.value_ptr.*);
+            gpa.free(entry.key_ptr.*);
+        }
+        self.addon_exports.clearRetainingCapacity();
     }
 
     pub fn drain_jobs(self: *WorkerState) void {
@@ -137,7 +162,7 @@ pub const WorkerState = struct {
             }
         }
         if (min_deadline) |d| {
-            const now = types.nanoTimestamp();
+            const now = sync.nowNanoseconds();
             if (d <= now) return 0;
             return @intCast(d - now);
         }
@@ -145,7 +170,7 @@ pub const WorkerState = struct {
     }
 
     pub fn fire_expired_timers(self: *WorkerState) void {
-        const now = types.nanoTimestamp();
+        const now = sync.nowNanoseconds();
 
         var expired_buf: [64]u64 = undefined;
         var expired_count: usize = 0;
@@ -175,7 +200,7 @@ pub const WorkerState = struct {
                 // Re-check: callback may have removed this timer via clearInterval
                 if (self.timers.getPtr(id)) |live_entry| {
                     if (interval) |iv| {
-                        live_entry.deadline = types.nanoTimestamp() + @as(i128, iv);
+                        live_entry.deadline = sync.nowNanoseconds() + @as(i128, iv);
                     } else {
                         qjs.JS_FreeValue(self.ctx, live_entry.callback);
                         _ = self.timers.remove(id);
@@ -383,7 +408,7 @@ pub const WorkerState = struct {
     }
 
     pub fn do_eval(self: *WorkerState, code: []const u8, filename: []const u8, result: *Result) void {
-        const code_z = gpa.dupeZ(u8, code) catch {
+        const code_z = gpa.dupeSentinel(u8, code, 0) catch {
             result.ok = false;
             result.json = "Out of memory";
             return;
@@ -391,7 +416,7 @@ pub const WorkerState = struct {
         defer gpa.free(code_z);
 
         const fname = if (filename.len > 0) filename else "<eval>";
-        const fname_z = gpa.dupeZ(u8, fname) catch {
+        const fname_z = gpa.dupeSentinel(u8, fname, 0) catch {
             result.ok = false;
             result.json = "Out of memory";
             return;
@@ -420,7 +445,7 @@ pub const WorkerState = struct {
     }
 
     pub fn do_compile(self: *WorkerState, code: []const u8, result: *Result) void {
-        const code_z = gpa.dupeZ(u8, code) catch {
+        const code_z = gpa.dupeSentinel(u8, code, 0) catch {
             result.ok = false;
             result.json = "Out of memory";
             return;
@@ -453,7 +478,11 @@ pub const WorkerState = struct {
         };
         @memcpy(bin.data[0..out_len], buf[0..out_len]);
         result.env = env;
-        result.term = e.enif_make_tuple2(env, beam.make_into_atom("bytes", .{ .env = env }).v, e.enif_make_binary(env, &bin));
+        const result_items = [_]e.ERL_NIF_TERM{
+            beam.make_into_atom("bytes", .{ .env = env }).v,
+            e.enif_make_binary(env, &bin),
+        };
+        result.term = e.enif_make_tuple_from_array(env, &result_items, result_items.len);
         result.ok = true;
     }
 
@@ -488,7 +517,7 @@ pub const WorkerState = struct {
         defer if (args_env) |ae| beam.free_env(ae);
 
         // Get the function by name
-        const name_z = gpa.dupeZ(u8, name) catch {
+        const name_z = gpa.dupeSentinel(u8, name, 0) catch {
             result.ok = false;
             result.json = "Out of memory";
             return;
@@ -540,7 +569,7 @@ pub const WorkerState = struct {
 
     pub fn do_load_module(self: *WorkerState, name: []const u8, code: []const u8, result: *Result) void {
         _ = name;
-        const code_z = gpa.dupeZ(u8, code) catch {
+        const code_z = gpa.dupeSentinel(u8, code, 0) catch {
             result.ok = false;
             result.json = "Out of memory";
             return;
@@ -593,6 +622,7 @@ pub const WorkerState = struct {
             self.message_handler = js.JS_UNDEFINED;
         }
 
+        self.clearAddonExports();
         if (self.napi_env) |nenv| {
             nenv.releaseValues();
             nenv.deinit();
@@ -601,8 +631,8 @@ pub const WorkerState = struct {
         }
         self.atoms.deinit(self.ctx);
         wasm_js.destroy_context(self.ctx);
-        qjs.JS_RunGC(self.rt);
         qjs.JS_FreeContext(self.ctx);
+        qjs.JS_RunGC(self.rt);
         self.ctx = qjs.JS_NewContext(self.rt) orelse {
             result.ok = false;
             result.json = "Failed to create new context";
@@ -614,7 +644,9 @@ pub const WorkerState = struct {
     }
 
     fn await_promise(self: *WorkerState, promise: qjs.JSValue, result: *Result, unwrap_async: bool) void {
-        for (0..10000) |_| {
+        const deadline = self.rd.deadline;
+        var iterations: usize = 0;
+        while (!promise_wait_expired(deadline, iterations)) : (iterations += 1) {
             const state = qjs.JS_PromiseState(self.ctx, promise);
 
             if (state == qjs.JS_PROMISE_FULFILLED) {
@@ -651,9 +683,11 @@ pub const WorkerState = struct {
                     .resolve_call_term => |rc| self.resolve_pending_term(rc.env, rc.term, rc.id),
                     .call_fn_sync => |p| {
                         var nested_result: Result = .{};
+                        const outer_deadline = self.rd.deadline;
+                        self.clear_deadline();
                         self.set_deadline(p.timeout_ns);
                         self.do_call(p.name, p.args_env, p.args_term, &nested_result);
-                        self.clear_deadline();
+                        self.rd.deadline = outer_deadline;
                         self.complete_sync_call(p.id, &nested_result);
                         gpa.free(p.name);
                     },
@@ -666,9 +700,9 @@ pub const WorkerState = struct {
                     .napi_async_complete => |p| {
                         if (p.work.complete) |complete| {
                             const ns: nt.napi_status = if (p.work.status.load(.seq_cst) == .cancelled)
-                                @intFromEnum(nt.Status.cancelled)
+                                @backingInt(nt.Status.cancelled)
                             else
-                                @intFromEnum(nt.Status.ok);
+                                @backingInt(nt.Status.ok);
                             complete(p.work.env, ns, p.work.data);
                         }
                     },
@@ -700,11 +734,19 @@ pub const WorkerState = struct {
 
             const timer_ns = self.next_timer_timeout_ns();
             const sleep_ns: u64 = if (timer_ns) |t| @min(t, 1_000_000) else 1_000_000;
-            types.sleep(sleep_ns);
+            if (sleep_ns > 0) sync.sleepNanoseconds(sleep_ns);
         }
 
         result.ok = false;
         result.json = "Promise resolution timeout";
+    }
+
+    fn promise_wait_expired(deadline: ?i128, iterations: usize) bool {
+        if (deadline) |value| {
+            return sync.nowNanoseconds() > value;
+        }
+
+        return iterations >= 10000;
     }
 
     fn set_ok_term(self: *WorkerState, val: qjs.JSValue, result: *Result) void {
@@ -720,14 +762,15 @@ pub const WorkerState = struct {
 
     fn complete_sync_call(self: *WorkerState, id: u64, result: *Result) void {
         self.rd.sync_slots_mutex.lock();
-        const slot = self.rd.sync_slots.get(id);
-        self.rd.sync_slots_mutex.unlock();
+        defer self.rd.sync_slots_mutex.unlock();
 
-        if (slot) |sync_slot| {
+        if (self.rd.sync_slots.get(id)) |sync_slot| {
             sync_slot.ok = result.ok;
             sync_slot.result_json = result.json;
             sync_slot.result_env = result.env;
             sync_slot.result_term = if (result.env != null) result.term else null;
+            // Keep the slot mutex held through publication. The waiter removes
+            // this stack-owned slot only after observing the event.
             sync_slot.done.set();
         } else if (result.env) |term_env| {
             beam.free_env(term_env);
@@ -780,7 +823,61 @@ pub const WorkerState = struct {
         }
     }
 
-    pub fn do_load_addon(self: *WorkerState, path: [:0]const u8, global_name: ?[:0]const u8, result: *Result) void {
+    fn setAddonError(result: *Result, reason: [:0]const u8, path: []const u8) void {
+        const env = beam.alloc_env();
+        result.ok = false;
+        result.env = env;
+        const error_items = [_]e.ERL_NIF_TERM{
+            beam.make_into_atom(reason, .{ .env = env }).v,
+            beam.make(path, .{ .env = env }).v,
+        };
+        result.term = e.enif_make_tuple_from_array(env, &error_items, error_items.len);
+    }
+
+    fn claimAddon(path: []const u8) enum { claimed, already_claimed, limit, oom } {
+        if (addon_claims.contains(path)) return .already_claimed;
+        if (addon_claims.count() >= max_addon_claims) return .limit;
+
+        const key = gpa.dupe(u8, path) catch return .oom;
+        addon_claims.put(gpa, key, .{}) catch {
+            gpa.free(key);
+            return .oom;
+        };
+        return .claimed;
+    }
+
+    fn releaseAddonClaim(path: []const u8) void {
+        if (addon_claims.fetchRemove(path)) |entry| gpa.free(entry.key);
+    }
+
+    fn publishAddonExports(self: *WorkerState, env: *napi_mod.NapiEnv, exports: qjs.JSValue, global_name: ?[:0]const u8, result: *Result) void {
+        if (global_name) |name| {
+            const global = qjs.JS_GetGlobalObject(self.ctx);
+            defer qjs.JS_FreeValue(self.ctx, global);
+            _ = qjs.JS_SetPropertyStr(self.ctx, global, name.ptr, qjs.JS_DupValue(self.ctx, exports));
+
+            const atom = qjs.JS_NewAtom(self.ctx, name.ptr);
+            env.addon_globals.append(gpa, atom) catch {
+                qjs.JS_FreeAtom(self.ctx, atom);
+            };
+        }
+
+        const result_env = beam.alloc_env();
+        result.ok = true;
+        result.term = js_to_beam.convert_with_limits(self.ctx, exports, result_env, self.convert_limits());
+        result.env = result_env;
+    }
+
+    pub fn do_load_addon(self: *WorkerState, path: [:0]const u8, global_name: ?[:0]const u8, allow_reinitialization: bool, result: *Result) void {
+        const canonical_path = sync.realPathAlloc(gpa, path) catch {
+            setAddonError(result, "addon_not_found", path);
+            return;
+        };
+        defer gpa.free(canonical_path);
+
+        addon_load_mutex.lock();
+        defer addon_load_mutex.unlock();
+
         ensureNapiSymbolsGlobal();
 
         if (self.napi_env == null) {
@@ -788,19 +885,54 @@ pub const WorkerState = struct {
         }
         const env = self.napi_env.?;
 
-        napi_mod.clearPendingModule();
+        if (self.addon_exports.get(canonical_path)) |exports| {
+            self.publishAddonExports(env, exports, global_name, result);
+            return;
+        }
 
-        const lib = gpa.create(std.DynLib) catch {
+        const claim = claimAddon(canonical_path);
+        if (claim == .already_claimed and !allow_reinitialization) {
+            setAddonError(result, "addon_already_initialized", canonical_path);
+            return;
+        }
+        if (claim == .limit) {
+            setAddonError(result, "addon_load_limit", canonical_path);
+            return;
+        }
+        if (claim == .oom) {
+            result.ok = false;
+            result.json = "OOM";
+            return;
+        }
+        const new_claim = claim == .claimed;
+
+        const path_z = gpa.dupeSentinel(u8, canonical_path, 0) catch {
+            if (new_claim) releaseAddonClaim(canonical_path);
             result.ok = false;
             result.json = "OOM";
             return;
         };
-        lib.* = std.DynLib.openZ(path) catch {
-            gpa.destroy(lib);
-            result.ok = false;
-            result.json = "Failed to dlopen addon";
-            return;
-        };
+        defer gpa.free(path_z);
+
+        napi_mod.clearPendingModule();
+
+        const lib = if (new_claim) blk: {
+            const opened = gpa.create(DynamicLibrary) catch {
+                releaseAddonClaim(canonical_path);
+                result.ok = false;
+                result.json = "OOM";
+                return;
+            };
+            opened.* = DynamicLibrary.open(gpa, path_z) catch {
+                releaseAddonClaim(canonical_path);
+                gpa.destroy(opened);
+                result.ok = false;
+                result.json = "Failed to dlopen addon";
+                return;
+            };
+            addon_claims.getPtr(canonical_path).?.library = opened;
+            break :blk opened;
+        } else addon_claims.get(canonical_path).?.library.?;
 
         const exports = qjs.JS_NewObject(self.ctx);
         const exports_slot = gpa.create(qjs.JSValue) catch {
@@ -836,29 +968,21 @@ pub const WorkerState = struct {
             }
         }
 
-        // Set exports as a global JS variable if a name was provided
-        if (global_name) |gn| {
-            const g = qjs.JS_GetGlobalObject(self.ctx);
-            defer qjs.JS_FreeValue(self.ctx, g);
-            _ = qjs.JS_SetPropertyStr(self.ctx, g, gn.ptr, qjs.JS_DupValue(self.ctx, final_exports));
-            // Track the atom so we can delete it during cleanup
-            const atom = qjs.JS_NewAtom(self.ctx, gn.ptr);
-            env.addon_globals.append(gpa, atom) catch {
-                qjs.JS_FreeAtom(self.ctx, atom);
+        const cache_key = gpa.dupe(u8, canonical_path) catch null;
+        if (cache_key) |key| {
+            const cached_exports = qjs.JS_DupValue(self.ctx, final_exports);
+            self.addon_exports.put(key, cached_exports) catch {
+                qjs.JS_FreeValue(self.ctx, cached_exports);
+                gpa.free(key);
             };
         }
 
-        const result_env = beam.alloc_env();
-        result.ok = true;
-        result.term = js_to_beam.convert_with_limits(self.ctx, final_exports, result_env, self.convert_limits());
-        result.env = result_env;
+        self.publishAddonExports(env, final_exports, global_name, result);
 
-        // Free our reference to exports
         qjs.JS_FreeValue(self.ctx, exports);
         if (final_exports.tag != exports.tag or qjs.JS_VALUE_GET_PTR(final_exports) != qjs.JS_VALUE_GET_PTR(exports)) {
             qjs.JS_FreeValue(self.ctx, final_exports);
         }
-        // These are standalone DupValue'd slots that need cleanup
         env.clearPendingException();
     }
 
@@ -883,7 +1007,7 @@ pub const WorkerState = struct {
 
     pub fn set_deadline(self: *WorkerState, timeout_ns: u64) void {
         if (timeout_ns > 0) {
-            self.rd.deadline = types.nanoTimestamp() + @as(i128, timeout_ns);
+            self.rd.deadline = sync.nowNanoseconds() + @as(i128, timeout_ns);
         }
     }
 
@@ -899,14 +1023,14 @@ pub const WorkerState = struct {
 
         const global = qjs.JS_GetGlobalObject(self.ctx);
         defer qjs.JS_FreeValue(self.ctx, global);
-        wasm_js.install(self.ctx, global, self.max_reductions);
+        wasm_js.install(self.ctx, global, self.max_reductions, self.rd.wasm_stack_size, self.rd.wasm_heap_size);
     }
 };
 
 fn interrupt_handler(_: ?*qjs.JSRuntime, user_data: ?*anyopaque) callconv(.c) c_int {
     const rd: *types.RuntimeData = @ptrCast(@alignCast(user_data));
     if (rd.deadline) |deadline| {
-        if (types.nanoTimestamp() > deadline) return 1;
+        if (sync.nowNanoseconds() > deadline) return 1;
     }
     return 0;
 }
@@ -921,9 +1045,9 @@ pub fn worker_main(rd: *types.RuntimeData, owner_pid: beam.pid) void {
     qjs.JS_SetInterruptHandler(rt, &interrupt_handler, @ptrCast(rd));
 
     types.class_ids_mutex.lock();
-    _ = qjs.JS_NewClassID(rt, &beam_proxy.class_id);
-    _ = qjs.JS_NewClassID(rt, &dom.document_class_id);
-    _ = qjs.JS_NewClassID(rt, &dom.element_class_id);
+    types.reserveClassID(rt, &beam_proxy.class_id);
+    types.reserveClassID(rt, &dom.document_class_id);
+    types.reserveClassID(rt, &dom.element_class_id);
     types.class_ids_mutex.unlock();
 
     beam_proxy.initRuntime(rt);
@@ -938,7 +1062,8 @@ pub fn worker_main(rd: *types.RuntimeData, owner_pid: beam.pid) void {
         .rd = rd,
         .pending_calls = std.AutoHashMap(u64, PendingCall).init(gpa),
         .timers = std.AutoHashMap(u64, TimerEntry).init(gpa),
-        .start_time = types.nanoTimestamp(),
+        .addon_exports = std.StringHashMap(qjs.JSValue).init(gpa),
+        .start_time = sync.nowNanoseconds(),
         .max_reductions = 0,
     };
     defer state.deinit();
@@ -1060,9 +1185,9 @@ pub fn worker_main(rd: *types.RuntimeData, owner_pid: beam.pid) void {
                     const work = p.work;
                     if (work.complete) |complete| {
                         const napi_status: nt.napi_status = if (work.status.load(.seq_cst) == .cancelled)
-                            @intFromEnum(nt.Status.cancelled)
+                            @backingInt(nt.Status.cancelled)
                         else
-                            @intFromEnum(nt.Status.ok);
+                            @backingInt(nt.Status.ok);
                         complete(work.env, napi_status, work.data);
                     }
                     work.deinit();
@@ -1106,7 +1231,7 @@ pub fn worker_main(rd: *types.RuntimeData, owner_pid: beam.pid) void {
                 },
                 .load_addon => |p| {
                     var result = Result{};
-                    state.do_load_addon(p.path, p.global_name, &result);
+                    state.do_load_addon(p.path, p.global_name, p.allow_reinitialization, &result);
                     gpa.free(p.path);
                     if (p.global_name) |gn| gpa.free(gn);
                     types.send_reply(p.caller_pid, p.ref_env, p.ref_term, result.ok, result.env, result.term, result.json);

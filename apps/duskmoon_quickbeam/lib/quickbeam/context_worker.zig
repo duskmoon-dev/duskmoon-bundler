@@ -4,6 +4,7 @@ const worker = @import("worker.zig");
 const js = @import("js_helpers.zig");
 const beam_proxy = @import("beam_proxy.zig");
 const dom = @import("dom.zig");
+const sync = @import("sync.zig");
 
 const std = ct.std;
 const beam = ct.beam;
@@ -13,7 +14,7 @@ const gpa = ct.gpa;
 fn interrupt_handler(_: ?*qjs.JSRuntime, user_data: ?*anyopaque) callconv(.c) c_int {
     const pd: *ct.PoolData = @ptrCast(@alignCast(user_data));
     if (pd.deadline) |deadline| {
-        if (types.nanoTimestamp() > deadline) return 1;
+        if (sync.nowNanoseconds() > deadline) return 1;
     }
     return 0;
 }
@@ -102,6 +103,12 @@ fn pool_drain_callback(state: *worker.WorkerState) void {
     }
 }
 
+fn destroy_context_entry(entry: *ct.ContextEntry) void {
+    entry.state.deinit();
+    entry.rd.sync_slots.deinit(gpa);
+    gpa.destroy(entry);
+}
+
 pub fn pool_worker_main(pd: *ct.PoolData) void {
     const rt = qjs.JS_NewRuntime() orelse return;
     defer qjs.JS_FreeRuntime(rt);
@@ -112,19 +119,24 @@ pub fn pool_worker_main(pd: *ct.PoolData) void {
     qjs.JS_SetInterruptHandler(rt, &interrupt_handler, @ptrCast(pd));
 
     types.class_ids_mutex.lock();
-    _ = qjs.JS_NewClassID(rt, &beam_proxy.class_id);
-    _ = qjs.JS_NewClassID(rt, &dom.document_class_id);
-    _ = qjs.JS_NewClassID(rt, &dom.element_class_id);
+    types.reserveClassID(rt, &beam_proxy.class_id);
+    types.reserveClassID(rt, &dom.document_class_id);
+    types.reserveClassID(rt, &dom.element_class_id);
     types.class_ids_mutex.unlock();
 
     beam_proxy.initRuntime(rt);
 
     var contexts = std.AutoHashMap(ct.ContextId, *ct.ContextEntry).init(gpa);
     defer {
+        // Remove externally visible RuntimeData pointers before freeing entries.
+        // Resolver NIFs hold this mutex through sync-slot publication.
+        pd.rd_map_mutex.lock();
+        pd.rd_map.clearRetainingCapacity();
+        pd.rd_map_mutex.unlock();
+
         var it = contexts.valueIterator();
         while (it.next()) |entry| {
-            entry.*.state.deinit();
-            gpa.destroy(entry.*);
+            destroy_context_entry(entry.*);
         }
         contexts.deinit();
     }
@@ -202,13 +214,15 @@ fn handle_create_context(
 
     entry.rd = .{
         .mutex = .{},
-        .cond = .{},
+        .queue_event = .{},
         .queue_head = null,
         .queue_tail = null,
         .stopped = false,
         .thread = null,
         .max_convert_depth = pd.max_convert_depth,
         .max_convert_nodes = pd.max_convert_nodes,
+        .wasm_stack_size = pd.wasm_stack_size,
+        .wasm_heap_size = pd.wasm_heap_size,
     };
     entry.owner_pid = p.owner_pid;
     entry.id = p.context_id;
@@ -219,7 +233,8 @@ fn handle_create_context(
         .rd = &entry.rd,
         .pending_calls = std.AutoHashMap(u64, worker.PendingCall).init(gpa),
         .timers = std.AutoHashMap(u64, worker.TimerEntry).init(gpa),
-        .start_time = types.nanoTimestamp(),
+        .addon_exports = std.StringHashMap(qjs.JSValue).init(gpa),
+        .start_time = sync.nowNanoseconds(),
         .max_reductions = p.max_reductions,
     };
 
@@ -236,8 +251,7 @@ fn handle_create_context(
     pd.rd_map_mutex.lock();
     pd.rd_map.put(gpa, p.context_id, &entry.rd) catch |err| {
         pd.rd_map_mutex.unlock();
-        entry.state.deinit();
-        gpa.destroy(entry);
+        destroy_context_entry(entry);
         const reason = @errorName(err);
         types.send_reply(p.caller_pid, p.ref_env, p.ref_term, false, null, null, reason);
         return;
@@ -245,8 +259,10 @@ fn handle_create_context(
     pd.rd_map_mutex.unlock();
 
     contexts.put(p.context_id, entry) catch {
-        entry.state.deinit();
-        gpa.destroy(entry);
+        pd.rd_map_mutex.lock();
+        _ = pd.rd_map.remove(p.context_id);
+        pd.rd_map_mutex.unlock();
+        destroy_context_entry(entry);
         types.send_reply(p.caller_pid, p.ref_env, p.ref_term, false, null, null, "Out of memory");
         return;
     };
@@ -266,9 +282,8 @@ fn handle_destroy_context(
     pd.rd_map_mutex.unlock();
 
     if (contexts.fetchRemove(p.context_id)) |kv| {
-        var entry = kv.value;
-        entry.state.deinit();
-        gpa.destroy(entry);
+        const entry = kv.value;
+        destroy_context_entry(entry);
     }
 }
 
@@ -286,7 +301,7 @@ fn handle_ctx_eval(
     const entry = entry_ptr.*;
 
     if (p.timeout_ns > 0) {
-        pd.deadline = types.nanoTimestamp() + @as(i128, p.timeout_ns);
+        pd.deadline = sync.nowNanoseconds() + @as(i128, p.timeout_ns);
     }
 
     // Pump resolve/reject messages from the pool queue into the context's rd queue
@@ -337,7 +352,7 @@ fn handle_ctx_call(
     const entry = entry_ptr.*;
 
     if (p.timeout_ns > 0) {
-        pd.deadline = types.nanoTimestamp() + @as(i128, p.timeout_ns);
+        pd.deadline = sync.nowNanoseconds() + @as(i128, p.timeout_ns);
     }
 
     install_pump(pd, contexts, p.context_id, entry);

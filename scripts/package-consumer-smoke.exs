@@ -36,7 +36,7 @@ deps =
 deps =
   if mode == "source" do
     [
-      {:zigler, "~> 0.16.0", runtime: false},
+      {:zigler, "~> 0.17.0", runtime: false},
       {:rustler, "~> 0.38", runtime: false},
       {:ex_doc, "~> 0.40", runtime: false, override: true}
     ] ++ deps

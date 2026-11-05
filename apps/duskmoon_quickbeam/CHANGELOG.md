@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Synchronize [QuickBEAM 0.11.3](https://github.com/elixir-volt/quickbeam/releases/tag/v0.11.3), including QuickJS-NG 0.15.1, isolated BEAM execution with explicit program pinning, and grapheme-only Intl.Segmenter support. Programs must be recompiled after an incompatible QuickJS bytecode or ABI upgrade.
+- Add configurable WASM stack/heap sizes and bulk-memory support; preserve bytecode disassembly in release builds, configured promise deadlines, and safe native-addon lifecycle handling.
+- Build source NIFs with Zig 0.17.1 while preserving the Duskmoon native policy, supported targets, and portable CPU baseline.
+
 - Use the coordinated HTTP Fetch, EventSource, and WebSocket 0.20 family so consumers can share one compatible HTTP dependency graph without overrides.
 - Include the standard `offsetof` definition so QuickJS initialization does not abort on musl when checked native builds initialize garbage collection lists.
 - Build precompiled NIFs for an explicit CPU baseline so x86_64 artifacts run without AVX-512.

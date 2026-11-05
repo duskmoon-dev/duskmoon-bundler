@@ -115,21 +115,21 @@ pub fn arrayBufferFree(rt: ?*qjs.JSRuntime, user_data: ?*anyopaque, ptr: ?*anyop
 }
 
 pub export fn napi_is_typedarray(env_: napi_env, value: napi_value, result: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     r.* = isTypedArray(env, c.toVal(value));
     return env.ok();
 }
 
 pub export fn napi_is_buffer(env_: napi_env, value: napi_value, result: ?*bool) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
     r.* = isUint8Array(env, c.toVal(value));
     return env.ok();
 }
 
 pub export fn napi_create_buffer(env_: napi_env, length: usize, data: ?*?[*]u8, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
 
     const buf = gpa.alloc(u8, length) catch return env.genericFailure();
@@ -146,7 +146,7 @@ pub export fn napi_create_buffer(env_: napi_env, length: usize, data: ?*?[*]u8, 
 }
 
 pub export fn napi_create_buffer_copy(env_: napi_env, length: usize, src: ?[*]const u8, data: ?*?[*]u8, result: ?*napi_value) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     const r = result orelse return env.invalidArg();
 
     const buf = gpa.alloc(u8, length) catch return env.genericFailure();
@@ -167,6 +167,6 @@ pub export fn napi_create_buffer_copy(env_: napi_env, length: usize, src: ?[*]co
 }
 
 pub export fn napi_get_buffer_info(env_: napi_env, value: napi_value, data: ?*?[*]u8, length: ?*usize) callconv(.c) napi_status {
-    const env = env_ orelse return @intFromEnum(Status.invalid_arg);
+    const env = env_ orelse return @backingInt(Status.invalid_arg);
     return getUint8ArrayInfo(env, c.toVal(value), data, length);
 }

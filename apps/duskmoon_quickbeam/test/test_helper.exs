@@ -1,1 +1,39 @@
+for app <- [:duskmoon_quickbeam, :gaoxy_http, :websock_adapter] do
+  {:ok, _} = Application.ensure_all_started(app)
+end
+
+Code.require_file("support/test262.ex", __DIR__)
 ExUnit.start()
+
+# Compile the test N-API addon from C source
+test_addon_src = Path.expand("support/test_addon.c", __DIR__)
+test_addon_out = Path.expand("support/test_addon.node", __DIR__)
+test_addon_hdr = Path.expand("support", __DIR__)
+
+napi_addon_excluded? = :napi_addon in ExUnit.configuration()[:exclude]
+
+addon_current? =
+  File.exists?(test_addon_out) and
+    File.stat!(test_addon_out).mtime >= File.stat!(test_addon_src).mtime
+
+unless napi_addon_excluded? or addon_current? do
+  extra =
+    case :os.type() do
+      {:unix, :darwin} -> ["-undefined", "dynamic_lookup"]
+      _ -> ["-fPIC"]
+    end
+
+  args =
+    ["-shared", "-fvisibility=hidden"] ++
+      extra ++
+      ["-o", test_addon_out, "-I", test_addon_hdr, test_addon_src]
+
+  {_, 0} = System.cmd("cc", args, stderr_to_stdout: true)
+end
+
+# Force garbage collection before BEAM exits to prevent NIF finalizer crashes.
+# On OTP 27.0.x, the BEAM shutdown races with QuickJS worker thread cleanup.
+System.at_exit(fn _ ->
+  :erlang.garbage_collect()
+  Process.sleep(200)
+end)

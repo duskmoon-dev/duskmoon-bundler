@@ -409,7 +409,7 @@ pub fn wasm_call(inst_res: WasmInstanceResource, func_name: []const u8, params: 
     const managed = inst_res.unpack() orelse return make_error("instance stopped");
     const inst = managed.inst;
 
-    const name_z = std.heap.c_allocator.dupeZ(u8, func_name) catch return make_error("out of memory");
+    const name_z = std.heap.c_allocator.dupeSentinel(u8, func_name, 0) catch return make_error("out of memory");
     defer std.heap.c_allocator.free(name_z);
 
     var err_buf: [256]u8 = undefined;
@@ -535,7 +535,7 @@ pub fn wasm_read_global(inst_res: WasmInstanceResource, name: []const u8) beam.t
     const managed = inst_res.unpack() orelse return make_error("instance stopped");
     const inst = managed.inst;
 
-    const name_z = std.heap.c_allocator.dupeZ(u8, name) catch return make_error("out of memory");
+    const name_z = std.heap.c_allocator.dupeSentinel(u8, name, 0) catch return make_error("out of memory");
     defer std.heap.c_allocator.free(name_z);
 
     var err_buf: [256]u8 = undefined;
@@ -554,7 +554,7 @@ pub fn wasm_write_global(inst_res: WasmInstanceResource, name: []const u8, value
     const managed = inst_res.unpack() orelse return make_error("instance stopped");
     const inst = managed.inst;
 
-    const name_z = std.heap.c_allocator.dupeZ(u8, name) catch return make_error("out of memory");
+    const name_z = std.heap.c_allocator.dupeSentinel(u8, name, 0) catch return make_error("out of memory");
     defer std.heap.c_allocator.free(name_z);
 
     var err_buf: [256]u8 = undefined;

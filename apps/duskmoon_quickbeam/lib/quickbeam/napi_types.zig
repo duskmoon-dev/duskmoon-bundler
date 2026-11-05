@@ -1,4 +1,5 @@
 const types = @import("types.zig");
+const sync = @import("sync.zig");
 const js = @import("js_helpers.zig");
 const std = types.std;
 const qjs = types.qjs;
@@ -145,7 +146,7 @@ pub const NapiEnv = struct {
         .error_message = null,
         .engine_reserved = null,
         .engine_error_code = 0,
-        .error_code = @intFromEnum(Status.ok),
+        .error_code = @backingInt(Status.ok),
     },
     pending_exception: qjs.JSValue = js.JS_UNDEFINED,
     has_pending_exception: bool = false,
@@ -160,8 +161,8 @@ pub const NapiEnv = struct {
     callback_data: std.ArrayListUnmanaged(*FunctionCallbackData) = .empty,
 
     pub fn setLastError(self: *NapiEnv, status: Status) napi_status {
-        self.last_error.error_code = @intFromEnum(status);
-        return @intFromEnum(status);
+        self.last_error.error_code = @backingInt(status);
+        return @backingInt(status);
     }
 
     pub fn ok(self: *NapiEnv) napi_status {
@@ -384,8 +385,8 @@ pub const ThreadSafeFunction = struct {
     thread_count: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
     queue: std.ArrayListUnmanaged(?*anyopaque) = .empty,
     max_queue_size: usize = 0,
-    lock: types.Mutex = .{},
-    condvar: types.Condition = .{},
+    lock: sync.Mutex = .{},
+    condvar: sync.Condition = .{},
     closing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     finalized: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 

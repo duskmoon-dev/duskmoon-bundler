@@ -36,7 +36,7 @@ UI repository tags remain the source for earlier toolchains.
    never waits for an unrelated target's Rust builds. Builds start without any
    restored compilation cache; CI/test retain their shared native cache.
    Preserve NIF 2.15, musl shared-library checks, portable x86_64 CPU checks, Rust
-   and Zig 0.16.0 requirements. Native jobs only upload workflow artifacts.
+   and Zig 0.17.1 requirements. Native jobs only upload workflow artifacts.
 4. Collect exactly 47 final archives. Generate checksums directly from those
    bytes, stage standalone package sources, derive package order from evaluated
    manifests, build exact Hex tarballs, and record source/lock/asset/package

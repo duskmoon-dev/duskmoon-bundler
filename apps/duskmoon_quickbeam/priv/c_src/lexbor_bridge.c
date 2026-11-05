@@ -254,10 +254,7 @@ lxb_status_t qb_serialize_tree(lxb_dom_node_t *node,
 lxb_dom_node_t *qb_parse_fragment(lxb_html_document_t *doc,
                                    lxb_dom_element_t *context_elem,
                                    const lxb_char_t *html, size_t len) {
-    lxb_html_element_t *frag =
-        lxb_html_document_parse_fragment(doc, context_elem, html, len);
-    if (!frag) return NULL;
-    return lxb_dom_interface_node(frag);
+    return lxb_html_document_parse_fragment(doc, context_elem, html, len);
 }
 
 lxb_css_parser_t *qb_css_parser_create(void) {

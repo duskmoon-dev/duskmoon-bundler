@@ -132,7 +132,10 @@ jobs:
         uses: jdx/mise-action@v5.2.2
         with:
           tool_versions: |
-            zig 0.16.0
+            zig 0.17.1
+      - name: Select Zig patch toolchain
+        shell: bash
+        run: echo "ZIG_EXECUTABLE_PATH=$(command -v zig)" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

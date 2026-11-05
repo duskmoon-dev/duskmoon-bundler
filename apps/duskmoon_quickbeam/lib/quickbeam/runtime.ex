@@ -95,10 +95,42 @@ defmodule QuickBEAM.Runtime do
   end
 
   @spec load_addon(GenServer.server(), String.t(), keyword()) :: {:ok, term()} | {:error, term()}
-  def load_addon(server, path, opts \\ []) when is_binary(path) do
-    global_name = Keyword.get(opts, :as, "")
-    GenServer.call(server, {:load_addon, path, global_name}, :infinity)
+  def load_addon(server, path, opts \\ [])
+
+  def load_addon(server, path, opts) when is_binary(path) and is_list(opts) do
+    with true <- Keyword.keyword?(opts),
+         :ok <- validate_addon_options(opts),
+         global_name = Keyword.get(opts, :as, ""),
+         :ok <- validate_addon_global_name(global_name),
+         allow_reinitialization = Keyword.get(opts, :allow_reinitialization, false),
+         :ok <- validate_addon_reinitialization(allow_reinitialization) do
+      GenServer.call(
+        server,
+        {:load_addon, path, global_name, allow_reinitialization},
+        :infinity
+      )
+    else
+      false -> {:error, {:invalid_option, :options, opts}}
+      {:error, _reason} = error -> error
+    end
   end
+
+  def load_addon(_server, path, opts), do: {:error, {:invalid_addon_arguments, path, opts}}
+
+  defp validate_addon_options(opts) do
+    case Keyword.keys(opts) -- [:allow_reinitialization, :as] do
+      [] -> :ok
+      [key | _rest] -> {:error, {:unknown_option, key}}
+    end
+  end
+
+  defp validate_addon_global_name(name) when is_binary(name), do: :ok
+  defp validate_addon_global_name(name), do: {:error, {:invalid_option, :as, name}}
+
+  defp validate_addon_reinitialization(value) when is_boolean(value), do: :ok
+
+  defp validate_addon_reinitialization(value),
+    do: {:error, {:invalid_option, :allow_reinitialization, value}}
 
   @spec reset(GenServer.server()) :: :ok | {:error, String.t()}
   def reset(server) do
@@ -115,34 +147,9 @@ defmodule QuickBEAM.Runtime do
     GenServer.call(server, :memory_usage, :infinity)
   end
 
-  @spec send_message(GenServer.server(), term()) :: :ok
-  def send_message(server, message) do
-    GenServer.cast(server, {:send_message, message})
-  end
-
-  @spec dom_find(GenServer.server(), String.t()) :: {:ok, term()} | {:ok, nil}
-  def dom_find(server, selector) do
-    GenServer.call(server, {:dom_find, selector}, :infinity)
-  end
-
-  @spec dom_find_all(GenServer.server(), String.t()) :: {:ok, list()}
-  def dom_find_all(server, selector) do
-    GenServer.call(server, {:dom_find_all, selector}, :infinity)
-  end
-
-  @spec dom_text(GenServer.server(), String.t()) :: {:ok, String.t()}
-  def dom_text(server, selector) do
-    GenServer.call(server, {:dom_text, selector}, :infinity)
-  end
-
   @spec dom_attr(GenServer.server(), String.t(), String.t()) :: {:ok, String.t() | nil}
   def dom_attr(server, selector, attr_name) do
     GenServer.call(server, {:dom_attr, selector, attr_name}, :infinity)
-  end
-
-  @spec dom_html(GenServer.server()) :: {:ok, String.t()}
-  def dom_html(server) do
-    GenServer.call(server, :dom_html, :infinity)
   end
 
   @browser_handlers %{
@@ -299,7 +306,14 @@ defmodule QuickBEAM.Runtime do
 
     nif_opts =
       opts
-      |> Keyword.take([:memory_limit, :max_stack_size, :max_convert_depth, :max_convert_nodes])
+      |> Keyword.take([
+        :memory_limit,
+        :max_stack_size,
+        :wasm_stack_size,
+        :wasm_heap_size,
+        :max_convert_depth,
+        :max_convert_nodes
+      ])
       |> Map.new()
 
     resource = QuickBEAM.Native.start_runtime(self(), nif_opts)
@@ -506,8 +520,15 @@ defmodule QuickBEAM.Runtime do
     {:noreply, put_pending(state, ref, from, transform)}
   end
 
-  def handle_call({:load_addon, path, global_name}, from, state) do
-    ref = QuickBEAM.Native.load_addon(state.resource, path, global_name)
+  def handle_call({:load_addon, path, global_name, allow_reinitialization}, from, state) do
+    ref =
+      QuickBEAM.Native.load_addon(
+        state.resource,
+        path,
+        global_name,
+        allow_reinitialization
+      )
+
     {:noreply, put_pending(state, ref, from)}
   end
 
