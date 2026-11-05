@@ -18,6 +18,13 @@ UI repository tags remain the source for earlier toolchains.
 
 ## Bootstrap and gates
 
+<!-- TODO(upstream): duskmoon-dev/phoenix-duskmoon-ui#212 -->
+The 10.1.0 source candidate requires Zigler `~> 0.17.0`. Before selecting a
+pinned UI SHA, verify that its candidate helper supports this requirement;
+the UI helper's `~> 0.16.0` constraint currently blocks dependency resolution.
+Track the fix in [UI issue #212](https://github.com/duskmoon-dev/phoenix-duskmoon-ui/issues/212)
+and remove this note after the fixed UI revision passes the full candidate gate.
+
 1. Review and merge destination extraction. Keep any already-verified B0 UI
    consumer operational until a new destination B is published and installed.
 2. Run `ci.yml` for format/lint/compilation and `test.yml` for pure release,

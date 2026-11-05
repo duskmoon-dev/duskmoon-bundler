@@ -1,10 +1,15 @@
 # Changelog
 
-## Unreleased
+## 10.1.0 - 2026-11-05
 
+- Upgrade source builds to Rust 1.99 and Rustler 0.38, OXC to 0.156
+  (formatter/linter 0.157), Rolldown to 1.2.16, Tailwind Oxide to 4.3.4,
+  and Vize to 0.680 while preserving NIF 2.15 and native target coverage.
 - Upgrade Zig to 0.17.1 and Zigler to 0.17, and synchronize QuickBEAM with
   upstream 0.11.3, including QuickJS-NG 0.15.1, isolated BEAM execution,
   grapheme segmentation, and native lifecycle fixes.
+- Align Hologram's JavaScript checks with the upgraded OXC tooling and preserve
+  published native ABI compatibility in cold download probes.
 
 ## 10.0.10 - 2026-10-30
 
