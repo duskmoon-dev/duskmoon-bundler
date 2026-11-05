@@ -49,6 +49,7 @@ jobs:
           elixir scripts/package-stage-test.exs
           elixir scripts/native-policy-test.exs
           elixir scripts/native-url-test.exs
+          elixir .github/scripts/native_download_support_test.exs
       - name: Compile source dependencies for native download regressions
         env:
           MIX_ENV: dev

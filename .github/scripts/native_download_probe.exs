@@ -1,5 +1,6 @@
 # Qualify candidate callbacks or exact published packages against public native bytes.
 Code.require_file("release_support.exs", __DIR__)
+Code.require_file("native_download_support.exs", __DIR__)
 
 {mode, version} =
   case System.argv() do
@@ -133,17 +134,27 @@ if mode == :candidate do
       raise "published baseline failed outside the header regression; retained at #{temp}"
   end
 
-  # Overlay only the candidate URL callback and its six call sites. Keep the
-  # published manifests, checksum files and native binaries at their original B.
+  # Overlay only the URL callback and its six call sites. Published native
+  # declarations must retain the ABI and build configuration of their binaries.
   for {app, directory, files} <- [
         {"duskmoon_oxc", "oxc", ["native.ex", "format/native.ex", "lint/native.ex"]},
         {"duskmoon_oxide", "oxide", ["native.ex"]},
         {"duskmoon_vize", "vize", ["native.ex"]},
         {"duskmoon_quickbeam", "quickbeam", ["native.ex"]}
-      ],
-      file <- ["native_url.ex" | files] do
-    relative = Path.join(["lib", directory, file])
+      ] do
+    relative = Path.join(["lib", directory, "native_url.ex"])
     File.cp!(Path.join([root, "apps", app, relative]), Path.join([temp, app, relative]))
+
+    for file <- files do
+      relative = Path.join(["lib", directory, file])
+      published_path = Path.join([temp, app, relative])
+      candidate = File.read!(Path.join([root, "apps", app, relative]))
+
+      patched =
+        NativeDownloadSupport.overlay_url!(File.read!(published_path), candidate)
+
+      File.write!(published_path, patched)
+    end
   end
 
   File.rm_rf!(Path.join(consumer, "_build"))
