@@ -1,5 +1,12 @@
 # Changelog
 
+## 10.1.1 - 2026-11-06
+
+- Preserve satisfiable locked npm dependency versions, locations, integrity,
+  URLs and package metadata when adding workspace dependencies.
+- Refresh only the named package during targeted npm updates, keep full updates
+  explicit, and preserve the lockfile when resolution fails.
+
 ## 10.1.0 - 2026-11-05
 
 - Upgrade source builds to Rust 1.99 and Rustler 0.38, OXC to 0.156
