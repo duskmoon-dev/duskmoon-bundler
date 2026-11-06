@@ -1,5 +1,15 @@
 # Changelog
 
+## 10.1.2 - 2026-11-07
+
+### Fixed
+
+- Use the same package-location validation for ordinary and frozen installs.
+  Repeated installs preserve valid workspace-local pins alongside broader
+  hoisted versions, including their complete dependency closure and metadata.
+- Preserve that split graph when adding further workspace dependencies or
+  rebuilding node_modules from the lockfile.
+
 ## 10.1.1 - 2026-11-06
 
 ### Fixed

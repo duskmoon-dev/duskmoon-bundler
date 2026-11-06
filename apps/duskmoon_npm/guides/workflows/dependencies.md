@@ -15,6 +15,11 @@ package metadata, including workspace-local and nested records. Only new
 requirements and conflicting dependency edges are resolved. Use the update
 commands below when you intend to refresh locked versions.
 
+Ordinary and frozen installs resolve declarations from each manifest's package
+location. A workspace's exact pin can coexist with a different hoisted version
+used by a broader transitive requirement. Repeating an install or reconstructing
+`node_modules` preserves the existing lockfile bytes when that graph is valid.
+
 ## Development dependencies
 
 ```bash

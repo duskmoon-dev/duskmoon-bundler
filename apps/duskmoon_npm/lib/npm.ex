@@ -78,6 +78,9 @@ defmodule NPM do
   packages, are retained when adding dependencies. Use `update/0` to refresh
   the complete dependency graph.
 
+  Ordinary and frozen installs validate each manifest from its package location,
+  so workspace-local pins may coexist with different hoisted versions.
+
   ## Options
 
     * `:frozen` - when `true`, fails if `package-lock.json` doesn't match
@@ -340,18 +343,16 @@ defmodule NPM do
     end
   end
 
-  defp lockfile_matches?(lockfile, deps, local_links, overrides) do
-    lockfile_root_deps_satisfied?(lockfile, deps) and
-      lockfile_dependency_records_complete?(lockfile, local_links, overrides)
-  end
+  defp lockfile_matches?(lockfile, opts, local_links, overrides) do
+    with {:ok, nested} <- NPM.Lockfile.read_nested(),
+         {:ok, dependencies, _links} <- NPM.Workspace.frozen_dependencies(opts) do
+      locations = lockfile_locations(lockfile, nested)
 
-  defp lockfile_root_deps_satisfied?(lockfile, deps) do
-    Enum.all?(deps, fn {name, range} ->
-      case Map.get(lockfile, name) do
-        nil -> false
-        entry -> lockfile_entry_satisfies_range?(entry, range)
-      end
-    end)
+      locations != %{} and frozen_dependencies_satisfied?(locations, dependencies) and
+        frozen_records_complete?(locations, local_links, overrides)
+    else
+      {:error, _reason} -> false
+    end
   end
 
   defp lockfile_entry_satisfies_range?(_entry, range) when range in ["", "*", "latest"],
@@ -361,18 +362,6 @@ defmodule NPM do
     case NPM.Alias.parse(range) do
       {:alias, _package, alias_range} -> NPMSemver.matches?(entry.version, alias_range)
       {:normal, normal_range} -> NPMSemver.matches?(entry.version, normal_range)
-    end
-  end
-
-  defp lockfile_dependency_records_complete?(lockfile, local_links, overrides) do
-    case NPM.Lockfile.read_nested() do
-      {:ok, nested_lockfile} ->
-        lockfile
-        |> lockfile_locations(nested_lockfile)
-        |> frozen_records_complete?(local_links, overrides)
-
-      {:error, _reason} ->
-        false
     end
   end
 
@@ -386,8 +375,7 @@ defmodule NPM do
     {:ok, old_lockfile} = NPM.Lockfile.read()
     {:ok, overrides} = JSON.read_overrides()
 
-    matches? =
-      old_lockfile != %{} and lockfile_matches?(old_lockfile, deps, local_links, overrides)
+    matches? = lockfile_matches?(old_lockfile, opts, local_links, overrides)
 
     policy_ok? = lockfile_policy_current?()
     policy_reasons = lockfile_policy_mismatch_reasons()
@@ -396,9 +384,6 @@ defmodule NPM do
 
     cond do
       Keyword.get(opts, :force_resolve, false) or Keyword.get(opts, :unlock, []) != [] ->
-        resolve_and_install(deps, old_lockfile, local_links, overrides, opts)
-
-      old_lockfile == %{} ->
         resolve_and_install(deps, old_lockfile, local_links, overrides, opts)
 
       matches? and policy_ok? and nm_intact? ->
@@ -495,14 +480,14 @@ defmodule NPM do
   defp resolve_and_install(deps, old_lockfile, local_links, overrides, opts) do
     with {:ok, nested} <- NPM.Lockfile.read_nested() do
       if not Keyword.get(opts, :force_resolve, false) and (old_lockfile != %{} or nested != %{}) do
-        update_locked_graph(deps, old_lockfile, nested, local_links, overrides, opts)
+        update_locked_graph(old_lockfile, nested, local_links, overrides, opts)
       else
         resolve_fresh_and_install(deps, old_lockfile, local_links, overrides)
       end
     end
   end
 
-  defp update_locked_graph(deps, old_flat, old_nested, local_links, overrides, opts) do
+  defp update_locked_graph(old_flat, old_nested, local_links, overrides, opts) do
     with {:ok, dependencies, _links} <- NPM.Workspace.frozen_dependencies(opts) do
       unlocked = Keyword.get(opts, :unlock, [])
       preferred = locked_preferences(old_flat, old_nested) |> Map.drop(unlocked)
@@ -514,9 +499,16 @@ defmodule NPM do
           name in unlocked
         end)
 
+      unmet =
+        for {location, requirements} <- dependencies,
+            {name, range} <- requirements,
+            not dependency_satisfied?(name, range, location, flat, nested),
+            into: %{},
+            do: {name, range}
+
       {flat, nested} =
-        Enum.reduce(Map.merge(overrides, deps), {flat, nested}, fn {name, range} = dependency,
-                                                                   {flat, _nested} = state ->
+        Enum.reduce(Map.merge(overrides, unmet), {flat, nested}, fn {name, range} = dependency,
+                                                                    {flat, _nested} = state ->
           case Map.get(flat, name) do
             nil ->
               state

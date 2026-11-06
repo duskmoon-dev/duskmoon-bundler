@@ -723,6 +723,71 @@ defmodule NPM.InstallTest do
     end
   end
 
+  for {caller, nested_only?} <- [{:root, false}, {:workspace, false}, {:workspace, true}] do
+    @tag caller: caller, nested_only?: nested_only?
+    test "ordinary install preserves workspace-local locks from #{caller}, nested only: #{nested_only?}",
+         context do
+      {workspace, _packages} =
+        split_workspace_fixture!(context.project_dir, context.nested_only?)
+
+      lock_path = Path.join(context.project_dir, "package-lock.json")
+      original = File.read!(lock_path)
+      caller = if context.caller == :root, do: context.project_dir, else: workspace
+
+      File.cd!(caller, fn ->
+        capture_io(fn -> assert :ok = NPM.install(frozen: true) end)
+
+        for _ <- 1..2 do
+          capture_io(fn -> assert :ok = NPM.install() end)
+          assert File.read!(lock_path) == original
+        end
+
+        File.rm_rf!(Path.join(context.project_dir, "node_modules"))
+        File.rm_rf!(Path.join(workspace, "node_modules"))
+        capture_io(fn -> assert :ok = NPM.install() end)
+        assert File.read!(lock_path) == original
+        capture_io(fn -> assert :ok = NPM.install(frozen: true) end)
+
+        assert installed_version!(Path.join(workspace, "node_modules/@fixture/renderer")) ==
+                 "1.0.0"
+
+        assert installed_version!(Path.join(workspace, "node_modules/@fixture/core")) == "1.0.0"
+
+        unless context.nested_only? do
+          assert installed_version!(
+                   Path.join(context.project_dir, "node_modules/@fixture/renderer")
+                 ) ==
+                   "1.9.0"
+        end
+      end)
+    end
+  end
+
+  test "adding another workspace dependency preserves valid split locked versions", context do
+    {workspace, original} = split_workspace_fixture!(context.project_dir)
+    put_packument!("new-neighbor", "1.0.0")
+    write_cached_package!("new-neighbor", "1.0.0")
+    lock_path = Path.join(context.project_dir, "package-lock.json")
+
+    File.cd!(workspace, fn ->
+      capture_io(fn -> assert :ok = NPM.add("new-neighbor", "1.0.0") end)
+      assert {:ok, %{"packages" => packages}} = NPM.JSON.read_file(lock_path)
+
+      for {location, record} <- Map.delete(original, "apps/web") do
+        assert packages[location] == record, "changed existing record #{location}"
+      end
+
+      assert MapSet.difference(MapSet.new(Map.keys(packages)), MapSet.new(Map.keys(original))) ==
+               MapSet.new(["node_modules/new-neighbor"])
+
+      written = File.read!(lock_path)
+      capture_io(fn -> assert :ok = NPM.install() end)
+      assert File.read!(lock_path) == written
+      capture_io(fn -> assert :ok = NPM.install(frozen: true) end)
+      assert File.read!(lock_path) == written
+    end)
+  end
+
   test "targeted update preserves unrelated locked versions while full update refreshes them",
        context do
     for name <- ["update-target", "update-unrelated"] do
@@ -969,6 +1034,70 @@ defmodule NPM.InstallTest do
                  "node_modules/nested-parent/node_modules/locked-child" =>
                    lock_entry("locked-child", "2.0.0"),
                  "apps/web/node_modules/workspace-only" => lock_entry("workspace-only", "1.0.0")
+               }
+             )
+
+    assert {:ok, document} = NPM.JSON.read_file("package-lock.json")
+
+    packages =
+      Map.new(document["packages"], fn {location, record} ->
+        {location, Map.merge(record, %{"license" => "MIT", "engines" => %{"node" => ">=18"}})}
+      end)
+
+    File.write!("package-lock.json", NPM.JSON.encode_pretty(%{document | "packages" => packages}))
+    {workspace, packages}
+  end
+
+  defp split_workspace_fixture!(project_dir, nested_only? \\ false) do
+    renderer = "@fixture/renderer"
+    core = "@fixture/core"
+
+    put_packument!("broad-parent", "1.0.0", dependencies: %{renderer => "^1.0.0"})
+
+    put_packument_versions!(renderer, [
+      {"1.0.0", [dependencies: %{core => "1.0.0"}]},
+      {"1.9.0", [dependencies: %{core => "1.9.0"}]}
+    ])
+
+    put_packument_versions!(core, [{"1.0.0", []}, {"1.9.0", []}])
+    write_cached_package!("broad-parent", "1.0.0")
+
+    for name <- [renderer, core],
+        version <- ["1.0.0", "1.9.0"],
+        do: write_cached_package!(name, version)
+
+    workspace = Path.join(project_dir, "apps/web")
+
+    write_package!(project_dir, %{
+      "name" => "split-workspace",
+      "workspaces" => ["apps/*"],
+      "dependencies" => if(nested_only?, do: %{}, else: %{"broad-parent" => "1.0.0"})
+    })
+
+    write_package!(workspace, %{
+      "name" => "web",
+      "version" => "1.0.0",
+      "dependencies" => %{renderer => "1.0.0"}
+    })
+
+    flat =
+      if nested_only? do
+        %{}
+      else
+        %{
+          "broad-parent" =>
+            lock_entry("broad-parent", "1.0.0", dependencies: %{renderer => "^1.0.0"}),
+          renderer => lock_entry(renderer, "1.9.0", dependencies: %{core => "1.9.0"}),
+          core => lock_entry(core, "1.9.0")
+        }
+      end
+
+    assert :ok =
+             NPM.Lockfile.write(flat,
+               nested: %{
+                 "apps/web/node_modules/#{renderer}" =>
+                   lock_entry(renderer, "1.0.0", dependencies: %{core => "1.0.0"}),
+                 "apps/web/node_modules/#{core}" => lock_entry(core, "1.0.0")
                }
              )
 
