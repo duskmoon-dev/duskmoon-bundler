@@ -1,5 +1,12 @@
 # Changelog
 
+## 10.1.2 - 2026-11-07
+
+- Validate ordinary npm installs from each manifest's actual package location,
+  preserving valid workspace-local pins beside different hoisted versions.
+- Keep repeated ordinary/frozen installs and node_modules reconstruction stable,
+  and retain the existing split graph when adding another workspace dependency.
+
 ## 10.1.1 - 2026-11-06
 
 - Preserve satisfiable locked npm dependency versions, locations, integrity,
