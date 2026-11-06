@@ -120,6 +120,7 @@ defmodule NPM.Lockfile do
   defp write_package_lock(lockfile, path, policy, opts \\ []) do
     root_data = read_root_package()
     packages = package_lock_packages(lockfile, root_data, opts)
+    packages = if opts[:preserve], do: preserve_package_records(packages, path), else: packages
 
     data =
       %{
@@ -132,6 +133,41 @@ defmodule NPM.Lockfile do
       |> maybe_put("version", root_data["version"])
 
     File.write(path, NPM.JSON.encode_pretty(data))
+  end
+
+  defp preserve_package_records(packages, path) do
+    previous =
+      case read_json(path) do
+        {:ok, %{"packages" => previous, "lockfileVersion" => version}} when version in [2, 3] ->
+          previous
+
+        _ ->
+          %{}
+      end
+
+    Map.new(packages, fn {location, record} ->
+      old = Map.get(previous, location, %{})
+
+      preserved =
+        cond do
+          record["link"] == true ->
+            Map.merge(old, record)
+
+          match?({:ok, _}, package_name_from_any_location(location)) ->
+            if package_lock_entry_from_info(old) == package_lock_entry_from_info(record),
+              do: old,
+              else: record
+
+          true ->
+            old
+            |> Map.drop(
+              ~w(name version workspaces dependencies devDependencies optionalDependencies peerDependencies)
+            )
+            |> Map.merge(record)
+        end
+
+      {location, preserved}
+    end)
   end
 
   defp write_legacy(lockfile, path, policy) do

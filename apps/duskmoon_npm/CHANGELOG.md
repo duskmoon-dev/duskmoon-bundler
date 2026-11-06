@@ -1,5 +1,15 @@
 # Changelog
 
+## 10.1.1 - 2026-11-06
+
+### Fixed
+
+- Preserve satisfiable locked versions, package locations and metadata when
+  installing new workspace dependencies. Resolve only missing or incompatible
+  edges, and retain explicit full-update behavior.
+- Keep unrelated locked versions during targeted updates and leave the lockfile
+  unchanged when resolution fails.
+
 ## 10.0.1 - 2026-10-14
 
 ### Fixed

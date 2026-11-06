@@ -10,6 +10,11 @@ mix npm.install @types/node@^20
 
 By default packages are saved to `dependencies`.
 
+Ordinary installs and additions preserve satisfiable locked versions and their
+package metadata, including workspace-local and nested records. Only new
+requirements and conflicting dependency edges are resolved. Use the update
+commands below when you intend to refresh locked versions.
+
 ## Development dependencies
 
 ```bash
@@ -51,6 +56,9 @@ Update one package:
 ```bash
 mix npm.update lodash
 ```
+
+This refreshes the named package while retaining other satisfiable locked
+versions. A failed resolution leaves the previous lockfile intact.
 
 ## Inspect dependencies
 

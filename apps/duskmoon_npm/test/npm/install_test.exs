@@ -678,6 +678,124 @@ defmodule NPM.InstallTest do
     refute File.exists?(Path.join(app_dir, "node_modules"))
   end
 
+  for operation <- [:install, :add] do
+    @tag operation: operation
+    test "#{operation} preserves the existing workspace graph when adding dependencies",
+         context do
+      {workspace, original} = locked_workspace_fixture!(context.project_dir)
+      File.cd!(workspace)
+
+      capture_io(fn ->
+        case context.operation do
+          :install ->
+            manifest = read_package!(workspace)
+            manifest = put_in(manifest, ["dependencies", "new-renderer"], "1.0.0")
+            write_package!(workspace, manifest)
+            assert :ok = NPM.install()
+
+          :add ->
+            assert :ok = NPM.add("new-renderer", "1.0.0")
+        end
+      end)
+
+      lock_path = Path.join(context.project_dir, "package-lock.json")
+      assert {:ok, %{"packages" => packages}} = NPM.JSON.read_file(lock_path)
+
+      for {location, record} <- Map.delete(original, "apps/web") do
+        assert packages[location] == record, "changed existing record #{location}"
+      end
+
+      assert packages["apps/web"]["dependencies"]["new-renderer"] == "1.0.0"
+      assert packages["apps/web"]["license"] == "MIT"
+
+      assert MapSet.difference(MapSet.new(Map.keys(packages)), MapSet.new(Map.keys(original))) ==
+               MapSet.new(["node_modules/new-renderer", "node_modules/new-leaf"])
+
+      assert installed_version!(Path.join(context.project_dir, "node_modules/locked-child")) ==
+               "1.0.0"
+
+      assert installed_version!(Path.join(workspace, "node_modules/workspace-only")) == "1.0.0"
+
+      written = File.read!(lock_path)
+      capture_io(fn -> assert :ok = NPM.install(frozen: true) end)
+      capture_io(fn -> assert :ok = NPM.install() end)
+      assert File.read!(lock_path) == written
+    end
+  end
+
+  test "targeted update preserves unrelated locked versions while full update refreshes them",
+       context do
+    for name <- ["update-target", "update-unrelated"] do
+      put_packument_versions!(name, [{"1.0.0", []}, {"1.9.0", []}])
+      for version <- ["1.0.0", "1.9.0"], do: write_cached_package!(name, version)
+    end
+
+    write_package!(context.project_dir, %{
+      "dependencies" => %{"update-target" => "^1.0.0", "update-unrelated" => "^1.0.0"}
+    })
+
+    assert :ok =
+             NPM.Lockfile.write(%{
+               "update-target" => lock_entry("update-target", "1.0.0"),
+               "update-unrelated" => lock_entry("update-unrelated", "1.0.0")
+             })
+
+    capture_io(fn -> assert :ok = NPM.update("update-target") end)
+    assert {:ok, lock} = NPM.Lockfile.read()
+    assert lock["update-target"].version == "1.9.0"
+    assert lock["update-unrelated"].version == "1.0.0"
+
+    capture_io(fn -> assert :ok = NPM.update() end)
+    assert {:ok, lock} = NPM.Lockfile.read()
+    assert lock["update-unrelated"].version == "1.9.0"
+  end
+
+  test "a conflicting root change keeps the previous version beneath its existing dependent",
+       context do
+    put_packument!("existing-parent", "1.0.0", dependencies: %{"changed-root" => "^1.0.0"})
+    put_packument_versions!("changed-root", [{"1.0.0", []}, {"1.9.0", []}, {"2.0.0", []}])
+    write_cached_package!("existing-parent", "1.0.0")
+    for version <- ["1.0.0", "1.9.0", "2.0.0"], do: write_cached_package!("changed-root", version)
+
+    write_package!(context.project_dir, %{
+      "dependencies" => %{"existing-parent" => "1.0.0", "changed-root" => "2.0.0"}
+    })
+
+    assert :ok =
+             NPM.Lockfile.write(%{
+               "existing-parent" =>
+                 lock_entry("existing-parent", "1.0.0",
+                   dependencies: %{"changed-root" => "^1.0.0"}
+                 ),
+               "changed-root" => lock_entry("changed-root", "1.0.0")
+             })
+
+    capture_io(fn -> assert :ok = NPM.install() end)
+    assert {:ok, %{"packages" => packages}} = NPM.JSON.read_file("package-lock.json")
+    assert packages["node_modules/changed-root"]["version"] == "2.0.0"
+
+    assert packages["node_modules/existing-parent/node_modules/changed-root"]["version"] ==
+             "1.0.0"
+
+    capture_io(fn -> assert :ok = NPM.install(frozen: true) end)
+  end
+
+  test "failed targeted update leaves the complete existing lockfile untouched", context do
+    put_packument!("failed-target", "2.0.0", dependencies: %{"unavailable-child" => "^2.0.0"})
+    put_packument!("unavailable-child", "1.0.0")
+    write_package!(context.project_dir, %{"dependencies" => %{"failed-target" => "^2.0.0"}})
+    assert :ok = NPM.Lockfile.write(%{"failed-target" => lock_entry("failed-target", "1.0.0")})
+    original = File.read!("package-lock.json")
+
+    capture_io(fn ->
+      capture_io(:stderr, fn ->
+        assert {:error, :resolution_failed} = NPM.update("failed-target")
+      end)
+    end)
+
+    assert File.read!("package-lock.json") == original
+  end
+
   test "npm.ci raises when frozen install fails", %{project_dir: project_dir} do
     Mix.Task.reenable("npm.ci")
 
@@ -805,6 +923,64 @@ defmodule NPM.InstallTest do
       assert packages["node_modules/#{name}"]["optional"] == true
       assert installed_version!("node_modules/#{name}") == "1.0.0"
     end
+  end
+
+  defp locked_workspace_fixture!(project_dir) do
+    catalog = [
+      {"locked-root", [{"1.0.0", [dependencies: %{"locked-child" => "^1.0.0"}]}, {"1.9.0", []}]},
+      {"locked-child", [{"1.0.0", []}, {"1.9.0", []}, {"2.0.0", []}, {"2.9.0", []}]},
+      {"nested-parent", [{"1.0.0", [dependencies: %{"locked-child" => "^2.0.0"}]}]},
+      {"workspace-only", [{"1.0.0", []}, {"1.9.0", []}]},
+      {"new-renderer",
+       [{"1.0.0", [dependencies: %{"locked-child" => "^1.0.0", "new-leaf" => "1.0.0"}]}]},
+      {"new-leaf", [{"1.0.0", []}]}
+    ]
+
+    for {name, versions} <- catalog do
+      put_packument_versions!(name, versions)
+      for {version, _} <- versions, do: write_cached_package!(name, version)
+    end
+
+    workspace = Path.join(project_dir, "apps/web")
+    write_package!(project_dir, %{"name" => "locked-workspace", "workspaces" => ["apps/*"]})
+
+    write_package!(workspace, %{
+      "name" => "web",
+      "version" => "1.0.0",
+      "dependencies" => %{
+        "locked-root" => "^1.0.0",
+        "nested-parent" => "1.0.0",
+        "workspace-only" => "^1.0.0"
+      }
+    })
+
+    assert :ok =
+             NPM.Lockfile.write(
+               %{
+                 "locked-root" =>
+                   lock_entry("locked-root", "1.0.0", dependencies: %{"locked-child" => "^1.0.0"}),
+                 "locked-child" => lock_entry("locked-child", "1.0.0"),
+                 "nested-parent" =>
+                   lock_entry("nested-parent", "1.0.0",
+                     dependencies: %{"locked-child" => "^2.0.0"}
+                   )
+               },
+               nested: %{
+                 "node_modules/nested-parent/node_modules/locked-child" =>
+                   lock_entry("locked-child", "2.0.0"),
+                 "apps/web/node_modules/workspace-only" => lock_entry("workspace-only", "1.0.0")
+               }
+             )
+
+    assert {:ok, document} = NPM.JSON.read_file("package-lock.json")
+
+    packages =
+      Map.new(document["packages"], fn {location, record} ->
+        {location, Map.merge(record, %{"license" => "MIT", "engines" => %{"node" => ">=18"}})}
+      end)
+
+    File.write!("package-lock.json", NPM.JSON.encode_pretty(%{document | "packages" => packages}))
+    {workspace, packages}
   end
 
   defp write_cached_package!(name, version) do

@@ -74,6 +74,10 @@ defmodule NPM do
   @doc """
   Install all dependencies from `package.json` and configured workspaces.
 
+  Existing satisfiable lockfile records, including workspace-local and nested
+  packages, are retained when adding dependencies. Use `update/0` to refresh
+  the complete dependency graph.
+
   ## Options
 
     * `:frozen` - when `true`, fails if `package-lock.json` doesn't match
@@ -155,12 +159,9 @@ defmodule NPM do
   def update(name) do
     with_root_dir(fn ->
       with {:ok, project} <- NPM.Workspace.read_all(),
-           {:ok, all_deps} <- NPM.Workspace.install_dependencies(project),
-           {:ok, lockfile} <- NPM.Lockfile.read() do
+           {:ok, all_deps} <- NPM.Workspace.install_dependencies(project) do
         if Map.has_key?(all_deps, name) do
-          updated_lock = Map.delete(lockfile, name)
-          NPM.Lockfile.write(updated_lock)
-          do_install(all_deps, local_links: project.local_links)
+          do_install(all_deps, local_links: project.local_links, unlock: [name])
         else
           Mix.shell().error("Package #{name} not found in package.json.")
           {:error, {:not_found, name}}
@@ -248,7 +249,7 @@ defmodule NPM do
     full_install(
       deps,
       Keyword.get(opts, :local_links, %{}),
-      Keyword.get(opts, :force_resolve, false)
+      opts
     )
   end
 
@@ -308,20 +309,26 @@ defmodule NPM do
   end
 
   defp frozen_dependency_entry(locations, location, name) do
+    Map.get(locations, frozen_dependency_location(locations, location, name))
+  end
+
+  defp frozen_dependency_location(locations, location, name) do
     candidate =
       if location == "", do: "node_modules/#{name}", else: "#{location}/node_modules/#{name}"
 
-    entry =
-      if Path.basename(location) == "node_modules", do: nil, else: Map.get(locations, candidate)
+    found? = Path.basename(location) != "node_modules" and Map.has_key?(locations, candidate)
 
-    case entry do
-      nil when location != "" ->
+    cond do
+      found? ->
+        candidate
+
+      location != "" ->
         parent = Path.dirname(location)
         parent = if parent == ".", do: "", else: parent
-        frozen_dependency_entry(locations, parent, name)
+        frozen_dependency_location(locations, parent, name)
 
-      entry ->
-        entry
+      true ->
+        nil
     end
   end
 
@@ -374,7 +381,7 @@ defmodule NPM do
     |> Map.merge(nested_lockfile)
   end
 
-  defp full_install(deps, local_links, force_resolve?) do
+  defp full_install(deps, local_links, opts) do
     validate_direct_exotic_deps!(deps)
     {:ok, old_lockfile} = NPM.Lockfile.read()
     {:ok, overrides} = JSON.read_overrides()
@@ -388,11 +395,11 @@ defmodule NPM do
     nm_intact? = matches? and node_modules_intact?(old_lockfile, local_links)
 
     cond do
-      force_resolve? ->
-        resolve_and_install(deps, old_lockfile, local_links, overrides)
+      Keyword.get(opts, :force_resolve, false) or Keyword.get(opts, :unlock, []) != [] ->
+        resolve_and_install(deps, old_lockfile, local_links, overrides, opts)
 
       old_lockfile == %{} ->
-        resolve_and_install(deps, old_lockfile, local_links, overrides)
+        resolve_and_install(deps, old_lockfile, local_links, overrides, opts)
 
       matches? and policy_ok? and nm_intact? ->
         Mix.shell().info("Already up to date.")
@@ -417,7 +424,7 @@ defmodule NPM do
           Mix.shell().info("Cache incomplete — re-resolving dependencies.")
         end
 
-        resolve_and_install(deps, old_lockfile, local_links, overrides)
+        resolve_and_install(deps, old_lockfile, local_links, overrides, opts)
     end
   end
 
@@ -485,7 +492,105 @@ defmodule NPM do
     end)
   end
 
-  defp resolve_and_install(deps, old_lockfile, local_links, overrides) do
+  defp resolve_and_install(deps, old_lockfile, local_links, overrides, opts) do
+    with {:ok, nested} <- NPM.Lockfile.read_nested() do
+      if not Keyword.get(opts, :force_resolve, false) and (old_lockfile != %{} or nested != %{}) do
+        update_locked_graph(deps, old_lockfile, nested, local_links, overrides, opts)
+      else
+        resolve_fresh_and_install(deps, old_lockfile, local_links, overrides)
+      end
+    end
+  end
+
+  defp update_locked_graph(deps, old_flat, old_nested, local_links, overrides, opts) do
+    with {:ok, dependencies, _links} <- NPM.Workspace.frozen_dependencies(opts) do
+      unlocked = Keyword.get(opts, :unlock, [])
+      preferred = locked_preferences(old_flat, old_nested) |> Map.drop(unlocked)
+      flat = Map.drop(old_flat, unlocked)
+
+      nested =
+        Map.reject(old_nested, fn {location, _} ->
+          {:ok, name} = NPM.Lockfile.nested_package_name(location)
+          name in unlocked
+        end)
+
+      {flat, nested} =
+        Enum.reduce(Map.merge(overrides, deps), {flat, nested}, fn {name, range} = dependency,
+                                                                   {flat, _nested} = state ->
+          case Map.get(flat, name) do
+            nil ->
+              state
+
+            entry ->
+              if lockfile_entry_satisfies_range?(entry, range) do
+                state
+              else
+                expand_dependency(dependency, "", state, false, local_links, overrides, preferred)
+              end
+          end
+        end)
+
+      {flat, nested} =
+        Enum.reduce(dependencies, {flat, nested}, fn {location, deps}, state ->
+          Enum.reduce(deps, state, fn dependency, acc ->
+            expand_dependency(dependency, location, acc, false, local_links, overrides, preferred)
+          end)
+        end)
+
+      {flat, nested} = expand_all_dependencies(flat, nested, local_links, overrides, preferred)
+      locations = lockfile_locations(flat, nested)
+
+      if frozen_dependencies_satisfied?(locations, dependencies) do
+        reachable =
+          dependencies
+          |> Enum.flat_map(fn {location, deps} ->
+            Enum.map(deps, fn {name, _range} -> {location, name} end)
+          end)
+          |> reachable_locations(locations, local_links, overrides, MapSet.new())
+
+        flat =
+          Map.filter(flat, fn {name, _} -> MapSet.member?(reachable, "node_modules/#{name}") end)
+
+        nested = Map.take(nested, MapSet.to_list(reachable))
+        persist_graph(flat, nested, old_flat, local_links, overrides, preserve: true)
+      else
+        incomplete_graph()
+      end
+    end
+  end
+
+  defp locked_preferences(flat, nested) do
+    nested_entries =
+      nested
+      |> Enum.sort_by(&elem(&1, 0))
+      |> Enum.map(fn {location, entry} ->
+        {:ok, name} = NPM.Lockfile.nested_package_name(location)
+        {name, entry}
+      end)
+
+    Enum.reduce(Enum.to_list(flat) ++ nested_entries, %{}, fn {name, entry}, acc ->
+      Map.update(acc, name, [entry], &(&1 ++ [entry]))
+    end)
+  end
+
+  defp reachable_locations([], _locations, _links, _overrides, seen), do: seen
+
+  defp reachable_locations([{parent, name} | rest], locations, links, overrides, seen) do
+    location = frozen_dependency_location(locations, parent, name)
+
+    if location == nil or Map.has_key?(links, name) or MapSet.member?(seen, location) do
+      reachable_locations(rest, locations, links, overrides, seen)
+    else
+      deps =
+        Enum.map(effective_dependencies(locations[location], overrides), fn {name, _} ->
+          {location, name}
+        end)
+
+      reachable_locations(deps ++ rest, locations, links, overrides, MapSet.put(seen, location))
+    end
+  end
+
+  defp resolve_fresh_and_install(deps, old_lockfile, local_links, overrides) do
     {resolve_us, result} =
       :timer.tc(fn ->
         NPM.Resolver.clear_cache()
@@ -508,23 +613,29 @@ defmodule NPM do
         {lockfile, nested_lockfile} =
           expand_all_dependencies(lockfile, nested_lockfile, local_links, overrides)
 
-        locations = lockfile_locations(lockfile, nested_lockfile)
-
-        if frozen_records_complete?(locations, local_links, overrides) do
-          print_lockfile_diff(old_lockfile, lockfile)
-
-          with :ok <- NPM.Lockfile.write(lockfile, nested: nested_lockfile) do
-            link_from_lockfile(lockfile, local_links, nested_lockfile)
-          end
-        else
-          Mix.shell().error("Resolution failed: incomplete dependency graph.")
-          {:error, :resolution_failed}
-        end
+        persist_graph(lockfile, nested_lockfile, old_lockfile, local_links, overrides, [])
 
       {:error, message} ->
         Mix.shell().error("Resolution failed:\n#{message}")
         {:error, :resolution_failed}
     end
+  end
+
+  defp persist_graph(flat, nested, old, links, overrides, opts) do
+    if frozen_records_complete?(lockfile_locations(flat, nested), links, overrides) do
+      print_lockfile_diff(old, flat)
+
+      with :ok <- NPM.Lockfile.write(flat, Keyword.put(opts, :nested, nested)) do
+        link_from_lockfile(flat, links, nested)
+      end
+    else
+      incomplete_graph()
+    end
+  end
+
+  defp incomplete_graph do
+    Mix.shell().error("Resolution failed: incomplete dependency graph.")
+    {:error, :resolution_failed}
   end
 
   defp link_from_lockfile(lockfile, local_links, nested_lockfile \\ :read)
@@ -652,22 +763,28 @@ defmodule NPM do
     end
   end
 
-  defp expand_all_dependencies(lockfile, nested_lockfile, local_links, overrides) do
+  defp expand_all_dependencies(
+         lockfile,
+         nested_lockfile,
+         local_links,
+         overrides,
+         preferred \\ %{}
+       ) do
     lockfile
     |> lockfile_locations(nested_lockfile)
     |> Enum.reduce({lockfile, nested_lockfile}, fn {location, entry}, state ->
-      expand_entry_dependencies(entry, location, state, local_links, overrides)
+      expand_entry_dependencies(entry, location, state, local_links, overrides, preferred)
     end)
   end
 
-  defp expand_entry_dependencies(entry, location, state, local_links, overrides) do
+  defp expand_entry_dependencies(entry, location, state, local_links, overrides, preferred) do
     optional = Map.get(entry, :optional_dependencies, %{})
     inherited_optional? = Map.get(entry, :optional, false)
 
     Enum.reduce(effective_dependencies(entry, overrides), state, fn {name, _range} = dependency,
                                                                     acc ->
       optional? = inherited_optional? or Map.has_key?(optional, name)
-      expand_dependency(dependency, location, acc, optional?, local_links, overrides)
+      expand_dependency(dependency, location, acc, optional?, local_links, overrides, preferred)
     end)
   end
 
@@ -677,35 +794,59 @@ defmodule NPM do
          {flat, nested} = state,
          optional?,
          local_links,
-         overrides
+         overrides,
+         preferred
        ) do
     if Map.has_key?(local_links, name) or
          dependency_satisfied?(name, range, parent_location, flat, nested) do
       state
     else
-      case resolve_version(name, range) do
-        {:ok, version_str, info} ->
-          warn_age_heuristics(name, version_str, info)
-
-          entry = %{
-            version: version_str,
-            integrity: info.dist.integrity,
-            tarball: info.dist.tarball,
-            dependencies: info.dependencies,
-            optional_dependencies: Map.get(info, :optional_dependencies, %{}),
-            has_install_script: Map.get(info, :has_install_script, false)
-          }
-
-          entry = if optional?, do: Map.put(entry, :optional, true), else: entry
+      case resolve_entry(name, range, preferred) do
+        {:ok, entry} ->
+          entry =
+            if optional?, do: Map.put(entry, :optional, true), else: Map.delete(entry, :optional)
 
           {state, installed_location} =
             put_expanded_dependency(name, entry, parent_location, flat, nested)
 
-          expand_entry_dependencies(entry, installed_location, state, local_links, overrides)
+          expand_entry_dependencies(
+            entry,
+            installed_location,
+            state,
+            local_links,
+            overrides,
+            preferred
+          )
 
         :error ->
           state
       end
+    end
+  end
+
+  defp resolve_entry(name, range, preferred) do
+    case Enum.find(Map.get(preferred, name, []), &lockfile_entry_satisfies_range?(&1, range)) do
+      nil ->
+        case resolve_version(name, range) do
+          {:ok, version, info} ->
+            warn_age_heuristics(name, version, info)
+
+            {:ok,
+             %{
+               version: version,
+               integrity: info.dist.integrity,
+               tarball: info.dist.tarball,
+               dependencies: info.dependencies,
+               optional_dependencies: Map.get(info, :optional_dependencies, %{}),
+               has_install_script: Map.get(info, :has_install_script, false)
+             }}
+
+          :error ->
+            :error
+        end
+
+      entry ->
+        {:ok, entry}
     end
   end
 
@@ -720,6 +861,10 @@ defmodule NPM do
     flat
     |> lockfile_locations(nested)
     |> frozen_dependency_entry(parent_location, name)
+  end
+
+  defp put_expanded_dependency(name, entry, "", flat, nested) do
+    {{Map.put(flat, name, entry), nested}, "node_modules/#{name}"}
   end
 
   defp put_expanded_dependency(name, entry, parent_location, flat, nested) do
