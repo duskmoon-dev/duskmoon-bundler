@@ -8,6 +8,9 @@ Mix.start()
 
 case System.argv() do
   ["https", dir, cert, registry, integrity] ->
+    # HTTP 1.0 uses ExSSL, so start OTP SSL explicitly to retain the
+    # already-started application and lazy OTP path restoration regression.
+    {:ok, _} = Application.ensure_all_started(:ssl)
     {:ok, _} = Application.ensure_all_started(:http_fetch)
     false = :code.is_loaded(:public_key)
     paths = :code.get_path()

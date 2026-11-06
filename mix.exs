@@ -16,7 +16,7 @@ defmodule DuskmoonToolchain.MixProject do
     [
       {:ex_doc, "~> 0.40", runtime: false, override: true},
       {:plug, "~> 1.19"},
-      {:websock_adapter, "~> 0.12.2", hex: :gaoxy_websock_adapter, override: true}
+      {:websock_adapter, "~> 0.15.0", hex: :gaoxy_websock_adapter, override: true}
     ]
   end
 end

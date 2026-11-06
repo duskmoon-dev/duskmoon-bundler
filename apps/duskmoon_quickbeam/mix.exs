@@ -81,11 +81,11 @@ defmodule QuickBEAM.MixProject do
       {:duskmoon_oxc, in_umbrella: true},
       {:rustler, "~> 0.36 or ~> 0.37 or ~> 0.38", optional: true, runtime: false},
       {:duskmoon_npm, in_umbrella: true},
-      {:http_fetch, "~> 0.20.0 or ~> 0.21.0"},
-      {:http_event_source, "~> 0.20.0 or ~> 0.21.0"},
-      {:http_web_socket, "~> 0.20.0 or ~> 0.21.0"},
-      {:gaoxy_http, "~> 0.12.2", only: :test},
-      {:websock_adapter, "~> 0.12.2", hex: :gaoxy_websock_adapter, only: :test, override: true},
+      {:http_fetch, "~> 1.0.0-rc.4"},
+      {:http_event_source, "~> 1.0.0-rc.4"},
+      {:http_web_socket, "~> 1.0.0-rc.4"},
+      {:gaoxy_http, "~> 0.15.0", only: :test},
+      {:websock_adapter, "~> 0.15.0", hex: :gaoxy_websock_adapter, only: :test, override: true},
       {:nimble_pool, "~> 1.1"},
       {:ex_doc, "~> 0.40", runtime: false, override: true}
     ]

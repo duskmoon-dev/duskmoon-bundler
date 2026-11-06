@@ -54,7 +54,7 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 [[package]]
 name = "classification-macros"
 version = "0.1.0"
-source = "git+https://github.com/tailwindlabs/tailwindcss.git?tag=v4.3.4#2626ae6ceddf36069ab6d55c53a5857c1e2e360a"
+source = "git+https://github.com/tailwindlabs/tailwindcss.git?tag=v4.3.5#9b2c925c19aae46ff4f9cf54a2fa6d2dbac7fa19"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -140,7 +140,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 [[package]]
 name = "ignore"
 version = "0.4.33"
-source = "git+https://github.com/tailwindlabs/tailwindcss.git?tag=v4.3.4#2626ae6ceddf36069ab6d55c53a5857c1e2e360a"
+source = "git+https://github.com/tailwindlabs/tailwindcss.git?tag=v4.3.5#9b2c925c19aae46ff4f9cf54a2fa6d2dbac7fa19"
 dependencies = [
  "crossbeam-deque",
  "dunce",
@@ -428,9 +428,9 @@ dependencies = [
 
 [[package]]
 name = "smallvec"
-version = "1.16.4"
+version = "1.16.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
+checksum = "149309498a5f7334b12ddae0cad8aba81ce785fe91755068867e017cf98fee46"
 
 [[package]]
 name = "syn"
@@ -457,7 +457,7 @@ dependencies = [
 [[package]]
 name = "tailwindcss-oxide"
 version = "0.1.0"
-source = "git+https://github.com/tailwindlabs/tailwindcss.git?tag=v4.3.4#2626ae6ceddf36069ab6d55c53a5857c1e2e360a"
+source = "git+https://github.com/tailwindlabs/tailwindcss.git?tag=v4.3.5#9b2c925c19aae46ff4f9cf54a2fa6d2dbac7fa19"
 dependencies = [
  "bexpand",
  "bstr",

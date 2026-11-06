@@ -65,6 +65,18 @@ static napi_value concat(napi_env env, napi_callback_info info) {
     return result;
 }
 
+static napi_value call_function(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1], receiver, result;
+    if (napi_get_cb_info(env, info, &argc, argv, &receiver, NULL) != napi_ok) {
+        return NULL;
+    }
+    if (napi_call_function(env, receiver, argv[0], 0, NULL, &result) != napi_ok) {
+        return NULL;
+    }
+    return result;
+}
+
 static napi_value create_object(napi_env env, napi_callback_info info) {
     size_t argc = 2;
     napi_value argv[2];
@@ -305,6 +317,9 @@ static napi_value init(napi_env env, napi_value exports) {
 
     napi_create_function(env, "concat", NAPI_AUTO_LENGTH, concat, NULL, &fn);
     napi_set_named_property(env, exports, "concat", fn);
+
+    napi_create_function(env, "callFunction", NAPI_AUTO_LENGTH, call_function, NULL, &fn);
+    napi_set_named_property(env, exports, "callFunction", fn);
 
     napi_create_function(env, "createObject", NAPI_AUTO_LENGTH, create_object, NULL, &fn);
     napi_set_named_property(env, exports, "createObject", fn);

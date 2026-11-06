@@ -955,8 +955,9 @@ pub export fn napi_call_function(
 
     if (result) |r| {
         r.* = env.createNapiValue(ret);
+    } else {
+        qjs.JS_FreeValue(env.ctx, ret);
     }
-    qjs.JS_FreeValue(env.ctx, ret);
     return env.ok();
 }
 

@@ -1,14 +1,14 @@
 {
   "dependencies": {
-    "lodash": "^4",
-    "snabbdom-to-html": "^7"
+    "lodash": "^4.18.1",
+    "snabbdom-to-html": "^7.1.0"
   },
   "devDependencies": {
-    "chai": "^6",
-    "jsdom": "27.0.0",
-    "jsdom-global": "^3",
-    "mocha": "^12",
-    "sinon": "^22"
+    "chai": "^6.3.0",
+    "jsdom": "31.0.0",
+    "jsdom-global": "^3.0.2",
+    "mocha": "^12.0.3",
+    "sinon": "^22.1.0"
   },
   "scripts": {
     "test": "bun --bun run mocha ../test/javascript/*.mjs ../test/javascript/*/*.mjs ../test/javascript/*/*/*.mjs ../test/javascript/*/*/*/*.mjs --color --require jsdom-global/register",

@@ -13,8 +13,8 @@ The synchronized toolchain version is **10.1.2**. All nine packages and their na
 The host application selects its HTTP server; the libraries retain the standard `websock_adapter` dependency for Bandit and Cowboy compatibility. For a Gaoxy host, add these dependencies to the host's `mix.exs`:
 
 ```elixir
-{:gaoxy_http, "~> 0.12.2"},
-{:websock_adapter, "~> 0.12.2", hex: :gaoxy_websock_adapter, override: true}
+{:gaoxy_http, "~> 0.15.0"},
+{:websock_adapter, "~> 0.15.0", hex: :gaoxy_websock_adapter, override: true}
 ```
 
 The host-level override makes Phoenix and Gaoxy resolve the same `:websock_adapter` application to the Gaoxy fork. Configure the Phoenix endpoint to use its adapter:

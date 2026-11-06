@@ -12,7 +12,7 @@ defmodule App1.MixProject do
     [
       {:app_2, in_umbrella: true},
       {:app_3, in_umbrella: true},
-      {:gaoxy_http, "~> 0.12.2"},
+      {:gaoxy_http, "~> 0.15.0"},
       {:duskmoon_hologram, path: Path.expand("../../../../..", __DIR__)},
       {:jason, "~> 1.0"},
       {:phoenix, "~> 1.7"},

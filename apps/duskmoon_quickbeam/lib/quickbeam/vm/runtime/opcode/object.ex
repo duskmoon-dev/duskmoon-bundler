@@ -48,6 +48,7 @@ defmodule QuickBEAM.VM.Runtime.Opcode.Object do
     :get_field,
     :get_field2,
     :get_array_el,
+    :get_array_el2,
     :get_length,
     :put_field,
     :put_array_el,
@@ -402,6 +403,9 @@ defmodule QuickBEAM.VM.Runtime.Opcode.Object do
 
   def execute(:get_array_el, [], %{stack: [key, object | stack]} = frame, execution),
     do: get(object, key, stack, frame, execution)
+
+  def execute(:get_array_el2, [], %{stack: [key, object | stack]} = frame, execution),
+    do: get(object, key, [object | stack], frame, execution)
 
   def execute(:get_length, [], %{stack: [object | stack]} = frame, execution),
     do: get(object, "length", stack, frame, execution)

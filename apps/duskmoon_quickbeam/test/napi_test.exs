@@ -85,6 +85,22 @@ defmodule QuickBEAM.NapiTest do
       QuickBEAM.stop(rt)
     end
 
+    test "callback return values retain newly created objects" do
+      {:ok, rt} = QuickBEAM.start()
+      {:ok, _} = reinitialize_addon(rt, @test_addon, as: "addon")
+
+      assert {:ok, %{"value" => "retained", "nested" => %{"count" => 42}}} =
+               QuickBEAM.eval(
+                 rt,
+                 ~s[addon.callFunction(() => ({value: "retained", nested: {count: 42}}))]
+               )
+
+      assert {:ok, "retained"} =
+               QuickBEAM.eval(rt, ~s[addon.callFunction(() => ({value: "retained"})).value])
+
+      QuickBEAM.stop(rt)
+    end
+
     test "call typeof checker" do
       {:ok, rt} = QuickBEAM.start()
       {:ok, _} = reinitialize_addon(rt, @test_addon, as: "addon")
@@ -338,7 +354,15 @@ defmodule QuickBEAM.NapiTest do
       {:ok, exports} = reinitialize_addon(rt, path, as: "argon2")
       assert Map.has_key?(exports, "hashSync")
       assert Map.has_key?(exports, "verifySync")
-      assert exports["Algorithm"] == %{"Argon2d" => 0, "Argon2i" => 1, "Argon2id" => 2}
+
+      assert {:ok, %{"Argon2d" => 0, "Argon2i" => 1, "Argon2id" => 2}} =
+               QuickBEAM.eval(rt, """
+               ({Argon2d: argon2.Algorithm.Argon2d,
+                 Argon2i: argon2.Algorithm.Argon2i,
+                 Argon2id: argon2.Algorithm.Argon2id})
+               """)
+
+      assert {:ok, []} = QuickBEAM.eval(rt, "Object.keys(argon2.Algorithm)")
       QuickBEAM.stop(rt)
     end
 
@@ -381,7 +405,10 @@ defmodule QuickBEAM.NapiTest do
       {:ok, rt} = QuickBEAM.start()
       {:ok, _} = reinitialize_addon(rt, path, as: "bcrypt")
 
-      {:ok, hash} = QuickBEAM.eval(rt, ~s[bcrypt.hashSync("password123", 4)])
+      # The v2 native binding accepts the normalized arguments used by its JS wrapper.
+      {:ok, hash} =
+        QuickBEAM.eval(rt, ~s[bcrypt.hashSync("password123", 4, undefined, undefined, false)])
+
       assert String.starts_with?(hash, "$2")
 
       {:ok, true} = QuickBEAM.eval(rt, ~s[bcrypt.verifySync("password123", "#{hash}")])

@@ -2,6 +2,14 @@
 
 ## 10.1.2 - 2026-11-07
 
+- Upgrade the coordinated HTTP client family to 1.0.0-rc.4 and Gaoxy to 0.15.0,
+  including standalone Hologram test projects.
+- Refresh compatible Hex and JavaScript dependencies, OXC to 0.157, Rolldown
+  to 1.3, Vize to 0.702 and Tailwind Oxide to 4.3.5.
+- Preserve computed method receivers in the isolated JavaScript interpreter,
+  including the current Vue SSR dependency graph.
+- Retain owned NAPI callback results until their handle scope closes, fixing
+  newer native addon initialization that reads returned objects.
 - Validate ordinary npm installs from each manifest's actual package location,
   preserving valid workspace-local pins beside different hoisted versions.
 - Keep repeated ordinary/frozen installs and node_modules reconstruction stable,

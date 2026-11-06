@@ -61,7 +61,7 @@ defmodule DuskmoonHologram.MixProject do
       {:ex_check, "~> 0.15", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.40", runtime: false, override: true},
       {:file_system, "~> 1.0"},
-      {:gaoxy_http, "~> 0.12.2", only: :test},
+      {:gaoxy_http, "~> 0.15.0", only: :test},
       {:gproc, "~> 1.0"},
       {:html_entities, "~> 0.5"},
       {:interceptor, "~> 0.5"},

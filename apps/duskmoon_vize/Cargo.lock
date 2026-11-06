@@ -234,9 +234,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.11.0"
+version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "375989decec1a0fa424442bed520fa12ede43a48475ce8c7417d2c69b32b5f6b"
+checksum = "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -2569,18 +2569,18 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "toml_datetime"
-version = "1.1.2+spec-1.1.0"
+version = "1.1.3+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b86d767906c6c42421dcba507eb9d203e779497710a47782a224bb871653053"
+checksum = "173f25c883cd2176a2d8212155638c0a60d484a9d84546d270866f40f56b6e49"
 dependencies = [
  "serde_core",
 ]
 
 [[package]]
 name = "toml_edit"
-version = "0.25.18+spec-1.1.0"
+version = "0.25.19+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ec6e78bd70db9420d8d212fa9dc97f116448a1ceff5d00eabb991d407e21396"
+checksum = "dd43688c4858d7264ae1cf9a9f874a67c3feb74a883b1cd7bebd6a4ea8307218"
 dependencies = [
  "indexmap",
  "toml_datetime",
@@ -2697,9 +2697,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vize_armature"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8188edeb3c3f4d6c2e8e816521029294909dcc17f4a216b4edde452b8489bec2"
+checksum = "7d672f80e68cc3eda30e7b620400e694f563cf93c6fd207ad5e829929b9f5b28"
 dependencies = [
  "compact_str",
  "htmlize",
@@ -2717,9 +2717,9 @@ dependencies = [
 
 [[package]]
 name = "vize_atelier_core"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "388cdc32eecc67601de267f0e8156b52930efa7f0918492f64914ef72da0e183"
+checksum = "d9c0db5b65315447038f311ff2fa0ca9c320cf330e9daf2e39a0815eda5593b0"
 dependencies = [
  "compact_str",
  "memoffset",
@@ -2738,15 +2738,16 @@ dependencies = [
  "vize_armature",
  "vize_croquis",
  "vize_l0",
+ "vize_l1_to_l2",
  "vize_oxc_parser",
  "vize_relief",
 ]
 
 [[package]]
 name = "vize_atelier_dom"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "834400ecd7e2fed54d45d5d54fd790eebb5413fa5a2589a0b03dd8b64f0be402"
+checksum = "86ee7d276328228b908495da80008a75fab9d6fafb211d217b35b2c2c717f251"
 dependencies = [
  "phf 0.13.1",
  "serde",
@@ -2759,9 +2760,9 @@ dependencies = [
 
 [[package]]
 name = "vize_atelier_jsx"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfa0789e2550939077c29158ab9978d086a67c002acbca50e97e6126831085bd"
+checksum = "47c372d38536316b10d372f797472362bd3a4f32e95446ea5f3f797da2e2bf74"
 dependencies = [
  "oxc_allocator",
  "oxc_ast",
@@ -2785,9 +2786,9 @@ dependencies = [
 
 [[package]]
 name = "vize_atelier_sfc"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9899c0fa10303579f8e5b25afc0a2cfcffb56a8cfc44687c3a8d0a5976e8aad"
+checksum = "e37915fa66d121259fef38446f6a7ef5af61cc03100d1ce5f3d7a6989c418560"
 dependencies = [
  "memchr",
  "oxc_allocator",
@@ -2824,9 +2825,9 @@ dependencies = [
 
 [[package]]
 name = "vize_atelier_ssr"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d3f1a6272f403cf4099f9803514a0e34e99ac4e702bb0510fbfc977bab1a82f"
+checksum = "c83806be793edad843f4569f63739700e67f119db546d8da199ae4fea71a36c2"
 dependencies = [
  "serde",
  "vize_armature",
@@ -2843,9 +2844,9 @@ dependencies = [
 
 [[package]]
 name = "vize_atelier_vapor"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e7e3ee90267dfbac2d7ed258a45df9b485751ad8c9d9003e1839d41976a4ad7"
+checksum = "15c710ee341a4190d4b5a341c7fcb03d3406d05209d8ad5ba6950246ba867c11"
 dependencies = [
  "oxc_allocator",
  "oxc_ast",
@@ -2868,9 +2869,9 @@ dependencies = [
 
 [[package]]
 name = "vize_canon"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3f0336d14ec6e0b27f8f8d15becb0ea354235101eed2c43a1fe37c6c1f46745"
+checksum = "5fd0f027b49504ef069b36f3e34972390cc8dbb989ac978cbbfe8466c927188a"
 dependencies = [
  "corsa",
  "corsa_lsp",
@@ -2914,9 +2915,9 @@ dependencies = [
 
 [[package]]
 name = "vize_carton"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ede5a1756086bfd0bee0c6dd6f073ce301adb5415e152e189926cb8c47b48e0"
+checksum = "7a4272da6c5c4ad87b59da4f4be3a62160763f8e8648a877be2f9737e5355fef"
 dependencies = [
  "once_cell",
  "oxc_allocator",
@@ -2934,9 +2935,9 @@ dependencies = [
 
 [[package]]
 name = "vize_croquis"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f6f0d08c68da3b5e46871bb65b31c81316aeb8c372197ed1684fd36d3a1faa5"
+checksum = "fd8dc3d616be6c6bf8c5c9244e733fcaefadb5f77f29a803ce54d826b8ba81e6"
 dependencies = [
  "dashmap 6.2.1",
  "index_vec",
@@ -2988,9 +2989,9 @@ dependencies = [
 
 [[package]]
 name = "vize_l0"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be6dc440b36f6bcb9fb0944ee8960d8c0db8da86c6054ac94909db420a2edc8a"
+checksum = "ecbc5cbb877f40ffd2a60a35b9cdf621d404156ae477383060cb9075d77a9820"
 dependencies = [
  "bitflags 2.13.2",
  "compact_str",
@@ -3011,9 +3012,9 @@ dependencies = [
 
 [[package]]
 name = "vize_l0_derive"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92966c0de643b089339685c4feec9941ad28979f24af073d4db39d78aac772e2"
+checksum = "63975ec02a0cc89bb03895769e1d57b7cbc6c390d6128b013329f7e439ca40e6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3022,9 +3023,9 @@ dependencies = [
 
 [[package]]
 name = "vize_l1"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "559e36e482d64443a6be5aca9714c5462f0763334fd6ab4197c6d2afbd605d53"
+checksum = "d49cc5b45a8726384e3b93a5f718c79106c3484352ca5d6bc98fb93004c80f4d"
 dependencies = [
  "cssparser",
  "htmlize",
@@ -3039,9 +3040,9 @@ dependencies = [
 
 [[package]]
 name = "vize_l1_to_l2"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b00f3998031c166c755c597e9c34060fddeed70fc69c8ea80f6a59587cefed27"
+checksum = "b43a03961cce0fb0dbce77cfea423fe68c500e2139de251f3393317bfb2627f5"
 dependencies = [
  "htmlize",
  "oxc_ast",
@@ -3061,9 +3062,9 @@ dependencies = [
 
 [[package]]
 name = "vize_l2"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9059bdc53ed5bcd9b0d77bbd3e6de67e5f915ca1511a4064895a464dca3ef419"
+checksum = "4528a98d1a3947f68fff4bf0e4772c1d1f97ad824b7ec3b05f81cfac8573dcb9"
 dependencies = [
  "oxc_ast",
  "oxc_ast_visit",
@@ -3076,9 +3077,9 @@ dependencies = [
 
 [[package]]
 name = "vize_l2_to_l3"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b1016f86afcd0df2bc917e71fbb1743a1014c977522f5646c510442c0908377"
+checksum = "9b0aa4283cd56b7c871e06f292e05425d69b879d5f4289c891502ad8fd9e96d5"
 dependencies = [
  "vize_l0",
  "vize_l2",
@@ -3087,9 +3088,9 @@ dependencies = [
 
 [[package]]
 name = "vize_l3"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a41e244d584d7c5c3e93526e7b226f89c0b161f1afa35bf21f6518658351e60"
+checksum = "4144680c22868fc02c6a8e3d1ede564253db47b0f1cda8e0f8f15e7c93c5acf7"
 dependencies = [
  "oxc_ast",
  "serde_json",
@@ -3099,9 +3100,9 @@ dependencies = [
 
 [[package]]
 name = "vize_l4"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44ee379035248f14da2924b46b9724aa085f5bf2434195e5a72dd9a93c408a33"
+checksum = "d51a79704f08d94414a06f4f068454e806e1aa3d1f0375ec34bb5678ff042609"
 dependencies = [
  "oxc_syntax",
  "serde_json",
@@ -3113,9 +3114,9 @@ dependencies = [
 
 [[package]]
 name = "vize_lightningcss"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "650c134667365cf69a6de8e02ba6a7ace1ba78e5b09d0026fe2e19fa0c31dfcb"
+checksum = "4bd1f7469d7331d23b957db2c4564b24f6d5ea9d6b18f72c97bf9a72d123d0b6"
 dependencies = [
  "ahash 0.8.12",
  "bitflags 2.13.2",
@@ -3142,9 +3143,9 @@ dependencies = [
 
 [[package]]
 name = "vize_oxc_parser"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "713491766b08d1ba796ce54bac928690d735b3de1d90c28172d4cbcc4d399d8a"
+checksum = "7ec6ae58fca3dd76be9627eff1a7c3eff51db7fc86414d863b2842e998c73553"
 dependencies = [
  "bitflags 2.13.2",
  "compact_str",
@@ -3169,9 +3170,9 @@ dependencies = [
 
 [[package]]
 name = "vize_parcel_sourcemap"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12abdd8d75ef71eb57ee590a7080175b093874567ccc56c5b4f780ff1e922993"
+checksum = "9a92f6dfed8dfeddd8ede52cd101fb5453294206aaaa0a852250f7527bf77b9b"
 dependencies = [
  "base64-simd 0.7.0",
  "data-url",
@@ -3183,9 +3184,9 @@ dependencies = [
 
 [[package]]
 name = "vize_patina"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "453c2b4d8ef24f50290eb92617ee90adf54a4302dfb67d33efa337aada00fd2a"
+checksum = "828c81931106d689c7303a73b7dc1f9e9e8c93e03016af6924d974b169159008"
 dependencies = [
  "corsa",
  "cssparser",
@@ -3220,9 +3221,9 @@ dependencies = [
 
 [[package]]
 name = "vize_relief"
-version = "0.680.0"
+version = "0.702.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f68be986c9274011c930081732b35f2c8c3282a88f99c0f8dd87dcc9612ca63c"
+checksum = "0a2e5c30f302de25eec5d1d3c6c4822696ec6926e60babd181ba3a5409d9f3f8"
 dependencies = [
  "oxc_ast",
  "oxc_ast_visit",
@@ -3359,9 +3360,9 @@ dependencies = [
 
 [[package]]
 name = "winnow"
-version = "1.0.4"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
+checksum = "8c3b93199df0ab874cdf0c6a94f0a0dc3423fe41f1cafb62b8bd7b1deb277aef"
 dependencies = [
  "memchr",
 ]

@@ -2,6 +2,11 @@
 
 ## 10.1.2 - 2026-11-07
 
+### Changed
+
+- Require the coordinated `http_fetch` 1.0 release candidate family, starting
+  at 1.0.0-rc.4, and refresh compatible dependencies.
+
 ### Fixed
 
 - Use the same package-location validation for ordinary and frozen installs.

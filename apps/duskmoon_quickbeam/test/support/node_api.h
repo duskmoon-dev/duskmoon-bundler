@@ -39,6 +39,7 @@ napi_status napi_set_named_property(napi_env, napi_value, const char*, napi_valu
 napi_status napi_get_named_property(napi_env, napi_value, const char*, napi_value*);
 napi_status napi_get_boolean(napi_env, bool, napi_value*);
 napi_status napi_get_cb_info(napi_env, napi_callback_info, size_t*, napi_value*, napi_value*, void**);
+napi_status napi_call_function(napi_env, napi_value, napi_value, size_t, const napi_value*, napi_value*);
 napi_status napi_get_value_double(napi_env, napi_value, double*);
 napi_status napi_create_double(napi_env, double, napi_value*);
 napi_status napi_create_int32(napi_env, int32_t, napi_value*);

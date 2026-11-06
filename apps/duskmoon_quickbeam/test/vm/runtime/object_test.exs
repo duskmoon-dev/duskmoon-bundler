@@ -72,6 +72,19 @@ defmodule QuickBEAM.VM.Runtime.ObjectTest do
     end
   end
 
+  test "preserves computed method receivers and accessor semantics", %{runtime: runtime} do
+    sources = [
+      "(()=>{let key='method';let value={base:40,method(extra){return this.base+extra}};return value[key](2)})()",
+      "(()=>{let calls=0;let key='method';let prototype={get method(){calls++;return function(extra){return this.base+extra}}};let value=Object.create(prototype);value.base=40;return [value[key](2),calls]})()",
+      "(()=>{let key='method';let value={get method(){throw 42}};try{value[key]()}catch(error){return error}})()",
+      "(()=>{let key='method';let value=null;try{value[key]()}catch(error){return error.name}})()"
+    ]
+
+    for source <- sources do
+      assert_vm_matches_native(runtime, source)
+    end
+  end
+
   test "matches native accessor descriptors and descriptor reflection", %{runtime: runtime} do
     sources = [
       "(()=>{let value={};let getter=function(){return 42};Object.defineProperty(value,'answer',{get:getter,enumerable:true});let descriptor=Object.getOwnPropertyDescriptor(value,'answer');return [value.answer,descriptor.get===getter,descriptor.set===void 0,descriptor.enumerable,('value' in descriptor)]})()",
