@@ -19,6 +19,4 @@ jobs =
 
 ReleaseSupport.recovery_run!(run, jobs, sha)
 
-IO.puts(
-  "Original source, pinned UI, 47 native builds and staging gates verified for run #{run_id}"
-)
+IO.puts("Original source, 47 native builds and staging gates verified for run #{run_id}")

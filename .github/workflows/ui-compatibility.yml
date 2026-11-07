@@ -1,0 +1,59 @@
+name: Optional UI Compatibility
+on:
+  workflow_dispatch:
+    inputs:
+      ui_sha:
+        description: Immutable downstream UI SHA to test against this toolchain revision
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: ui-compatibility-${{ github.sha }}-${{ inputs.ui_sha }}
+  cancel-in-progress: true
+jobs:
+  candidate-ui:
+    name: candidate-ui / ${{ inputs.ui_sha }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    env:
+      DUSKMOON_NATIVE_MODE: source
+      RUSTLER_PRECOMPILED_FORCE_BUILD_ALL: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: toolchain
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.18'
+          otp-version: '28'
+      - name: Require an immutable UI integration revision
+        env:
+          UI_SHA: ${{ inputs.ui_sha }}
+        run: elixir -r toolchain/.github/scripts/release_support.exs -e 'ReleaseSupport.sha!(System.fetch_env!("UI_SHA"))'
+      - uses: actions/checkout@v7
+        with:
+          repository: duskmoon-dev/phoenix-duskmoon-ui
+          ref: ${{ inputs.ui_sha }}
+          path: ui
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      - uses: jdx/mise-action@v5.2.2
+        with:
+          tool_versions: |
+            zig 0.17.1
+      - name: Select Zig patch toolchain
+        shell: bash
+        run: echo "ZIG_EXECUTABLE_PATH=$(command -v zig)" >> "$GITHUB_ENV"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - uses: browser-actions/setup-chrome@v2
+        id: chrome
+      - name: Candidate closure with isolated native sources
+        env:
+          CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
+        working-directory: ui
+        run: scripts/candidate-integration.sh "$GITHUB_WORKSPACE/toolchain"

@@ -5,11 +5,6 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      ui_sha:
-        description: Immutable UI SHA to validate before release
-        required: false
-        type: string
   workflow_run:
     workflows: [Toolchain Release]
     types: [completed]
@@ -27,7 +22,7 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: toolchain-tests-${{ github.event_name }}-${{ github.event.workflow_run.id || inputs.version || github.ref }}-${{ inputs.ui_sha || '' }}
+  group: toolchain-tests-${{ github.event_name }}-${{ github.event.workflow_run.id || inputs.version || github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_run' && github.event_name != 'workflow_call' }}
 jobs:
   test:
@@ -64,52 +59,6 @@ jobs:
           MIX_ENV: test
         run: mix test --timeout 300000
       - run: bun test test/js
-  candidate-ui:
-    name: candidate-ui / ${{ inputs.ui_sha }}
-    if: github.event_name == 'workflow_dispatch' && inputs.ui_sha != ''
-    runs-on: ubuntu-26.04
-    timeout-minutes: 60
-    env:
-      DUSKMOON_NATIVE_MODE: source
-      RUSTLER_PRECOMPILED_FORCE_BUILD_ALL: '1'
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          path: toolchain
-      - uses: erlef/setup-beam@v1
-        with:
-          elixir-version: '1.18'
-          otp-version: '28'
-      - name: Require an immutable UI integration revision
-        env:
-          UI_SHA: ${{ inputs.ui_sha }}
-        run: elixir -r toolchain/.github/scripts/release_support.exs -e 'ReleaseSupport.sha!(System.fetch_env!("UI_SHA"))'
-      - uses: actions/checkout@v7
-        with:
-          repository: duskmoon-dev/phoenix-duskmoon-ui
-          ref: ${{ inputs.ui_sha }}
-          path: ui
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-      - uses: jdx/mise-action@v5.2.2
-        with:
-          tool_versions: |
-            zig 0.17.1
-      - name: Select Zig patch toolchain
-        shell: bash
-        run: echo "ZIG_EXECUTABLE_PATH=$(command -v zig)" >> "$GITHUB_ENV"
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.0
-      - uses: browser-actions/setup-chrome@v2
-        id: chrome
-      - name: Candidate closure with isolated native sources
-        env:
-          CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
-        working-directory: ui
-        run: scripts/candidate-integration.sh "$GITHUB_WORKSPACE/toolchain"
   published-context:
     if: inputs.version != '' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-26.04
@@ -271,7 +220,7 @@ jobs:
     with:
       version: ${{ needs.published-context.outputs.version }}
       source_sha: ${{ github.sha }}
-  upgrade:
+  verified-release:
     needs: [published-context, public-artifacts, published-native-downloads, registry, musl]
     if: needs.published-context.outputs.version != ''
     runs-on: ubuntu-26.04
@@ -286,7 +235,7 @@ jobs:
         with:
           elixir-version: '1.18'
           otp-version: '28'
-      - name: Record full verified release gates for automatic or manual adoption
+      - name: Record verified standalone release gates
         working-directory: toolchain
         env:
           VERSION: ${{ needs.published-context.outputs.version }}
@@ -301,46 +250,3 @@ jobs:
           name: verified-toolchain-release-v${{ needs.published-context.outputs.version }}
           path: toolchain/verified-release.json
           overwrite: true
-      - name: Detect cross-repository configuration
-        id: configured
-        env:
-          APP_ID: ${{ vars.UI_UPGRADE_APP_ID }}
-          APP_KEY: ${{ secrets.UI_UPGRADE_APP_PRIVATE_KEY }}
-          FALLBACK: ${{ secrets.UI_UPGRADE_TOKEN }}
-        run: |
-          if [ -n "$APP_ID" ] && [ -n "$APP_KEY" ]; then
-            echo 'use_app=true' >> "$GITHUB_OUTPUT"
-            echo 'enabled=true' >> "$GITHUB_OUTPUT"
-          elif [ -n "$FALLBACK" ]; then
-            echo 'use_app=false' >> "$GITHUB_OUTPUT"
-            echo 'enabled=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'enabled=false' >> "$GITHUB_OUTPUT"
-            echo 'B release verified; UI coordination is unconfigured. Follow docs/upgrade-ui.md.' >> "$GITHUB_STEP_SUMMARY"
-          fi
-      - uses: actions/create-github-app-token@v3
-        if: steps.configured.outputs.use_app == 'true'
-        id: app
-        with:
-          app-id: ${{ vars.UI_UPGRADE_APP_ID }}
-          private-key: ${{ secrets.UI_UPGRADE_APP_PRIVATE_KEY }}
-          owner: duskmoon-dev
-          repositories: phoenix-duskmoon-ui
-          permission-contents: write
-          permission-pull-requests: write
-      - uses: actions/checkout@v7
-        if: steps.configured.outputs.enabled == 'true'
-        with:
-          repository: duskmoon-dev/phoenix-duskmoon-ui
-          ref: main
-          path: ui
-          token: ${{ steps.app.outputs.token || secrets.UI_UPGRADE_TOKEN }}
-      - name: Record verified gates and create/reuse one pinned upgrade PR
-        if: steps.configured.outputs.enabled == 'true'
-        working-directory: toolchain
-        env:
-          VERSION: ${{ needs.published-context.outputs.version }}
-          SOURCE_SHA: ${{ needs.published-context.outputs.source_sha }}
-          GH_TOKEN: ${{ steps.app.outputs.token || secrets.UI_UPGRADE_TOKEN }}
-        run: |
-          elixir scripts/upgrade-ui.exs --push "$VERSION" "$SOURCE_SHA" "$GITHUB_WORKSPACE/ui" verified-release.json

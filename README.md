@@ -2,7 +2,7 @@
 
 Independent Elixir toolchain for frontend assets, native JS/CSS compilers, and the QuickBEAM runtime. The nine Hex packages retain their existing names and namespaces: `duskmoon_bundler`, `duskmoon_bundler_runtime`, `duskmoon_oxc`, `duskmoon_oxide`, `duskmoon_vize`, `duskmoon_quickbeam`, `duskmoon_npm`, `duskmoon_hex_solver`, and `duskmoon_hologram`.
 
-The synchronized toolchain version is **10.1.2**. All nine packages and their native artifacts are released from this repository. Earlier packages retain their native downloads from historical UI releases. UI version U is maintained independently in `phoenix-duskmoon-ui`.
+The synchronized toolchain version is **10.1.2**. All nine packages and their native artifacts are released from this repository. Earlier packages retain their native downloads from historical UI releases. UI version U is maintained independently in `phoenix-duskmoon-ui`. Toolchain publication requires only this repository's source checks and artifact verification; UI compatibility and adoption are separate downstream operations.
 
 ## Hologram sub-application
 
@@ -26,7 +26,7 @@ config :my_app, MyAppWeb.Endpoint,
 
 ## Development
 
-Use `devenv shell` for the Elixir/OTP, Rust, Zig, Bun and Tailwind toolchains. Development explicitly builds candidate native sources; the ordinary UI consumer requires published artifacts.
+Use `devenv shell` for the Elixir/OTP, Rust, Zig, Bun and Tailwind toolchains. Development explicitly builds candidate native sources; ordinary consumers use published artifacts.
 
 Rust source builds require Rust 1.99 or later. QuickBEAM uses Zig 0.17.1 and Zigler 0.17. The development environment supplies Rust and Zig from a separately locked nixpkgs input, with Zig's patch release pinned by source hash. Other toolchains retain their stable baseline.
 
@@ -60,4 +60,4 @@ Staging refuses existing output directories and outputs inside this checkout. Ea
 
 Historical assets must remain untouched. Future native URLs use `https://github.com/duskmoon-dev/duskmoon-bundler/releases/download/vB`. Checksum files are generated from final native artifacts by release automation; candidate source staging deliberately does not fabricate them.
 
-See [migration inventory](docs/migration-inventory.md), [progress](docs/extraction-progress.md), and the release runbook for bootstrap order and gates. The UI-only browser hook/chat/form regression stays in the UI repository; generic compiler, HMR, manifest and resolver coverage lives here.
+See [migration inventory](docs/migration-inventory.md), [progress](docs/extraction-progress.md), and the [release runbook](docs/releasing.md) for publication gates. [Optional UI compatibility and adoption](docs/upgrade-ui.md) run independently of toolchain publication. The UI-only browser hook/chat/form regression stays in the UI repository; generic compiler, HMR, manifest and resolver coverage lives here.

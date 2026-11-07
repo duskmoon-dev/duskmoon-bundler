@@ -10,10 +10,6 @@ on:
         description: Immutable toolchain source SHA
         required: true
         type: string
-      ui_sha:
-        description: Required for publication; immutable UI migration-compatible SHA
-        required: false
-        type: string
       verify_published:
         description: Verify an already-published cohort using current validation scripts
         required: false
@@ -42,7 +38,6 @@ jobs:
       DUSKMOON_NATIVE_MODE: source
     outputs:
       reuse_native: ${{ steps.reuse.outputs.reusable }}
-      test_run: ${{ steps.checks.outputs.test_run }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -51,25 +46,21 @@ jobs:
         with:
           elixir-version: '1.18'
           otp-version: '28'
-      - name: Require prior CI, source tests and pinned UI integration
+      - name: Require prior CI and source tests
         id: checks
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ inputs.source_sha }}
-          UI_SHA: ${{ inputs.ui_sha }}
-        run: elixir .github/scripts/check_workflow_runs.exs "$SOURCE_SHA" "$UI_SHA"
+        run: elixir .github/scripts/check_workflow_runs.exs "$SOURCE_SHA"
       - name: Immutable complete release plan
         env:
           VERSION: ${{ inputs.version }}
           SOURCE_SHA: ${{ inputs.source_sha }}
-          UI_SHA: ${{ inputs.ui_sha }}
           WORKFLOW_SHA: ${{ github.sha }}
         run: |
           test "$WORKFLOW_SHA" = "$SOURCE_SHA" || { echo 'Dispatch workflow ref must point at source_sha' >&2; exit 1; }
-          test -n "$UI_SHA" || { echo 'ui_sha is required for publication' >&2; exit 1; }
           elixir scripts/release.exs plan "$VERSION" "$SOURCE_SHA"
           elixir scripts/release.exs preflight "$VERSION" "$SOURCE_SHA"
-          elixir -r .github/scripts/release_support.exs -e 'ReleaseSupport.sha!(System.fetch_env!("UI_SHA"))'
       - name: Reuse only verified complete public native assets on retries
         id: reuse
         env:
@@ -83,75 +74,65 @@ jobs:
           path: ${{ runner.temp }}/reused-native-assets/*.tar.gz
           if-no-files-found: error
           overwrite: true
-  candidate-ui:
-    needs: validate
-    runs-on: ubuntu-26.04
-    timeout-minutes: 5
-    steps:
-      - name: Record the previously passed pinned UI gate
-        env:
-          TEST_RUN: ${{ needs.validate.outputs.test_run }}
-          UI_SHA: ${{ inputs.ui_sha }}
-        run: echo "Pinned UI $UI_SHA passed in test workflow run $TEST_RUN" >> "$GITHUB_STEP_SUMMARY"
   native-aarch64-apple-darwin:
-    needs: [validate, candidate-ui]
+    needs: validate
     if: needs.validate.outputs.reuse_native != 'true'
     uses: ./.github/workflows/native-aarch64-apple-darwin.yml
     with:
       version: ${{ inputs.version }}
       source_sha: ${{ inputs.source_sha }}
   native-x86_64-apple-darwin:
-    needs: [validate, candidate-ui]
+    needs: validate
     if: needs.validate.outputs.reuse_native != 'true'
     uses: ./.github/workflows/native-x86_64-apple-darwin.yml
     with:
       version: ${{ inputs.version }}
       source_sha: ${{ inputs.source_sha }}
   native-aarch64-unknown-linux-gnu:
-    needs: [validate, candidate-ui]
+    needs: validate
     if: needs.validate.outputs.reuse_native != 'true'
     uses: ./.github/workflows/native-aarch64-unknown-linux-gnu.yml
     with:
       version: ${{ inputs.version }}
       source_sha: ${{ inputs.source_sha }}
   native-aarch64-unknown-linux-musl:
-    needs: [validate, candidate-ui]
+    needs: validate
     if: needs.validate.outputs.reuse_native != 'true'
     uses: ./.github/workflows/native-aarch64-unknown-linux-musl.yml
     with:
       version: ${{ inputs.version }}
       source_sha: ${{ inputs.source_sha }}
   native-x86_64-unknown-linux-gnu:
-    needs: [validate, candidate-ui]
+    needs: validate
     if: needs.validate.outputs.reuse_native != 'true'
     uses: ./.github/workflows/native-x86_64-unknown-linux-gnu.yml
     with:
       version: ${{ inputs.version }}
       source_sha: ${{ inputs.source_sha }}
   native-x86_64-unknown-linux-musl:
-    needs: [validate, candidate-ui]
+    needs: validate
     if: needs.validate.outputs.reuse_native != 'true'
     uses: ./.github/workflows/native-x86_64-unknown-linux-musl.yml
     with:
       version: ${{ inputs.version }}
       source_sha: ${{ inputs.source_sha }}
   native-x86_64-unknown-freebsd:
-    needs: [validate, candidate-ui]
+    needs: validate
     if: needs.validate.outputs.reuse_native != 'true'
     uses: ./.github/workflows/native-x86_64-unknown-freebsd.yml
     with:
       version: ${{ inputs.version }}
       source_sha: ${{ inputs.source_sha }}
   native-x86_64-pc-windows-gnu:
-    needs: [validate, candidate-ui]
+    needs: validate
     if: needs.validate.outputs.reuse_native != 'true'
     uses: ./.github/workflows/native-x86_64-pc-windows-gnu.yml
     with:
       version: ${{ inputs.version }}
       source_sha: ${{ inputs.source_sha }}
   stage:
-    needs: [validate, candidate-ui, native-aarch64-apple-darwin, native-x86_64-apple-darwin, native-aarch64-unknown-linux-gnu, native-aarch64-unknown-linux-musl, native-x86_64-unknown-linux-gnu, native-x86_64-unknown-linux-musl, native-x86_64-unknown-freebsd, native-x86_64-pc-windows-gnu]
-    if: ${{ always() && needs.validate.result == 'success' && needs.candidate-ui.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (needs.validate.outputs.reuse_native == 'true' || !contains(needs.*.result, 'skipped')) }}
+    needs: [validate, native-aarch64-apple-darwin, native-x86_64-apple-darwin, native-aarch64-unknown-linux-gnu, native-aarch64-unknown-linux-musl, native-x86_64-unknown-linux-gnu, native-x86_64-unknown-linux-musl, native-x86_64-unknown-freebsd, native-x86_64-pc-windows-gnu]
+    if: ${{ always() && needs.validate.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (needs.validate.outputs.reuse_native == 'true' || !contains(needs.*.result, 'skipped')) }}
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
@@ -221,9 +202,8 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
           SOURCE_SHA: ${{ inputs.source_sha }}
-          UI_SHA: ${{ inputs.ui_sha }}
         run: |
-          elixir -e 'File.write!(Path.join(System.fetch_env!("RUNNER_TEMP"), "release-request.json"), JSON.encode!(%{version: System.fetch_env!("VERSION"), source_sha: System.fetch_env!("SOURCE_SHA"), ui_sha: System.fetch_env!("UI_SHA")}))'
+          elixir -e 'File.write!(Path.join(System.fetch_env!("RUNNER_TEMP"), "release-request.json"), JSON.encode!(%{version: System.fetch_env!("VERSION"), source_sha: System.fetch_env!("SOURCE_SHA")}))'
       - uses: actions/upload-artifact@v6
         with:
           name: release-request

@@ -87,17 +87,17 @@ defmodule ReleaseRecoveryContractTest do
 
   defp jobs do
     Enum.map(
-      ["validate", "candidate-ui", "stage"] ++ Enum.map(1..47, &"native / #{&1}"),
+      ["validate", "stage"] ++ Enum.map(1..47, &"native / #{&1}"),
       fn name ->
         %{"name" => name, "conclusion" => "success"}
       end
     )
   end
 
-  test "recovery retains the original successful build gates" do
+  test "standalone recovery retains all build gates without a downstream UI job" do
     assert :ok = ReleaseSupport.recovery_run!(run(), jobs(), @sha)
 
-    for name <- ["validate", "candidate-ui", "stage", "native / 47"] do
+    for name <- ["validate", "stage", "native / 47"] do
       failed =
         Enum.map(jobs(), fn job ->
           if job["name"] == name, do: Map.put(job, "conclusion", "failure"), else: job

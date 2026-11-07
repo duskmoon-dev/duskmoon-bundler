@@ -128,7 +128,7 @@ defmodule ReleaseSupport do
              run["event"] == "workflow_dispatch" and run["status"] == "completed",
            do: raise("recovery requires a completed original release run at source_sha")
 
-    for name <- ["validate", "candidate-ui", "stage"] do
+    for name <- ["validate", "stage"] do
       unless Enum.any?(jobs, &(&1["name"] == name and &1["conclusion"] == "success")),
         do: raise("original release gate did not pass: #{name}")
     end

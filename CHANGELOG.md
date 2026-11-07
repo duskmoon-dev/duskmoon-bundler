@@ -2,6 +2,10 @@
 
 ## 10.1.2 - 2026-11-07
 
+- Release the standalone toolchain using its own source and published-consumer
+  gates; make downstream UI compatibility an independent, manual workflow.
+  Stop automatically opening UI upgrade pull requests.
+
 - Upgrade the coordinated HTTP client family to 1.0.0-rc.4 and Gaoxy to 0.15.0,
   including standalone Hologram test projects.
 - Refresh compatible Hex and JavaScript dependencies, OXC to 0.157, Rolldown

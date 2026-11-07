@@ -20,11 +20,11 @@ defmodule WorkflowChecksTest do
   end
 
   test "partial reruns retain successful jobs and use each retried job's final result" do
-    retained = %{"id" => 1, "name" => "test", "run_attempt" => 1, "conclusion" => "success"}
+    retained = %{"id" => 1, "name" => "build", "run_attempt" => 1, "conclusion" => "success"}
 
     failed = %{
       "id" => 2,
-      "name" => "candidate-ui / pinned-sha",
+      "name" => "test",
       "run_attempt" => 1,
       "conclusion" => "failure"
     }
@@ -32,14 +32,14 @@ defmodule WorkflowChecksTest do
     retried = Map.merge(failed, %{"id" => 3, "run_attempt" => 2, "conclusion" => "success"})
     jobs = WorkflowChecks.latest_jobs([retried, retained, failed])
     assert Enum.sort_by(jobs, & &1["id"]) == [retained, retried]
-    assert :ok = WorkflowChecks.successful_jobs!(jobs, ["test", "candidate-ui / pinned-sha"])
+    assert :ok = WorkflowChecks.successful_jobs!(jobs, ["build", "test"])
 
     regression = Map.merge(retried, %{"id" => 4, "run_attempt" => 3, "conclusion" => "failure"})
 
     assert_raise RuntimeError, fn ->
       [retained, failed, retried, regression]
       |> WorkflowChecks.latest_jobs()
-      |> WorkflowChecks.successful_jobs!(["test", "candidate-ui / pinned-sha"])
+      |> WorkflowChecks.successful_jobs!(["build", "test"])
     end
   end
 
@@ -72,22 +72,17 @@ defmodule WorkflowChecksTest do
     end
   end
 
-  test "UI integration must pass for the requested immutable UI SHA" do
-    ui = String.duplicate("b", 40)
-    jobs = [%{"name" => "test", "conclusion" => "success"}]
-
-    assert_raise RuntimeError, fn ->
-      WorkflowChecks.successful_jobs!(jobs, ["test", "candidate-ui / #{ui}"])
-    end
-
-    matching = jobs ++ [%{"name" => "candidate-ui / #{ui}", "conclusion" => "success"}]
-    assert :ok = WorkflowChecks.successful_jobs!(matching, ["test", "candidate-ui / #{ui}"])
+  test "source tests remain required independently of downstream compatibility" do
+    assert :ok =
+             WorkflowChecks.successful_jobs!([%{"name" => "test", "conclusion" => "success"}], [
+               "test"
+             ])
 
     for conclusion <- ["failure", "skipped", "cancelled", nil] do
-      failed = [%{"name" => "candidate-ui / #{ui}", "conclusion" => conclusion}]
-
       assert_raise RuntimeError, fn ->
-        WorkflowChecks.successful_jobs!(jobs ++ failed, ["test", "candidate-ui / #{ui}"])
+        WorkflowChecks.successful_jobs!([%{"name" => "test", "conclusion" => conclusion}], [
+          "test"
+        ])
       end
     end
   end
@@ -165,8 +160,6 @@ defmodule WorkflowCheckCommandsTest do
   end
 
   test "release CLI verifies paginated checks with retained and retried jobs", ctx do
-    ui = String.duplicate("b", 40)
-
     for {workflow, id} <- [{"ci", 10}, {"test", 20}] do
       fixture(ctx, "#{workflow}.json", [
         %{
@@ -187,18 +180,18 @@ defmodule WorkflowCheckCommandsTest do
     fixture(ctx, "ci-jobs.json", [%{"jobs" => [job(1, "build", 1, "success")]}])
 
     fixture(ctx, "test-jobs.json", [
-      %{"jobs" => [job(2, "test", 1, "success"), job(3, "candidate-ui / #{ui}", 1, "failure")]},
-      %{"jobs" => [job(4, "candidate-ui / #{ui}", 2, "success")]}
+      %{"jobs" => [job(2, "test", 1, "failure")]},
+      %{"jobs" => [job(3, "test", 2, "success")]}
     ])
 
-    {output, status} = command("check_workflow_runs.exs", [ctx.sha, ui], ctx.env)
+    {output, status} = command("check_workflow_runs.exs", [ctx.sha], ctx.env)
     assert status == 0, output
     assert File.read!(Path.join(ctx.tmp_dir, "outputs")) == "ci_run=10\ntest_run=20\n"
 
-    fixture(ctx, "test-jobs.json", [%{"jobs" => [job(2, "test", 1, "success")]}])
-    {output, status} = command("check_workflow_runs.exs", [ctx.sha, ui], ctx.env)
+    fixture(ctx, "test-jobs.json", [%{"jobs" => [job(2, "test", 1, "skipped")]}])
+    {output, status} = command("check_workflow_runs.exs", [ctx.sha], ctx.env)
     assert status != 0
-    assert output =~ "required test/build gate did not pass: candidate-ui / #{ui}"
+    assert output =~ "required test/build gate did not pass: test"
   end
 
   test "post-release CLI resolves the original publication and ignores verification-only runs",

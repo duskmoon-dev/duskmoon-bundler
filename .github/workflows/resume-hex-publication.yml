@@ -11,7 +11,7 @@ on:
         required: true
         type: string
       release_run:
-        description: Original release run with successful source, UI, native and staging gates
+        description: Original release run with successful source, native and staging gates
         required: true
         type: string
 permissions:

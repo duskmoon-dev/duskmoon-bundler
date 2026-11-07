@@ -3,8 +3,9 @@
 All nine Hex applications share stable **B**. UI **U** is independently released
 by `phoenix-duskmoon-ui`. No packages are published on pushes, pull requests or
 arbitrary repository dispatches. **Toolchain Release**, with an approved
-`release` environment and explicit stable B, immutable toolchain SHA and pinned
-UI integration SHA, performs initial publishing. **Resume Exact Hex Publication**
+`release` environment and explicit stable B and immutable toolchain SHA, performs
+initial publishing. UI compatibility is an optional downstream check and is not a
+publication or recovery prerequisite. **Resume Exact Hex Publication**
 can finish the original package upload after verifying those completed build gates.
 Commit version changes first; the
 workflow neither changes versions nor pushes a release commit to main. Select a
@@ -18,23 +19,15 @@ UI repository tags remain the source for earlier toolchains.
 
 ## Bootstrap and gates
 
-The Zigler 0.17 source candidate requires a compatible UI helper. UI commit
-`6ff28c73bb3892c4ca3f6a3b4bd8642d504095ef` adds this support while retaining
-Zigler 0.16 compatibility ([UI issue #212](https://github.com/duskmoon-dev/phoenix-duskmoon-ui/issues/212)).
-Pin that revision or a compatible later revision and verify the full candidate gate.
-
-1. Review and merge destination extraction. Keep any already-verified B0 UI
-   consumer operational until a new destination B is published and installed.
+1. Commit the synchronized version, dependency locks and release changes. Keep
+   historical package/native artifacts immutable.
 2. Run `ci.yml` for format/lint/compilation and `test.yml` for pure release,
    staging and native-policy contracts, all nine source test suites, Bun tests
-   and pinned UI source integration. Before release, manually dispatch `test.yml`
-   at the toolchain source SHA with the intended `ui_sha`. Release checks the
-   latest CI and test runs at that exact source SHA and the successful UI job
-   named with that exact UI SHA; it never executes those tests again. PR checks
-   and post-release checks cannot substitute for these source gates. Candidate
-   integration uses the UI's isolated candidate closure and native sources,
-   including third-party Rust NIF dependencies via
-   `RUSTLER_PRECOMPILED_FORCE_BUILD_ALL=1`.
+   and independent consumer regressions. Release checks the latest successful CI
+   build and source test jobs at that exact toolchain SHA; it never executes those
+   tests again. PR checks and post-release checks cannot substitute for these
+   source gates. Neither source checks nor publication require a UI checkout or
+   UI revision. Optional downstream integration is documented in [upgrade-ui.md](upgrade-ui.md).
 3. Release calls eight independent `native-<rust-target>.yml` workflows. Each
    delegates to `native-prebuild.yml` for five Rust crates and, except Windows,
    one QuickBEAM target. Rust and QuickBEAM builds are independent, so one target
@@ -54,7 +47,7 @@ Pin that revision or a compatible later revision and verify the full candidate g
 6. A successful **Toolchain Release** automatically starts **Toolchain Tests**
    through `workflow_run`. It validates the publication request against the
    original successful run, verifies all public bytes, extracts the exact Hex
-   tarballs outside both checkouts, and runs strict precompiled consumers and
+   tarballs outside the checkout, and runs strict precompiled consumers and
    the runtime-only manifest regression. It also runs cold registry smoke checks
    on Ubuntu 26.04 glibc and Alpine amd64/arm64, with no Rust/Zig compiler in
    those containers.
@@ -68,8 +61,10 @@ Pin that revision or a compatible later revision and verify the full candidate g
    These tests run after publication; a consumer failure blocks adoption but
    does not roll back already published packages.
 7. Only successful published-artifact, registry and platform tests in `test.yml`
-   enable a single pinned UI upgrade PR and its verified-release record.
-   Partial publication or a failed platform consumer cannot start adoption.
+   produce the `verified-toolchain-release-vB` artifact and its
+   `verified-release.json` record. Partial publication or a failed platform
+   consumer cannot produce a verified adoption record. The workflow performs no
+   cross-repository writes; downstream upgrades are separately authorized work.
 
 Commands with **no publishing side effects** (substitute real B/SHA):
 
@@ -90,20 +85,20 @@ release validation. Its output directory must not exist. `publish-assets` and
 `publish-packages` are side-effecting release operations and require explicit
 operational authorization outside this implementation task. `publish-packages`
 rechecks public artifacts rather than assuming a preceding upload succeeded.
-For the source/UI gate, confirm `main` points at the intended toolchain SHA, then
+For the source gates, confirm `main` points at the intended toolchain SHA, then
 run this before the release dispatch. GitHub requires a branch or tag as the
 dispatch ref; a bare commit SHA is not accepted. Check the created run's
 `head_sha` against that intended SHA:
 
 ```sh
 gh workflow run test.yml --repo duskmoon-dev/duskmoon-bundler \
-  --ref main -f ui_sha=FULL_UI_SHA
+  --ref main
 ```
 
 Wait for that run and `ci.yml` at the same source SHA to succeed. A new failed,
 cancelled or unfinished source run blocks release instead of reusing older green
 results. After publication, wait for the separate **Toolchain Tests** run before
-considering the cohort verified for UI adoption.
+considering the published cohort verified for downstream adoption.
 
 Hosted runners use `ubuntu-26.04`, `ubuntu-26.04-arm`, `macos-26-intel`,
 `xcode-27` (macOS 27 ARM) and `windows-2025`. GitHub currently provides macOS 27
@@ -130,12 +125,12 @@ rebuild package contents; the registry downloads must match those exact bytes.
 ## Credentials and permissions
 
 Configure destination-owned `HEX_API_KEY` with ownership of all nine
-Hex packages and a protected `release` environment. This repository needs no UI
-npm publishing key. `contents: write` is limited to the publication job; normal
+Hex packages and a protected `release` environment. Publication and verification
+need no UI credentials. `contents: write` is limited to the publication job; normal
 CI/native jobs have read-only contents permission. No historical secrets are
-copied. Registry ownership, environment approvals and GitHub App installation
-are external setup prerequisites and are not performed by this migration.
-See `upgrade-ui.md` for the separately scoped cross-repository GitHub App/token.
+copied. Registry ownership and environment approvals are external setup
+prerequisites. Optional UI coordination is manual and separately scoped; see
+[upgrade-ui.md](upgrade-ui.md).
 
 ## Partial release recovery
 
@@ -180,9 +175,9 @@ gh workflow run resume-hex-publication.yml --repo duskmoon-dev/duskmoon-bundler 
   -f release_run=ORIGINAL_RELEASE_RUN_ID
 ```
 
-Recovery requires the original run's successful source/UI gates, all 47 native
+Recovery requires the original run's successful toolchain validation, all 47 native
 builds and staging jobs, and its retained `exact-publish-packages` artifact. Source
-and UI gates in new releases refer to the prior successful CI/test run. Recovery
+gates refer to the prior successful CI/test run; UI jobs are not prerequisites. Recovery
 accepts historical matrix job names and the split target workflows, and checks
 the latest execution of each job across partial reruns. It
 downloads and checks the public native bytes, extracts the original tarballs into
@@ -214,9 +209,10 @@ This mode calls the published-release verifier, checks all 47 public native
 archives and nine Hex tarballs against original provenance, then runs the cold
 `test.yml` public-artifact, glibc and both Alpine consumers before recording the verified gates. Build,
 staging and publication jobs are skipped; no artifacts, packages or tags change.
-`ui_sha` is required only for normal publication. The record keeps artifact
-`source_sha` separate from `validation_sha`. See `upgrade-ui.md` for coordination
-and the standalone verification dispatch.
+Neither publication nor verification accepts or requires a UI SHA. The record
+keeps artifact `source_sha` separate from `validation_sha`. See
+[upgrade-ui.md](upgrade-ui.md) for optional downstream coordination and the
+standalone verification dispatch.
 
 GitHub reruns use the original workflow and source revision, so rerunning the
 old failed attempt cannot pick up a later validation-script repair. Its failed
@@ -234,14 +230,15 @@ and `duskmoon_bundler`. The native artifact matrix remains 47 archives.
 `ci.yml` runs native OXC format/lint checks. `test.yml` runs its full Elixir suite
 and the Mocha + jsdom suite under Bun through `duskmoon_npm`, installing Hologram's
 asset dependencies before the Elixir compiler/helper tests. Release checks those
-successful source/UI results and builds/packages without rerunning the suites.
+successful source results and builds/packages without rerunning the suites.
 The staged package includes its local docs and preserves upstream/vendor licenses.
 The production source/tar/registry consumers also load Hologram. Consumers that
 start Hologram register `Mix.compilers() ++ [:hologram]`, so its
 runtime PLTs and bundles are generated before application startup. The installed
 consumer checks assert its supervisor and page resolver are running.
-UI candidate validation and upgrade locks cover the eight asset dependencies actually used
-by the UI; release provenance and registry verification cover all nine packages.
+Optional UI compatibility checks and manual upgrade locks cover the eight asset
+dependencies actually used by the UI; release provenance and registry verification
+cover all nine packages independently.
 
 ## Local automation verification
 
@@ -260,5 +257,5 @@ The pure release helper is intentionally duplicated in the UI repository so each
 checkout is independent. Normal CI caches dependency downloads with repository,
 locks, platform/libc, Elixir/OTP and source-mode/toolchain keys through the shared
 `setup-toolchain` action; release jobs retain
-cold target builds. A bootstrap candidate UI SHA must include the migration's
-`scripts/candidate-integration.sh`, not the old pre-extraction main commit.
+cold target builds. Optional downstream source integration runs separately in
+`ui-compatibility.yml`; its result does not determine toolchain release eligibility.
