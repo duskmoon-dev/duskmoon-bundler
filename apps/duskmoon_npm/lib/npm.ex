@@ -82,6 +82,8 @@ defmodule NPM do
   so workspace-local pins may coexist with different hoisted versions.
   Ordinary installs refresh changed root and workspace package metadata without
   re-resolving current dependencies; frozen installs reject stale metadata.
+  Ordinary installs also prune lock records no longer reachable from any
+  root or workspace manifest, keeping remaining records unchanged.
 
   ## Options
 
@@ -96,7 +98,7 @@ defmodule NPM do
         with {:ok, dependencies, local_links} <- NPM.Workspace.frozen_dependencies(opts),
              :ok <- NPM.Lockfile.sync_package_metadata(frozen: true) do
           if Enum.all?(dependencies, fn {_location, deps} -> deps == [] end) do
-            do_install(%{}, local_links: local_links)
+            do_install(%{}, local_links: local_links, frozen: true)
           else
             frozen_install(dependencies, local_links)
           end
@@ -248,18 +250,23 @@ defmodule NPM do
   defp do_install(deps, opts) when map_size(deps) == 0 do
     local_links = Keyword.get(opts, :local_links, %{})
 
-    if local_links == %{} do
-      Mix.shell().info("No npm dependencies found in package.json.")
-      :ok
-    else
-      with :ok <- Linker.link(%{}, @node_modules),
-           :ok <- Linker.link_local_packages(local_links, @node_modules) do
-        Mix.shell().info(
-          "Linked #{map_size(local_links)} local npm package#{plural(local_links)}."
-        )
+    cond do
+      not Keyword.get(opts, :frozen, false) and not locked_graph_reachable?(opts, local_links) ->
+        prune_locked_graph(local_links, opts)
 
+      local_links == %{} ->
+        Mix.shell().info("No npm dependencies found in package.json.")
         :ok
-      end
+
+      true ->
+        with :ok <- Linker.link(%{}, @node_modules),
+             :ok <- Linker.link_local_packages(local_links, @node_modules) do
+          Mix.shell().info(
+            "Linked #{map_size(local_links)} local npm package#{plural(local_links)}."
+          )
+
+          :ok
+        end
     end
   end
 
@@ -269,6 +276,14 @@ defmodule NPM do
       Keyword.get(opts, :local_links, %{}),
       opts
     )
+  end
+
+  defp prune_locked_graph(local_links, opts) do
+    with {:ok, flat} <- NPM.Lockfile.read(),
+         {:ok, nested} <- NPM.Lockfile.read_nested(),
+         {:ok, overrides} <- JSON.read_overrides() do
+      update_locked_graph(flat, nested, local_links, overrides, opts)
+    end
   end
 
   defp frozen_install(deps, local_links) do
@@ -364,7 +379,8 @@ defmodule NPM do
       locations = lockfile_locations(lockfile, nested)
 
       locations != %{} and frozen_dependencies_satisfied?(locations, dependencies) and
-        frozen_records_complete?(locations, local_links, overrides)
+        frozen_records_complete?(locations, local_links, overrides) and
+        all_locations_reachable?(locations, opts, local_links, overrides)
     else
       {:error, _reason} -> false
     end
@@ -547,22 +563,51 @@ defmodule NPM do
       {flat, nested} = expand_all_dependencies(flat, nested, local_links, overrides, preferred)
       locations = lockfile_locations(flat, nested)
 
-      if frozen_dependencies_satisfied?(locations, dependencies) do
-        reachable =
-          dependencies
-          |> Enum.flat_map(fn {location, deps} ->
-            Enum.map(deps, fn {name, _range} -> {location, name} end)
-          end)
-          |> reachable_locations(locations, local_links, overrides, MapSet.new())
-
+      with true <- frozen_dependencies_satisfied?(locations, dependencies),
+           {:ok, reachable} <-
+             reachable_lockfile_locations(locations, opts, local_links, overrides) do
         flat =
           Map.filter(flat, fn {name, _} -> MapSet.member?(reachable, "node_modules/#{name}") end)
 
         nested = Map.take(nested, MapSet.to_list(reachable))
         persist_graph(flat, nested, old_flat, local_links, overrides, preserve: true)
       else
-        incomplete_graph()
+        false -> incomplete_graph()
+        {:error, _reason} = error -> error
       end
+    end
+  end
+
+  # Lock records stay reachable from every manifest dependency group;
+  # production installs skip devDependencies but must not drop their records.
+  defp reachable_lockfile_locations(locations, opts, local_links, overrides) do
+    with {:ok, dependencies, _links} <-
+           NPM.Workspace.frozen_dependencies(Keyword.delete(opts, :production)) do
+      reachable =
+        dependencies
+        |> Enum.flat_map(fn {location, deps} ->
+          Enum.map(deps, fn {name, _range} -> {location, name} end)
+        end)
+        |> reachable_locations(locations, local_links, overrides, MapSet.new())
+
+      {:ok, reachable}
+    end
+  end
+
+  defp all_locations_reachable?(locations, opts, local_links, overrides) do
+    case reachable_lockfile_locations(locations, opts, local_links, overrides) do
+      {:ok, reachable} -> Enum.all?(Map.keys(locations), &MapSet.member?(reachable, &1))
+      {:error, _reason} -> false
+    end
+  end
+
+  defp locked_graph_reachable?(opts, local_links) do
+    with {:ok, flat} <- NPM.Lockfile.read(),
+         {:ok, nested} <- NPM.Lockfile.read_nested(),
+         {:ok, overrides} <- JSON.read_overrides() do
+      all_locations_reachable?(lockfile_locations(flat, nested), opts, local_links, overrides)
+    else
+      {:error, _reason} -> false
     end
   end
 
@@ -588,10 +633,15 @@ defmodule NPM do
     if location == nil or Map.has_key?(links, name) or MapSet.member?(seen, location) do
       reachable_locations(rest, locations, links, overrides, seen)
     else
+      entry = locations[location]
+
+      # Peers resolve like regular deps; absent (optional) peers yield no location.
       deps =
-        Enum.map(effective_dependencies(locations[location], overrides), fn {name, _} ->
-          {location, name}
-        end)
+        entry
+        |> effective_dependencies(overrides)
+        |> Map.keys()
+        |> Enum.concat(Map.keys(Map.get(entry, :peer_dependencies, %{})))
+        |> Enum.map(&{location, &1})
 
       reachable_locations(deps ++ rest, locations, links, overrides, MapSet.put(seen, location))
     end

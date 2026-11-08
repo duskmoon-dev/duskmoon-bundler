@@ -34,6 +34,9 @@ defmodule NPM.Lockfile do
   @dependency_metadata_fields ~w(dependencies devDependencies optionalDependencies peerDependencies)
 
   @type entry :: %{
+          optional(:peer_dependencies) => %{String.t() => String.t()},
+          optional(:peer_dependencies_meta) => %{String.t() => map()},
+          optional(:peer) => true,
           version: String.t(),
           integrity: String.t(),
           tarball: String.t(),
@@ -554,7 +557,26 @@ defmodule NPM.Lockfile do
       has_install_script: has_install_script?(info)
     }
     |> maybe_mark_optional(info)
+    |> maybe_put_peer_metadata(info)
   end
+
+  # npm 7+ locks record auto-installed peers; keep the edges so reachability
+  # does not prune them. Malformed values are ignored rather than trusted.
+  defp maybe_put_peer_metadata(entry, info) do
+    entry
+    |> maybe_put_string_map(:peer_dependencies, info["peerDependencies"], &is_binary/1)
+    |> maybe_put_string_map(:peer_dependencies_meta, info["peerDependenciesMeta"], &is_map/1)
+    |> then(fn entry -> if info["peer"] == true, do: Map.put(entry, :peer, true), else: entry end)
+  end
+
+  defp maybe_put_string_map(entry, key, value, valid_value?)
+       when is_map(value) and map_size(value) > 0 do
+    if Enum.all?(value, fn {name, v} -> is_binary(name) and valid_value?.(v) end),
+      do: Map.put(entry, key, value),
+      else: entry
+  end
+
+  defp maybe_put_string_map(entry, _key, _value, _valid_value?), do: entry
 
   defp parse_legacy_dependencies(deps) do
     Map.new(deps, fn {name, info} ->
@@ -728,6 +750,9 @@ defmodule NPM.Lockfile do
     )
     |> maybe_put("hasInstallScript", if(Map.get(entry, :has_install_script, false), do: true))
     |> maybe_put("optional", if(Map.get(entry, :optional, false), do: true))
+    |> maybe_put("peer", if(Map.get(entry, :peer, false), do: true))
+    |> maybe_put("peerDependencies", Map.get(entry, :peer_dependencies))
+    |> maybe_put("peerDependenciesMeta", Map.get(entry, :peer_dependencies_meta))
   end
 
   defp put_workspace_links(packages, manifests) do
