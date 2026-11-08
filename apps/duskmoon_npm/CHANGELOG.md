@@ -1,5 +1,16 @@
 # Changelog
 
+## 10.1.4 - 2026-11-09
+
+- Reject unsafe lockfile names, versions and locations, and keep package bin
+  links and targets inside their package.
+- Send `NPM_TOKEN` and configured tokens only to the default or explicitly
+  configured registry; registries from `.npmrc` need host-keyed tokens.
+- Enforce SRI integrity (multi-hash, strongest algorithm), re-verify cached
+  packages and strip setuid/setgid bits on extraction.
+- Error on unparseable transitive ranges, resolve dist-tags from packuments and
+  apply npm prerelease rules per requirement.
+
 ## 10.1.3 - 2026-11-08
 
 - Refresh root and workspace package descriptors during ordinary install while

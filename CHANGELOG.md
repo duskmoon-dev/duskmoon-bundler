@@ -1,5 +1,23 @@
 # Changelog
 
+## 10.1.4 - 2026-11-09
+
+- Validate development `/@vendor/` specifiers and confine chunk reads to the
+  vendor cache, closing a path traversal; key dev compile caches by content.
+- Require every HMR importer path to reach a boundary, match fallback
+  importers by full path, and store module graph links atomically.
+- Harden npm installs: validate lockfile entries and package bins, scope auth
+  tokens to trusted registries, enforce SRI integrity on downloads and cache
+  hits, and strip setuid/setgid bits from extracted files.
+- Report unparseable npm ranges, resolve dist-tags, and apply prerelease
+  matching per requirement.
+- Requeue QuickBEAM requests received during a pending await and make runtime
+  shutdown interrupt running JavaScript.
+- Run oxc, formatter, linter and vize NIFs on a 64 MiB stack; return errors for
+  invalid oxide scan entries instead of poisoning the scanner.
+- Pin release workflow actions, require release sources on main, and keep new
+  GitHub releases as drafts until every asset is uploaded.
+
 ## 10.1.3 - 2026-11-08
 
 - Refresh changed root and workspace npm lock metadata without re-resolving
