@@ -57,12 +57,12 @@ jobs:
             project-dir: apps/duskmoon_vize/native/vize_ex_nif
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_sha }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
           target: ${{ inputs.target }}
@@ -104,7 +104,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: native-${{ matrix.crate.name }}-${{ inputs.target }}
           path: ${{ steps.build-crate.outputs.file-path }}
@@ -118,18 +118,18 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_sha }}
 
       - name: Set up Elixir
-        uses: erlef/setup-beam@v1
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           elixir-version: '1.18'
           otp-version: '28'
 
       - name: Install Zig
-        uses: jdx/mise-action@v5.2.2
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           tool_versions: |
             zig 0.17.1
@@ -138,7 +138,7 @@ jobs:
         run: echo "ZIG_EXECUTABLE_PATH=$(command -v zig)" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
 
@@ -190,7 +190,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: native-quickbeam-${{ inputs.quickbeam_target }}
           path: artifacts/*.tar.gz

@@ -24,6 +24,7 @@ jobs:
   resume:
     runs-on: ubuntu-26.04
     timeout-minutes: 60
+    if: github.ref == 'refs/heads/main'
     environment: release
     # Release this lock before the reusable verifier takes the same cohort lock.
     concurrency:
@@ -33,15 +34,15 @@ jobs:
       DUSKMOON_NATIVE_MODE: precompiled
       MIX_ENV: prod
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           path: validation
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_sha }}
           path: source
-      - uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           elixir-version: '1.18'
           otp-version: '28'
@@ -52,7 +53,7 @@ jobs:
           RELEASE_RUN: ${{ inputs.release_run }}
           GH_TOKEN: ${{ github.token }}
         run: elixir "$GITHUB_WORKSPACE/validation/.github/scripts/check_recovery_run.exs" "$SOURCE_SHA" "$RELEASE_RUN"
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: exact-publish-packages
           run-id: ${{ inputs.release_run }}

@@ -10,6 +10,7 @@ defmodule WorkflowChecksTest do
       %{
         "id" => 10,
         "head_sha" => @sha,
+        "head_branch" => "main",
         "path" => ".github/workflows/test.yml",
         "event" => "workflow_dispatch",
         "status" => "completed",
@@ -51,12 +52,29 @@ defmodule WorkflowChecksTest do
           %{"path" => ".github/workflows/ci.yml"},
           %{"event" => "pull_request"},
           %{"event" => "workflow_run"},
+          %{"head_branch" => "feature"},
+          %{"head_branch" => nil},
           %{"status" => "in_progress"},
           %{"conclusion" => "failure"}
         ] do
       assert_raise RuntimeError, fn ->
         WorkflowChecks.successful_run!([run(overrides)], @sha, "test.yml")
       end
+    end
+  end
+
+  test "release source must be main or an ancestor of main" do
+    for status <- ["identical", "ahead"] do
+      assert WorkflowChecks.on_main!(%{"status" => status, "behind_by" => 0}, @sha) == @sha
+    end
+
+    for compare <- [
+          %{"status" => "behind", "behind_by" => 1},
+          %{"status" => "diverged", "behind_by" => 2},
+          %{"status" => "ahead", "behind_by" => 1},
+          %{"message" => "Not Found"}
+        ] do
+      assert_raise RuntimeError, fn -> WorkflowChecks.on_main!(compare, @sha) end
     end
   end
 
@@ -127,6 +145,7 @@ defmodule WorkflowCheckCommandsTest do
     #!/bin/sh
     set -eu
     case "$*" in
+      *compare/*...main*) cat "$MOCK_FIXTURES/compare.json" ;;
       *workflows/ci.yml/runs?*) cat "$MOCK_FIXTURES/ci.json" ;;
       *workflows/test.yml/runs?*) cat "$MOCK_FIXTURES/test.json" ;;
       *runs/10/jobs?filter=all*) cat "$MOCK_FIXTURES/ci-jobs.json" ;;
@@ -167,6 +186,7 @@ defmodule WorkflowCheckCommandsTest do
             %{
               "id" => id,
               "head_sha" => ctx.sha,
+              "head_branch" => "main",
               "path" => ".github/workflows/#{workflow}.yml",
               "event" => "workflow_dispatch",
               "status" => "completed",
@@ -177,6 +197,7 @@ defmodule WorkflowCheckCommandsTest do
       ])
     end
 
+    fixture(ctx, "compare.json", %{"status" => "identical", "behind_by" => 0})
     fixture(ctx, "ci-jobs.json", [%{"jobs" => [job(1, "build", 1, "success")]}])
 
     fixture(ctx, "test-jobs.json", [
@@ -192,6 +213,12 @@ defmodule WorkflowCheckCommandsTest do
     {output, status} = command("check_workflow_runs.exs", [ctx.sha], ctx.env)
     assert status != 0
     assert output =~ "required test/build gate did not pass: test"
+
+    fixture(ctx, "test-jobs.json", [%{"jobs" => [job(3, "test", 2, "success")]}])
+    fixture(ctx, "compare.json", %{"status" => "diverged", "behind_by" => 1})
+    {output, status} = command("check_workflow_runs.exs", [ctx.sha], ctx.env)
+    assert status != 0
+    assert output =~ "is not on main"
   end
 
   test "post-release CLI resolves the original publication and ignores verification-only runs",

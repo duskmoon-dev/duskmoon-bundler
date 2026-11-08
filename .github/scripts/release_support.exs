@@ -121,7 +121,7 @@ defmodule ReleaseSupport do
       end)
   end
 
-  def recovery_run!(run, jobs, sha) do
+  def recovery_run!(run, jobs, sha, opts \\ []) do
     sha!(sha)
 
     unless run["head_sha"] == sha and run["path"] == ".github/workflows/release.yml" and
@@ -140,10 +140,16 @@ defmodule ReleaseSupport do
            String.starts_with?(job["name"], "native-")) and job["conclusion"] != "skipped"
       end)
 
-    unless length(native) == 47 and
-             length(Enum.uniq_by(native, & &1["name"])) == 47 and
-             Enum.all?(native, &(&1["conclusion"] == "success")),
-           do: raise("original release must have all 47 successful native builds")
+    if opts[:reused_native] do
+      # The resume workflow re-verifies all 47 public native digests before use.
+      unless native == [],
+        do: raise("a native-reuse release run must not rebuild native artifacts")
+    else
+      unless length(native) == 47 and
+               length(Enum.uniq_by(native, & &1["name"])) == 47 and
+               Enum.all?(native, &(&1["conclusion"] == "success")),
+             do: raise("original release must have all 47 successful native builds")
+    end
 
     :ok
   end
@@ -303,61 +309,51 @@ defmodule ReleaseSupport do
     {output, status} =
       System.cmd("gh", ["api", "repos/#{repo}/releases/tags/#{tag}"], stderr_to_stdout: true)
 
-    case status do
-      0 ->
-        release = JSON.decode!(output)
-        if release["draft"], do: raise("existing release must be public before publishing Hex")
+    # A new release stays a draft until every asset is uploaded, so a failed upload never
+    # leaves a partial public release whose retry would need different rebuilt bytes.
+    draft? =
+      case status do
+        0 ->
+          release = JSON.decode!(output)
+          if release["draft"], do: raise("existing release must be public before publishing Hex")
+          verify_tag!(repo, tag, sha, required: true)
+          false
 
-        refs =
-          cmd!("git", [
-            "ls-remote",
-            "--tags",
-            "https://github.com/#{repo}.git",
-            "refs/tags/#{tag}",
-            "refs/tags/#{tag}^{}"
-          ])
+        _ ->
+          unless output =~ "HTTP 404", do: raise("cannot inspect release: #{output}")
 
-        actual_sha =
-          refs |> String.split("\n", trim: true) |> List.last() |> String.split() |> hd()
+          if opts[:existing_only],
+            do: raise("recovery requires an existing public release; creation is forbidden")
 
-        immutable_action(actual_sha, sha)
+          # An existing tag must already resolve to this source SHA; never move it.
+          verify_tag!(repo, tag, sha, required: false)
 
-      _ ->
-        unless output =~ "HTTP 404", do: raise("cannot inspect release: #{output}")
+          case draft_release(repo, tag) do
+            nil ->
+              cmd!("gh", [
+                "release",
+                "create",
+                tag,
+                "--repo",
+                repo,
+                "--target",
+                sha,
+                "--title",
+                tag,
+                "--generate-notes",
+                "--draft"
+              ])
 
-        if opts[:existing_only],
-          do: raise("recovery requires an existing public release; creation is forbidden")
+            draft ->
+              unless draft["target_commitish"] == sha,
+                do:
+                  raise("existing draft #{tag} targets #{draft["target_commitish"]}, not #{sha}")
 
-        # An existing tag must already resolve to this source SHA; never move it.
-        refs =
-          cmd!("git", [
-            "ls-remote",
-            "--tags",
-            "https://github.com/#{repo}.git",
-            "refs/tags/#{tag}",
-            "refs/tags/#{tag}^{}"
-          ])
+              IO.puts("Resuming unpublished draft release #{tag}")
+          end
 
-        if String.trim(refs) != "" do
-          actual_sha =
-            refs |> String.split("\n", trim: true) |> List.last() |> String.split() |> hd()
-
-          immutable_action(actual_sha, sha)
-        end
-
-        cmd!("gh", [
-          "release",
-          "create",
-          tag,
-          "--repo",
-          repo,
-          "--target",
-          sha,
-          "--title",
-          tag,
-          "--generate-notes"
-        ])
-    end
+          true
+      end
 
     release =
       cmd!("gh", ["release", "view", tag, "--repo", repo, "--json", "assets"]) |> JSON.decode!()
@@ -375,14 +371,29 @@ defmodule ReleaseSupport do
       name = Path.basename(path)
       wanted = "sha256:" <> digest(path)
 
-      if Map.has_key?(existing, name) do
-        # Some API responses omit advertised digests. The mandatory anonymous
-        # byte verification below still decides reuse; never upload over a name.
-        if is_binary(existing[name]), do: immutable_action(existing[name], wanted)
-        IO.puts("Reusing existing release asset #{name} pending byte verification")
-      else
-        cmd!("gh", ["release", "upload", tag, path, "--repo", repo])
+      cond do
+        not Map.has_key?(existing, name) ->
+          cmd!("gh", ["release", "upload", tag, path, "--repo", repo])
+
+        draft? and existing[name] != wanted ->
+          # Draft assets were never publicly downloadable; a retry replaces them.
+          cmd!("gh", ["release", "upload", tag, path, "--repo", repo, "--clobber"])
+
+        true ->
+          # Some API responses omit advertised digests. The mandatory anonymous
+          # byte verification below still decides reuse; never upload over a name.
+          if is_binary(existing[name]), do: immutable_action(existing[name], wanted)
+          IO.puts("Reusing existing release asset #{name} pending byte verification")
       end
+    end
+
+    if draft? do
+      cmd!("gh", ["release", "edit", tag, "--repo", repo, "--draft=false"])
+      verify_tag!(repo, tag, sha, required: true)
+    end
+
+    for path <- files do
+      name = Path.basename(path)
 
       downloaded =
         Path.join(System.tmp_dir!(), "public-#{System.unique_integer([:positive])}-#{name}")
@@ -395,5 +406,38 @@ defmodule ReleaseSupport do
         File.rm(downloaded)
       end
     end
+  end
+
+  defp verify_tag!(repo, tag, sha, required: required) do
+    refs =
+      cmd!("git", [
+        "ls-remote",
+        "--tags",
+        "https://github.com/#{repo}.git",
+        "refs/tags/#{tag}",
+        "refs/tags/#{tag}^{}"
+      ])
+
+    cond do
+      String.trim(refs) != "" ->
+        actual_sha =
+          refs |> String.split("\n", trim: true) |> List.last() |> String.split() |> hd()
+
+        immutable_action(actual_sha, sha)
+
+      required ->
+        raise("published release tag #{tag} is missing")
+
+      true ->
+        :create
+    end
+  end
+
+  # The tag lookup endpoint never returns drafts; find an unpublished retry draft by tag name.
+  defp draft_release(repo, tag) do
+    cmd!("gh", ["api", "repos/#{repo}/releases?per_page=100", "--paginate", "--slurp"])
+    |> JSON.decode!()
+    |> List.flatten()
+    |> Enum.find(&(&1["draft"] == true and &1["tag_name"] == tag))
   end
 end

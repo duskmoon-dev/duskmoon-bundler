@@ -14,16 +14,25 @@ defmodule WorkflowChecks do
       runs
       |> Enum.filter(fn run ->
         run["head_sha"] == sha and run["path"] == ".github/workflows/#{workflow}" and
-          run["event"] in ["push", "workflow_dispatch"]
+          run["event"] in ["push", "workflow_dispatch"] and run["head_branch"] == "main"
       end)
       |> Enum.max_by(& &1["id"], fn ->
-        raise("run #{workflow} at #{sha} before releasing")
+        raise("run #{workflow} on main at #{sha} before releasing")
       end)
 
     unless run["status"] == "completed" and run["conclusion"] == "success",
       do: raise("latest #{workflow} at #{sha} has not passed: #{run["html_url"]}")
 
     run
+  end
+
+  # `compare` is the GitHub compare API response for `SHA...main`: the release
+  # source must equal main or be one of its ancestors, never a side branch.
+  def on_main!(compare, sha) do
+    unless compare["status"] in ["identical", "ahead"] and compare["behind_by"] == 0,
+      do: raise("release source #{sha} is not on main")
+
+    sha
   end
 
   def successful_jobs!(jobs, names) do

@@ -156,6 +156,35 @@ defmodule ReleaseRecoveryContractTest do
     assert_raise RuntimeError, fn -> ReleaseSupport.recovery_run!(run(), failed, @sha) end
   end
 
+  test "recovery accepts a retry run that reused the verified public native cohort" do
+    gates = Enum.filter(jobs(), &(&1["name"] in ["validate", "stage"]))
+
+    skipped =
+      Enum.map(
+        ~w(aarch64-apple-darwin x86_64-pc-windows-gnu),
+        &%{"name" => "native-#{&1}", "conclusion" => "skipped"}
+      )
+
+    assert :ok =
+             ReleaseSupport.recovery_run!(run(), gates ++ skipped, @sha, reused_native: true)
+
+    # Without verified reuse, skipped native jobs still fail recovery.
+    assert_raise RuntimeError, fn ->
+      ReleaseSupport.recovery_run!(run(), gates ++ skipped, @sha)
+    end
+
+    # A reuse run must not also contain rebuilt native artifacts.
+    assert_raise RuntimeError, fn ->
+      ReleaseSupport.recovery_run!(run(), jobs(), @sha, reused_native: true)
+    end
+
+    failed = Enum.map(gates, &Map.put(&1, "conclusion", "failure"))
+
+    assert_raise RuntimeError, fn ->
+      ReleaseSupport.recovery_run!(run(), failed ++ skipped, @sha, reused_native: true)
+    end
+  end
+
   for scenario <- ~w(matching altered_provenance altered_tar wrong_source incomplete_cohort) do
     test "public package verification: #{scenario}", %{tmp_dir: tmp_dir} do
       scenario = unquote(scenario)
@@ -322,6 +351,121 @@ defmodule ReleaseRecoveryContractTest do
       assert status != 0
       assert output =~ "RuntimeError"
     end
+  end
+end
+
+defmodule DraftReleaseRetryTest do
+  use ExUnit.Case, async: true
+  @moduletag :tmp_dir
+  @sha String.duplicate("a", 40)
+
+  # Simulates GitHub: no public release, optionally an unpublished draft from a failed run.
+  defp publish(tmp_dir, draft) do
+    bin = Path.join(tmp_dir, "bin")
+    File.mkdir_p!(bin)
+    files = for name <- ~w(a.tar.gz b.tar.gz c.tar.gz), do: Path.join(tmp_dir, name)
+    for path <- files, do: File.write!(path, "bytes " <> Path.basename(path))
+
+    assets =
+      if draft,
+        do: [
+          %{name: "a.tar.gz", digest: "sha256:" <> ReleaseSupport.digest(hd(files))},
+          %{name: "b.tar.gz", digest: "sha256:" <> String.duplicate("0", 64)}
+        ],
+        else: []
+
+    releases =
+      if draft,
+        do: [[%{draft: true, tag_name: "v10.0.3", target_commitish: draft}]],
+        else: [[]]
+
+    File.write!(Path.join(bin, "gh"), ~S"""
+    #!/bin/sh
+    printf '%s\n' "$*" >> "$DRAFT_TEST_ROOT/commands"
+    case "$*" in
+      'api repos/example/toolchain/releases/tags/v10.0.3') echo 'HTTP 404'; exit 1 ;;
+      'api repos/example/toolchain/releases?per_page=100 '*) printf '%s' "$DRAFT_RELEASES" ;;
+      'release view '*) printf '%s' "$DRAFT_ASSETS" ;;
+      'release create '*|'release upload '*) ;;
+      'release edit v10.0.3 --repo example/toolchain --draft=false') touch "$DRAFT_TEST_ROOT/published" ;;
+      *) echo "Unexpected gh request: $*" >&2; exit 1 ;;
+    esac
+    """)
+
+    # The tag only exists once the draft is published.
+    File.write!(Path.join(bin, "git"), ~S"""
+    #!/bin/sh
+    if [ -e "$DRAFT_TEST_ROOT/published" ]; then printf '%s refs/tags/v10.0.3\n' "$DRAFT_SHA"; fi
+    """)
+
+    File.write!(Path.join(bin, "curl"), ~S"""
+    #!/bin/sh
+    test -e "$DRAFT_TEST_ROOT/published" || { printf 404; exit 22; }
+    for last; do :; done
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --output) shift; printf 'bytes %s' "${last##*/}" > "$1" ;; esac
+      shift
+    done
+    printf 200
+    """)
+
+    for command <- ["gh", "git", "curl"], do: File.chmod!(Path.join(bin, command), 0o755)
+
+    {output, status} =
+      System.cmd(
+        "elixir",
+        [
+          "-r",
+          Path.join(__DIR__, "release_support.exs"),
+          "-e",
+          "System.put_env(\"PATH\", System.fetch_env!(\"DRAFT_TEST_PATH\")); ReleaseSupport.public_release!(\"example/toolchain\", \"10.0.3\", \"#{@sha}\", System.argv())"
+          | files
+        ],
+        stderr_to_stdout: true,
+        env: [
+          {"DRAFT_TEST_ROOT", tmp_dir},
+          {"DRAFT_TEST_PATH", bin <> ":" <> System.fetch_env!("PATH")},
+          {"DRAFT_SHA", @sha},
+          {"DRAFT_RELEASES", JSON.encode!(releases)},
+          {"DRAFT_ASSETS", JSON.encode!(%{assets: assets})}
+        ]
+      )
+
+    {output, status, File.read!(Path.join(tmp_dir, "commands")) |> String.split("\n", trim: true)}
+  end
+
+  test "a new release stays draft until every asset is uploaded", %{tmp_dir: tmp_dir} do
+    {output, status, commands} = publish(tmp_dir, nil)
+    assert status == 0, output
+    create = Enum.find_index(commands, &String.starts_with?(&1, "release create"))
+    edit = Enum.find_index(commands, &String.starts_with?(&1, "release edit"))
+    assert Enum.at(commands, create) =~ "--target #{@sha}"
+    assert Enum.at(commands, create) =~ "--draft"
+    uploads = Enum.filter(commands, &String.starts_with?(&1, "release upload"))
+    assert length(uploads) == 3
+    refute Enum.any?(uploads, &(&1 =~ "--clobber"))
+    assert create < edit
+    assert Enum.all?(uploads, &(Enum.find_index(commands, fn c -> c == &1 end) < edit))
+  end
+
+  test "a retry resumes the unpublished draft and replaces only stale draft assets", %{
+    tmp_dir: tmp_dir
+  } do
+    {output, status, commands} = publish(tmp_dir, @sha)
+    assert status == 0, output
+    refute Enum.any?(commands, &String.starts_with?(&1, "release create"))
+    uploads = Enum.filter(commands, &String.starts_with?(&1, "release upload"))
+    assert [stale, missing] = uploads
+    assert stale =~ "b.tar.gz" and stale =~ "--clobber"
+    assert missing =~ "c.tar.gz" and not (missing =~ "--clobber")
+    assert List.last(Enum.reject(commands, &String.starts_with?(&1, "api"))) =~ "release edit"
+  end
+
+  test "a retry refuses a draft that targets another source", %{tmp_dir: tmp_dir} do
+    {output, status, commands} = publish(tmp_dir, String.duplicate("b", 40))
+    assert status != 0
+    assert output =~ "existing draft v10.0.3 targets"
+    refute Enum.any?(commands, &(&1 =~ ~r/^release (create|upload|edit)/))
   end
 end
 

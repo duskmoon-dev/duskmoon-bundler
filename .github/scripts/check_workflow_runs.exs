@@ -4,6 +4,10 @@ Code.require_file("workflow_checks.exs", __DIR__)
 ReleaseSupport.checked_head!(sha)
 repository = System.fetch_env!("GITHUB_REPOSITORY")
 
+ReleaseSupport.cmd!("gh", ["api", "repos/#{repository}/compare/#{sha}...main"])
+|> JSON.decode!()
+|> WorkflowChecks.on_main!(sha)
+
 for {workflow, required} <- [
       {"ci.yml", ["build"]},
       {"test.yml", ["test"]}

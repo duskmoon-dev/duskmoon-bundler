@@ -39,10 +39,10 @@ jobs:
     outputs:
       reuse_native: ${{ steps.reuse.outputs.reusable }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_sha }}
-      - uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           elixir-version: '1.18'
           otp-version: '28'
@@ -57,7 +57,9 @@ jobs:
           VERSION: ${{ inputs.version }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           WORKFLOW_SHA: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.ref }}
         run: |
+          test "$WORKFLOW_REF" = refs/heads/main || { echo 'Release must be dispatched from main' >&2; exit 1; }
           test "$WORKFLOW_SHA" = "$SOURCE_SHA" || { echo 'Dispatch workflow ref must point at source_sha' >&2; exit 1; }
           elixir scripts/release.exs plan "$VERSION" "$SOURCE_SHA"
           elixir scripts/release.exs preflight "$VERSION" "$SOURCE_SHA"
@@ -67,7 +69,7 @@ jobs:
           VERSION: ${{ inputs.version }}
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: elixir .github/scripts/reuse_release.exs "$VERSION" "$SOURCE_SHA" "$RUNNER_TEMP/reused-native-assets"
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: steps.reuse.outputs.reusable == 'true'
         with:
           name: native-reused
@@ -135,14 +137,14 @@ jobs:
     if: ${{ always() && needs.validate.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (needs.validate.outputs.reuse_native == 'true' || !contains(needs.*.result, 'skipped')) }}
     runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_sha }}
-      - uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           elixir-version: '1.18'
           otp-version: '28'
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: native-*
           merge-multiple: true
@@ -153,7 +155,7 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           elixir scripts/release.exs prepare "$VERSION" "$SOURCE_SHA" "$RUNNER_TEMP/native-assets" "$RUNNER_TEMP/packages"
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: exact-publish-packages
           path: ${{ runner.temp }}/packages
@@ -161,6 +163,7 @@ jobs:
           overwrite: true
   publish:
     needs: stage
+    if: github.ref == 'refs/heads/main'
     environment: release
     runs-on: ubuntu-26.04
     permissions:
@@ -169,19 +172,19 @@ jobs:
       DUSKMOON_NATIVE_MODE: precompiled
       MIX_ENV: prod
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_sha }}
-      - uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           elixir-version: '1.18'
           otp-version: '28'
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: native-*
           merge-multiple: true
           path: ${{ runner.temp }}/native-assets
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: exact-publish-packages
           path: ${{ runner.temp }}/packages
@@ -204,7 +207,7 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           elixir -e 'File.write!(Path.join(System.fetch_env!("RUNNER_TEMP"), "release-request.json"), JSON.encode!(%{version: System.fetch_env!("VERSION"), source_sha: System.fetch_env!("SOURCE_SHA")}))'
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: release-request
           path: ${{ runner.temp }}/release-request.json
