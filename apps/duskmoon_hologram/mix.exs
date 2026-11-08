@@ -2,7 +2,7 @@
 defmodule DuskmoonHologram.MixProject do
   use Mix.Project
 
-  @version "10.1.4"
+  @version "10.1.5"
 
   def aliases do
     [

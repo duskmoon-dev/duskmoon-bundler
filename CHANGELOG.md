@@ -1,5 +1,11 @@
 # Changelog
 
+## 10.1.5 - 2026-11-09
+
+- Prune npm lock records that are no longer reachable from root or workspace
+  manifests after dependency removal, retaining peer-installed packages and
+  keeping remaining records unchanged (#21).
+
 ## 10.1.4 - 2026-11-09
 
 - Validate development `/@vendor/` specifiers and confine chunk reads to the

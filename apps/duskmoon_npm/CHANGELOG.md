@@ -1,5 +1,12 @@
 # Changelog
 
+## 10.1.5 - 2026-11-09
+
+- Prune unreachable root and workspace lock records, including flat, nested
+  and orphaned transitive records, when dependencies are removed (#21).
+- Preserve `peerDependencies`, `peerDependenciesMeta` and peer flags in lock
+  records and follow peers when computing reachability.
+
 ## 10.1.4 - 2026-11-09
 
 - Reject unsafe lockfile names, versions and locations, and keep package bin
