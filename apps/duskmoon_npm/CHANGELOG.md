@@ -1,5 +1,12 @@
 # Changelog
 
+## 10.1.3 - 2026-11-08
+
+- Refresh root and workspace package descriptors during ordinary install while
+  preserving satisfiable locked registry records and unchanged lockfile bytes.
+- Reject stale package descriptors before frozen installs modify node_modules,
+  including workspaces with no registry dependencies.
+
 ## 10.1.2 - 2026-11-07
 
 ### Changed

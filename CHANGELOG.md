@@ -1,5 +1,14 @@
 # Changelog
 
+## 10.1.3 - 2026-11-08
+
+- Refresh changed root and workspace npm lock metadata without re-resolving
+  current dependencies; reject stale descriptors during frozen installs.
+- Revalidate development vendor responses and share graph query parameters
+  across relative imports, keeping cached entries on the current runtime.
+- Rebuild stale lazy vendor graphs with newly discovered static entries so
+  added imports retain shared dependency instances.
+
 ## 10.1.2 - 2026-11-07
 
 - Release the standalone toolchain using its own source and published-consumer
