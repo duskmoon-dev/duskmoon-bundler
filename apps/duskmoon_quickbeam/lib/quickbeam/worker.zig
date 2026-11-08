@@ -645,8 +645,19 @@ pub const WorkerState = struct {
 
     fn await_promise(self: *WorkerState, promise: qjs.JSValue, result: *Result, unwrap_async: bool) void {
         const deadline = self.rd.deadline;
+        // Requests that must not run (or be dropped) while this promise is
+        // pending are put back on the queue, in order, once the await ends.
+        var deferred: types.DeferredMessages = .{};
+        defer deferred.restore(self.rd);
+
         var iterations: usize = 0;
         while (!promise_wait_expired(deadline, iterations)) : (iterations += 1) {
+            if (self.rd.shutting_down.load(.acquire)) {
+                result.ok = false;
+                result.json = "Runtime stopped";
+                return;
+            }
+
             const state = qjs.JS_PromiseState(self.ctx, promise);
 
             if (state == qjs.JS_PROMISE_FULFILLED) {
@@ -676,7 +687,7 @@ pub const WorkerState = struct {
             // Still pending — process messages that might resolve it
             if (self.drain_fn) |dfn| {
                 dfn(self);
-            } else if (types.dequeue(self.rd)) |msg| {
+            } else if (self.dequeue_during_await(&deferred)) |msg| {
                 switch (msg) {
                     .resolve_call => |rc| self.resolve_pending(rc.id, rc.json),
                     .reject_call => |rc| self.reject_pending(rc.id, rc.json),
@@ -692,9 +703,7 @@ pub const WorkerState = struct {
                         gpa.free(p.name);
                     },
                     .send_message => |sm| self.deliver_message(sm),
-                    .define_global => |sg| self.define_global_property(sg),
                     .get_global => |gg| self.get_global_property(gg),
-                    .delete_globals => |dg| self.delete_global_names(dg),
                     .snapshot_globals => self.snapshot_globals(),
                     .list_globals => |lg| self.list_globals(lg),
                     .napi_async_complete => |p| {
@@ -720,12 +729,7 @@ pub const WorkerState = struct {
                             qjs.JS_FreeValue(self.ctx, ret);
                         }
                     },
-                    .stop => {
-                        result.ok = false;
-                        result.json = "Runtime stopped";
-                        return;
-                    },
-                    else => {},
+                    else => unreachable,
                 }
             }
 
@@ -739,6 +743,40 @@ pub const WorkerState = struct {
 
         result.ok = false;
         result.json = "Promise resolution timeout";
+    }
+
+    /// Returns the next message that may run while a promise is pending,
+    /// moving everything else to `deferred`. A deferred `.stop` is seen via
+    /// `rd.shutting_down` (set before it is enqueued) and re-delivered to
+    /// the main loop by `deferred.restore`.
+    fn dequeue_during_await(self: *WorkerState, deferred: *types.DeferredMessages) ?types.Message {
+        while (types.dequeue_node(self.rd)) |node| {
+            if (must_defer_during_await(node.msg)) {
+                deferred.push(node);
+                continue;
+            }
+            const msg = node.msg;
+            gpa.destroy(node);
+            return msg;
+        }
+        return null;
+    }
+
+    /// Top-level requests and global mutations queued behind an in-flight
+    /// await. Running them now would interleave requests (and let a
+    /// concurrent `vars:` eval clobber this one's globals); dropping them
+    /// would hang their callers.
+    fn must_defer_during_await(msg: types.Message) bool {
+        return switch (msg) {
+            .eval, .compile, .call_fn, .load_module, .load_bytecode, .reset => true,
+            .define_global, .delete_globals => true,
+            .memory_usage, .dom_op, .load_addon => true,
+            .enable_coverage, .get_coverage, .reset_coverage => true,
+            .stop => true,
+            .resolve_call, .reject_call, .resolve_call_term, .call_fn_sync => false,
+            .send_message, .get_global, .snapshot_globals, .list_globals => false,
+            .napi_async_complete, .napi_tsfn_call => false,
+        };
     }
 
     fn promise_wait_expired(deadline: ?i128, iterations: usize) bool {
@@ -1029,6 +1067,7 @@ pub const WorkerState = struct {
 
 fn interrupt_handler(_: ?*qjs.JSRuntime, user_data: ?*anyopaque) callconv(.c) c_int {
     const rd: *types.RuntimeData = @ptrCast(@alignCast(user_data));
+    if (rd.shutting_down.load(.acquire)) return 1;
     if (rd.deadline) |deadline| {
         if (sync.nowNanoseconds() > deadline) return 1;
     }

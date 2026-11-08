@@ -13,6 +13,7 @@ const gpa = ct.gpa;
 
 fn interrupt_handler(_: ?*qjs.JSRuntime, user_data: ?*anyopaque) callconv(.c) c_int {
     const pd: *ct.PoolData = @ptrCast(@alignCast(user_data));
+    if (pd.shutting_down.load(.acquire)) return 1;
     if (pd.deadline) |deadline| {
         if (sync.nowNanoseconds() > deadline) return 1;
     }
@@ -47,6 +48,9 @@ fn pool_drain_callback(state: *worker.WorkerState) void {
     const pd = tl_pool_data orelse return;
     const contexts = tl_contexts orelse return;
     const active_id = tl_context_id;
+
+    // Let the awaiting context observe pool shutdown and abandon its wait.
+    if (pd.shutting_down.load(.acquire)) state.rd.shutting_down.store(true, .release);
 
     const msg = ct.pool_dequeue(pd) orelse return;
 

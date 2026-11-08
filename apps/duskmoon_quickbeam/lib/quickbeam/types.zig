@@ -253,6 +253,15 @@ pub fn enqueue(rd: *RuntimeData, msg: Message) void {
 }
 
 pub fn dequeue(rd: *RuntimeData) ?Message {
+    const node = dequeue_node(rd) orelse return null;
+    const msg = node.msg;
+    gpa.destroy(node);
+    return msg;
+}
+
+/// Detaches the head node without freeing it, so callers can defer it
+/// (see `DeferredMessages`) without a second allocation.
+pub fn dequeue_node(rd: *RuntimeData) ?*MessageNode {
     rd.mutex.lock();
     defer rd.mutex.unlock();
 
@@ -265,10 +274,40 @@ pub fn dequeue(rd: *RuntimeData) ?Message {
         rd.queue_tail = null;
         rd.queue_event.reset();
     }
-    const msg = node.msg;
-    gpa.destroy(node);
-    return msg;
+    node.next = null;
+    return node;
 }
+
+/// Messages set aside while a promise is awaited. `restore` puts them back
+/// at the front of the queue in their original arrival order.
+pub const DeferredMessages = struct {
+    head: ?*MessageNode = null,
+    tail: ?*MessageNode = null,
+
+    pub fn push(self: *DeferredMessages, node: *MessageNode) void {
+        node.next = null;
+        if (self.tail) |tail| {
+            tail.next = node;
+        } else {
+            self.head = node;
+        }
+        self.tail = node;
+    }
+
+    pub fn restore(self: *DeferredMessages, rd: *RuntimeData) void {
+        const head = self.head orelse return;
+        const tail = self.tail.?;
+        self.* = .{};
+
+        rd.mutex.lock();
+        defer rd.mutex.unlock();
+
+        tail.next = rd.queue_head;
+        if (rd.queue_head == null) rd.queue_tail = tail;
+        rd.queue_head = head;
+        rd.queue_event.set();
+    }
+};
 
 pub fn dequeue_blocking(rd: *RuntimeData, timeout_ns: ?u64) ?Message {
     while (true) {
