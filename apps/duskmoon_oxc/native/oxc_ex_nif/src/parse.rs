@@ -18,6 +18,7 @@ use std::path::Path;
 use crate::atoms;
 use crate::error::{error_to_term, format_errors};
 use crate::options::{MinifyInput, TransformInput};
+use crate::stack::run_with_large_stack;
 
 fn parser_options() -> ParseOptions {
     ParseOptions {
@@ -405,17 +406,28 @@ pub fn transform_source(source: &str, filename: &str, opts: &TransformInput) -> 
 pub fn parse<'a>(env: Env<'a>, source_term: Term<'a>, filename: &str) -> NifResult<Term<'a>> {
     let source_binary = source_from_term(source_term)?;
     let source = binary_to_str(&source_binary)?;
-    let allocator = Allocator::default();
-    let source_type = SourceType::from_path(filename).unwrap_or_default();
-    let ret = Parser::new(&allocator, source, source_type)
-        .with_options(parser_options())
-        .parse();
+    let parsed = run_with_large_stack(|| {
+        let allocator = Allocator::default();
+        let source_type = SourceType::from_path(filename).unwrap_or_default();
+        let ret = Parser::new(&allocator, source, source_type)
+            .with_options(parser_options())
+            .parse();
 
-    if !ret.diagnostics.is_empty() {
-        return error_to_term(env, &format_errors(&ret.diagnostics));
-    }
+        if !ret.diagnostics.is_empty() {
+            return Err(format_errors(&ret.diagnostics));
+        }
 
-    let json_str = ret.program.to_estree_json(true, false);
+        Ok(ret.program.to_estree_json(true, false))
+    });
+
+    let json_str = match parsed {
+        Ok(Ok(json_str)) => json_str,
+        Ok(Err(errors)) => return error_to_term(env, &errors),
+        Err(error) => return error_to_term(env, &[error]),
+    };
+
+    // ESTree JSON -> BEAM term conversion is iterative and needs `Env`, so it
+    // stays on this scheduler thread.
     let term = match json_str_to_term(env, &json_str) {
         Ok(term) => term,
         Err(error) => {
@@ -429,10 +441,13 @@ pub fn parse<'a>(env: Env<'a>, source_term: Term<'a>, filename: &str) -> NifResu
 pub fn valid(source_term: Term<'_>, filename: &str) -> NifResult<bool> {
     let source_binary = source_from_term(source_term)?;
     let source = binary_to_str(&source_binary)?;
-    let allocator = Allocator::default();
-    let source_type = SourceType::from_path(filename).unwrap_or_default();
-    let ret = Parser::new(&allocator, source, source_type).parse();
-    Ok(ret.diagnostics.is_empty())
+    run_with_large_stack(|| {
+        let allocator = Allocator::default();
+        let source_type = SourceType::from_path(filename).unwrap_or_default();
+        let ret = Parser::new(&allocator, source, source_type).parse();
+        ret.diagnostics.is_empty()
+    })
+    .map_err(|error| Error::RaiseTerm(Box::new(error)))
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -445,7 +460,9 @@ pub fn transform<'a>(
     let source_binary = source_from_term(source_term)?;
     let source = binary_to_str(&source_binary)?;
     let opts = TransformInput::from_term(opts_term);
-    Ok(transform_source(source, filename, &opts).to_term(env))
+    let output = run_with_large_stack(|| transform_source(source, filename, &opts))
+        .unwrap_or_else(|error| TransformOutput::Error(vec![error]));
+    Ok(output.to_term(env))
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -458,29 +475,37 @@ pub fn minify<'a>(
     let source_binary = source_from_term(source_term)?;
     let source = binary_to_str(&source_binary)?;
     let opts = MinifyInput::from_term(opts_term);
-    let allocator = Allocator::default();
-    let source_type = SourceType::from_path(filename).unwrap_or_default();
+    let minified = run_with_large_stack(|| {
+        let allocator = Allocator::default();
+        let source_type = SourceType::from_path(filename).unwrap_or_default();
 
-    let ret = Parser::new(&allocator, source, source_type)
-        .with_options(parser_options())
-        .parse();
+        let ret = Parser::new(&allocator, source, source_type)
+            .with_options(parser_options())
+            .parse();
 
-    if !ret.diagnostics.is_empty() {
-        return error_to_term(env, &format_errors(&ret.diagnostics));
+        if !ret.diagnostics.is_empty() {
+            return Err(format_errors(&ret.diagnostics));
+        }
+
+        let mut program = ret.program;
+        let result = Minifier::new(MinifierOptions {
+            mangle: opts.mangle.then(MangleOptions::default),
+            compress: Some(CompressOptions::default()),
+            ..MinifierOptions::default()
+        })
+        .minify(&allocator, &mut program);
+
+        let CodegenReturn { code, .. } = Codegen::new()
+            .with_options(CodegenOptions::minify())
+            .with_scoping(result.scoping)
+            .build(&program);
+
+        Ok(code)
+    });
+
+    match minified {
+        Ok(Ok(code)) => encode_ok(env, code),
+        Ok(Err(errors)) => error_to_term(env, &errors),
+        Err(error) => error_to_term(env, &[error]),
     }
-
-    let mut program = ret.program;
-    let result = Minifier::new(MinifierOptions {
-        mangle: opts.mangle.then(MangleOptions::default),
-        compress: Some(CompressOptions::default()),
-        ..MinifierOptions::default()
-    })
-    .minify(&allocator, &mut program);
-
-    let CodegenReturn { code, .. } = Codegen::new()
-        .with_options(CodegenOptions::minify())
-        .with_scoping(result.scoping)
-        .build(&program);
-
-    encode_ok(env, code)
 }

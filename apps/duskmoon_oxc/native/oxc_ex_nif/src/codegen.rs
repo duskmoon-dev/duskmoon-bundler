@@ -13,6 +13,7 @@ use rustler::{Encoder, Env, NifResult, Term};
 
 use crate::atoms;
 use crate::error::error_to_term;
+use crate::stack::run_nif_with_large_stack;
 
 mod a {
     rustler::atoms! {
@@ -163,18 +164,21 @@ fn computed_member<'a>(
 
 #[rustler::nif(schedule = "DirtyCpu")]
 pub fn codegen<'a>(env: Env<'a>, ast: Term<'a>) -> NifResult<Term<'a>> {
-    let allocator = Allocator::default();
-    let b = AstBuilder::new(&allocator);
+    // Decoding the AST term and printing it both recurse with AST depth.
+    run_nif_with_large_stack(env, &[ast], |env, args| {
+        let allocator = Allocator::default();
+        let b = AstBuilder::new(&allocator);
 
-    let input = decode_program_input(ast)?;
+        let input = decode_program_input(args[0])?;
 
-    match build_program(&b, input.body) {
-        Ok(program) => {
-            let CodegenReturn { code, .. } = Codegen::new().build(&program);
-            Ok((atoms::ok(), code).encode(env))
+        match build_program(&b, input.body) {
+            Ok(program) => {
+                let CodegenReturn { code, .. } = Codegen::new().build(&program);
+                Ok((atoms::ok(), code).encode(env))
+            }
+            Err(msg) => error_to_term(env, &[msg]),
         }
-        Err(msg) => error_to_term(env, &[msg]),
-    }
+    })
 }
 
 // ── Program ──

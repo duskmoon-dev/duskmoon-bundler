@@ -55,7 +55,7 @@ fn parse_plugins(plugin_strs: &[String]) -> LintPlugins {
     plugins
 }
 
-fn severity_atom(_env: Env<'_>, severity: AllowWarnDeny) -> rustler::Atom {
+fn severity_atom(severity: AllowWarnDeny) -> rustler::Atom {
     match severity {
         AllowWarnDeny::Allow => atoms::allow(),
         AllowWarnDeny::Warn => atoms::warn(),
@@ -134,6 +134,26 @@ fn format_rule_name(code: &oxc_diagnostics::OxcCode) -> String {
     }
 }
 
+// The formatter/linter parse and walk ASTs recursively. Deeply nested input can
+// exceed the comparatively small dirty NIF stack and take down the whole VM, so
+// that work runs on a dedicated thread with a large stack. The standard library
+// reserves this address space without committing it upfront.
+const LARGE_STACK_SIZE: usize = 64 * 1024 * 1024;
+
+fn run_with_large_stack<T: Send>(operation: impl FnOnce() -> T + Send) -> Result<T, String> {
+    std::thread::scope(|scope| {
+        let worker = std::thread::Builder::new()
+            .name("oxc-lint".to_string())
+            .stack_size(LARGE_STACK_SIZE)
+            .spawn_scoped(scope, operation)
+            .map_err(|error| format!("Failed to start linter worker: {error}"))?;
+
+        worker
+            .join()
+            .map_err(|_| "linter worker panicked".to_string())
+    })
+}
+
 fn source_from_term<'a>(term: Term<'a>) -> NifResult<Binary<'a>> {
     term.decode_as_binary()
 }
@@ -153,75 +173,84 @@ fn lint<'a>(
 ) -> NifResult<Term<'a>> {
     let source_binary = source_from_term(source_term)?;
     let source = binary_to_str(&source_binary)?;
-    let path = Path::new(filename);
-    let source_type = SourceType::from_path(path).unwrap_or_default();
+    let linted = run_with_large_stack(|| {
+        let path = Path::new(filename);
+        let source_type = SourceType::from_path(path).unwrap_or_default();
 
-    let allocator = Allocator::default();
-    let ret = Parser::new(&allocator, source, source_type)
-        .with_options(ParseOptions {
-            parse_regular_expression: true,
-            ..ParseOptions::default()
-        })
-        .parse();
+        let allocator = Allocator::default();
+        let ret = Parser::new(&allocator, source, source_type)
+            .with_options(ParseOptions {
+                parse_regular_expression: true,
+                ..ParseOptions::default()
+            })
+            .parse();
 
-    if !ret.diagnostics.is_empty() {
-        let error_msgs: Vec<String> = ret
-            .diagnostics
+        if !ret.diagnostics.is_empty() {
+            let error_msgs: Vec<String> = ret
+                .diagnostics
+                .iter()
+                .map(|e| e.message.to_string())
+                .collect();
+            return Err(error_msgs);
+        }
+
+        let lint_config = match build_lint_config(&plugins, &rules) {
+            Ok(v) => v,
+            Err(e) => return Err(vec![e]),
+        };
+
+        let fix_kind = if fix { FixKind::SafeFix } else { FixKind::None };
+
+        let linter = Linter::new(
+            LintOptions {
+                fix: fix_kind,
+                ..LintOptions::default()
+            },
+            lint_config.config_store,
+            None,
+        );
+
+        let semantic = SemanticBuilder::new_linter().build(&ret.program).semantic;
+
+        let module_record = Arc::new(ModuleRecord::default());
+        let ctx_host =
+            oxc_linter::ContextSubHost::new(semantic, module_record, 0, Default::default());
+        let messages = linter.run(path, vec![ctx_host], &allocator);
+
+        let diagnostics: Vec<Diagnostic> = messages
             .iter()
-            .map(|e| e.message.to_string())
+            .map(|msg| {
+                let full_rule = format_rule_name(&msg.error.code);
+                let severity = lint_config
+                    .rule_severity_map
+                    .get(&full_rule)
+                    .copied()
+                    .unwrap_or(AllowWarnDeny::Warn);
+
+                Diagnostic {
+                    rule: full_rule,
+                    message: msg.error.message.to_string(),
+                    severity: severity_atom(severity),
+                    span: (msg.span.start, msg.span.end),
+                    labels: msg
+                        .error
+                        .labels
+                        .iter()
+                        .map(|label| (label.offset() as u32, (label.offset() + label.len()) as u32))
+                        .collect(),
+                    help: msg.error.help.as_ref().map(|h| h.to_string()),
+                }
+            })
             .collect();
-        return Ok((atoms::error(), error_msgs).encode(env));
+
+        Ok(diagnostics)
+    })
+    .unwrap_or_else(|error| Err(vec![error]));
+
+    match linted {
+        Ok(diagnostics) => Ok((atoms::ok(), diagnostics).encode(env)),
+        Err(errors) => Ok((atoms::error(), errors).encode(env)),
     }
-
-    let lint_config = match build_lint_config(&plugins, &rules) {
-        Ok(v) => v,
-        Err(e) => return Ok((atoms::error(), vec![e]).encode(env)),
-    };
-
-    let fix_kind = if fix { FixKind::SafeFix } else { FixKind::None };
-
-    let linter = Linter::new(
-        LintOptions {
-            fix: fix_kind,
-            ..LintOptions::default()
-        },
-        lint_config.config_store,
-        None,
-    );
-
-    let semantic = SemanticBuilder::new_linter().build(&ret.program).semantic;
-
-    let module_record = Arc::new(ModuleRecord::default());
-    let ctx_host = oxc_linter::ContextSubHost::new(semantic, module_record, 0, Default::default());
-    let messages = linter.run(path, vec![ctx_host], &allocator);
-
-    let diagnostics: Vec<Diagnostic> = messages
-        .iter()
-        .map(|msg| {
-            let full_rule = format_rule_name(&msg.error.code);
-            let severity = lint_config
-                .rule_severity_map
-                .get(&full_rule)
-                .copied()
-                .unwrap_or(AllowWarnDeny::Warn);
-
-            Diagnostic {
-                rule: full_rule,
-                message: msg.error.message.to_string(),
-                severity: severity_atom(env, severity),
-                span: (msg.span.start, msg.span.end),
-                labels: msg
-                    .error
-                    .labels
-                    .iter()
-                    .map(|label| (label.offset() as u32, (label.offset() + label.len()) as u32))
-                    .collect(),
-                help: msg.error.help.as_ref().map(|h| h.to_string()),
-            }
-        })
-        .collect();
-
-    Ok((atoms::ok(), diagnostics).encode(env))
 }
 
 rustler::init!("Elixir.OXC.Lint.Native");

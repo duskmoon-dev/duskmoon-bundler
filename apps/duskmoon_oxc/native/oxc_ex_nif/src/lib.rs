@@ -4,6 +4,7 @@ mod error;
 mod imports;
 mod options;
 mod parse;
+mod stack;
 mod transform_many;
 
 mod atoms {

@@ -12,6 +12,7 @@ use rustler_match_spec::{MatchEvent, Selector, ValueRef};
 use crate::atoms;
 use crate::error::{error_to_term, format_errors};
 use crate::parse::{binary_to_str, source_from_term};
+use crate::stack::run_with_large_stack;
 
 struct ImportInfo {
     specifier: String,
@@ -436,24 +437,33 @@ pub fn select<'a>(
     let selector = Selector::from_term(spec)?;
     let source_binary = source_from_term(source_term)?;
     let source = binary_to_str(&source_binary)?;
-    let allocator = Allocator::default();
-    let source_type = SourceType::from_path(filename).unwrap_or_default();
-    let ret = Parser::new(&allocator, source, source_type).parse();
+    let collected = run_with_large_stack(|| {
+        let allocator = Allocator::default();
+        let source_type = SourceType::from_path(filename).unwrap_or_default();
+        let ret = Parser::new(&allocator, source, source_type).parse();
 
-    if !ret.diagnostics.is_empty() {
-        return error_to_term(env, &format_errors(&ret.diagnostics));
-    }
+        if !ret.diagnostics.is_empty() {
+            return Err(format_errors(&ret.diagnostics));
+        }
 
-    let mut collector = ImportCollector {
-        imports: Vec::new(),
-        asset_urls: Vec::new(),
-        workers: Vec::new(),
-        glob_imports: Vec::new(),
-        import_meta_env: Vec::new(),
-        dynamic_import_templates: Vec::new(),
-        require_calls: Vec::new(),
+        let mut collector = ImportCollector {
+            imports: Vec::new(),
+            asset_urls: Vec::new(),
+            workers: Vec::new(),
+            glob_imports: Vec::new(),
+            import_meta_env: Vec::new(),
+            dynamic_import_templates: Vec::new(),
+            require_calls: Vec::new(),
+        };
+        collector.visit_program(&ret.program);
+        Ok(collector)
+    });
+
+    let collector = match collected {
+        Ok(Ok(collector)) => collector,
+        Ok(Err(errors)) => return error_to_term(env, &errors),
+        Err(error) => return error_to_term(env, &[error]),
     };
-    collector.visit_program(&ret.program);
 
     let mut out = Vec::new();
 

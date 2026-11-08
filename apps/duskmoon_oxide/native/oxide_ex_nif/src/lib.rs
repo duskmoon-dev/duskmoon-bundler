@@ -1,5 +1,5 @@
-use rustler::{NifStruct, ResourceArc};
-use std::sync::Mutex;
+use rustler::{NifResult, NifStruct, ResourceArc};
+use std::sync::{Mutex, MutexGuard};
 use tailwindcss_oxide::{ChangedContent, GlobEntry, PublicSourceEntry, Scanner};
 
 struct ScannerResource(Mutex<Scanner>);
@@ -56,15 +56,26 @@ impl From<GlobEntry> for ExGlobEntry {
     }
 }
 
-impl From<ExChangedContent> for ChangedContent {
-    fn from(c: ExChangedContent) -> Self {
+impl TryFrom<ExChangedContent> for ChangedContent {
+    type Error = rustler::Error;
+
+    fn try_from(c: ExChangedContent) -> Result<Self, Self::Error> {
         if let Some(file) = c.file {
-            return ChangedContent::File(file.into(), c.extension);
+            return Ok(ChangedContent::File(file.into(), c.extension));
         }
         if let Some(content) = c.content {
-            return ChangedContent::Content(content, c.extension);
+            return Ok(ChangedContent::Content(content, c.extension));
         }
-        panic!("ChangedContent must have either file or content");
+        // Neither :file nor :content — surfaces as ArgumentError in Elixir.
+        Err(rustler::Error::BadArg)
+    }
+}
+
+impl ScannerResource {
+    /// Lock the scanner, recovering from a poisoned mutex so one failed call
+    /// cannot permanently break the resource.
+    fn lock(&self) -> MutexGuard<'_, Scanner> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -77,7 +88,7 @@ fn new_scanner(sources: Vec<ExSourceEntry>) -> ResourceArc<ScannerResource> {
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn scan(resource: ResourceArc<ScannerResource>) -> Vec<String> {
-    let mut scanner = resource.0.lock().unwrap();
+    let mut scanner = resource.lock();
     scanner.scan()
 }
 
@@ -85,10 +96,12 @@ fn scan(resource: ResourceArc<ScannerResource>) -> Vec<String> {
 fn scan_files(
     resource: ResourceArc<ScannerResource>,
     changed: Vec<ExChangedContent>,
-) -> Vec<String> {
-    let mut scanner = resource.0.lock().unwrap();
-    let changed: Vec<ChangedContent> = changed.into_iter().map(Into::into).collect();
-    scanner.scan_content(changed)
+) -> NifResult<Vec<String>> {
+    let changed = changed
+        .into_iter()
+        .map(ChangedContent::try_from)
+        .collect::<NifResult<Vec<_>>>()?;
+    Ok(resource.lock().scan_content(changed))
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -104,13 +117,13 @@ fn get_candidates(content: String, extension: String) -> Vec<ExCandidate> {
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn get_files(resource: ResourceArc<ScannerResource>) -> Vec<String> {
-    let mut scanner = resource.0.lock().unwrap();
+    let mut scanner = resource.lock();
     scanner.get_files()
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn get_globs(resource: ResourceArc<ScannerResource>) -> Vec<ExGlobEntry> {
-    let mut scanner = resource.0.lock().unwrap();
+    let mut scanner = resource.lock();
     scanner.get_globs().into_iter().map(Into::into).collect()
 }
 

@@ -23,4 +23,24 @@ defmodule OxideTest do
     assert [] = Oxide.scan_files(scanner, changed)
     assert ["grid"] = Oxide.scan_files(scanner, [%{content: "grid flex", extension: "html"}])
   end
+
+  test "rejects changed entries without file or content and keeps the scanner usable" do
+    scanner = Oxide.new()
+
+    assert_raise ArgumentError, ~r/either :file or :content/, fn ->
+      Oxide.scan_files(scanner, [%{extension: "html"}])
+    end
+
+    # Bypass Elixir validation: the NIF must raise instead of panicking while
+    # holding (and poisoning) the scanner lock.
+    assert_raise ArgumentError, fn ->
+      Oxide.Native.scan_files(scanner, [
+        %Oxide.Changed{content: "flex", extension: "html"},
+        %Oxide.Changed{extension: "html"}
+      ])
+    end
+
+    assert ["flex"] = Oxide.scan_files(scanner, [%{content: "flex", extension: "html"}])
+    assert is_list(Oxide.files(scanner))
+  end
 end

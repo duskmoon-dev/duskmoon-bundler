@@ -114,12 +114,19 @@ defmodule Oxide do
   def scan_files(scanner, changed) do
     changed =
       Enum.map(changed, fn
-        %Changed{} = c -> c
-        map -> struct!(Changed, map)
+        %Changed{} = c -> validate_changed!(c)
+        map -> Changed |> struct!(map) |> validate_changed!()
       end)
 
     Oxide.Native.scan_files(scanner, changed)
   end
+
+  defp validate_changed!(%Changed{file: nil, content: nil} = changed) do
+    raise ArgumentError,
+          "Oxide.Changed must have either :file or :content, got: #{inspect(changed)}"
+  end
+
+  defp validate_changed!(%Changed{} = changed), do: changed
 
   @doc """
   Extract candidates with byte positions from a string.

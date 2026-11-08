@@ -28,6 +28,7 @@ use vize_carton::Allocator;
 mod macros;
 mod html_inject;
 mod ir_encoding;
+mod stack;
 mod term_encoding;
 mod vapor_split;
 
@@ -35,6 +36,7 @@ use crate::ir_encoding::{
     anchor_index, anchor_node, component_kind, encode_ir_prop, encode_merged_prop_sources,
     encode_simple_expr,
 };
+use crate::stack::run_nif_with_large_stack;
 use crate::term_encoding::{
     decode_json_value, error_term, nil_term, ok_term, EncodedBundleCssResult,
     EncodedCompileSfcResult, EncodedCssAstResult, EncodedCssCompileResult, EncodedLintDiagnostic,
@@ -221,6 +223,10 @@ mod atoms {
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn parse_sfc_nif<'a>(env: Env<'a>, source: &str) -> NifResult<Term<'a>> {
+    run_nif_with_large_stack(env, &[], |env, _args| parse_sfc_nif_impl(env, source))
+}
+
+fn parse_sfc_nif_impl<'a>(env: Env<'a>, source: &str) -> NifResult<Term<'a>> {
     let opts = SfcParseOptions::default();
     match parse_sfc(source, opts) {
         Ok(descriptor) => Ok(ok_term(
@@ -237,6 +243,12 @@ fn parse_sfc_nif<'a>(env: Env<'a>, source: &str) -> NifResult<Term<'a>> {
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn analyze_sfc_nif<'a>(env: Env<'a>, source: &str, mode: &str) -> NifResult<Term<'a>> {
+    run_nif_with_large_stack(env, &[], |env, _args| {
+        analyze_sfc_nif_impl(env, source, mode)
+    })
+}
+
+fn analyze_sfc_nif_impl<'a>(env: Env<'a>, source: &str, mode: &str) -> NifResult<Term<'a>> {
     let parse_opts = SfcParseOptions {
         filename: "component.vue".into(),
         ..Default::default()
@@ -393,6 +405,31 @@ fn compile_sfc_nif<'a>(
     custom_renderer: bool,
     strip_types: bool,
 ) -> NifResult<Term<'a>> {
+    run_nif_with_large_stack(env, &[], |env, _args| {
+        compile_sfc_nif_impl(
+            env,
+            source,
+            filename,
+            scope_id,
+            vapor,
+            ssr,
+            custom_renderer,
+            strip_types,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_sfc_nif_impl<'a>(
+    env: Env<'a>,
+    source: &str,
+    filename: &str,
+    scope_id: &str,
+    vapor: bool,
+    ssr: bool,
+    custom_renderer: bool,
+    strip_types: bool,
+) -> NifResult<Term<'a>> {
     let mut parse_opts = SfcParseOptions::default();
     if !filename.is_empty() {
         parse_opts.filename = filename.into();
@@ -474,6 +511,17 @@ fn compile_template_nif<'a>(
     mode: &str,
     ssr: bool,
 ) -> NifResult<Term<'a>> {
+    run_nif_with_large_stack(env, &[], |env, _args| {
+        compile_template_nif_impl(env, source, mode, ssr)
+    })
+}
+
+fn compile_template_nif_impl<'a>(
+    env: Env<'a>,
+    source: &str,
+    mode: &str,
+    ssr: bool,
+) -> NifResult<Term<'a>> {
     let allocator = Allocator::default();
     let (mut root, mut diagnostics) = parse(&allocator, source);
 
@@ -524,6 +572,10 @@ fn compile_template_nif<'a>(
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn compile_ssr_nif<'a>(env: Env<'a>, source: &str) -> NifResult<Term<'a>> {
+    run_nif_with_large_stack(env, &[], |env, _args| compile_ssr_nif_impl(env, source))
+}
+
+fn compile_ssr_nif_impl<'a>(env: Env<'a>, source: &str) -> NifResult<Term<'a>> {
     let allocator = Allocator::default();
     let (_root, errors, result) = compile_ssr(&allocator, source);
 
@@ -595,6 +647,18 @@ fn template_syntax_mode(value: &str) -> TemplateSyntaxMode {
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn compile_vapor_nif<'a>(
+    env: Env<'a>,
+    source: &str,
+    ssr: bool,
+    diagnostics: bool,
+    template_syntax: &str,
+) -> NifResult<Term<'a>> {
+    run_nif_with_large_stack(env, &[], |env, _args| {
+        compile_vapor_nif_impl(env, source, ssr, diagnostics, template_syntax)
+    })
+}
+
+fn compile_vapor_nif_impl<'a>(
     env: Env<'a>,
     source: &str,
     ssr: bool,
@@ -929,6 +993,10 @@ fn encode_for_node<'a>(env: Env<'a>, for_node: &ForIRNode) -> Term<'a> {
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn vapor_ir_nif<'a>(env: Env<'a>, source: &str) -> NifResult<Term<'a>> {
+    run_nif_with_large_stack(env, &[], |env, _args| vapor_ir_nif_impl(env, source))
+}
+
+fn vapor_ir_nif_impl<'a>(env: Env<'a>, source: &str) -> NifResult<Term<'a>> {
     let allocator = Allocator::default();
     let parser_opts = ParserOptions::default();
     let (mut root, mut diagnostics) = parse_with_options(&allocator, source, parser_opts);
@@ -991,6 +1059,10 @@ fn vapor_ir_nif<'a>(env: Env<'a>, source: &str) -> NifResult<Term<'a>> {
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn lint_nif<'a>(env: Env<'a>, source: &str, filename: &str) -> NifResult<Term<'a>> {
+    run_nif_with_large_stack(env, &[], |env, _args| lint_nif_impl(env, source, filename))
+}
+
+fn lint_nif_impl<'a>(env: Env<'a>, source: &str, filename: &str) -> NifResult<Term<'a>> {
     use vize_patina::Linter;
 
     let linter = Linter::default();
@@ -1165,6 +1237,19 @@ fn select_css_nif<'a>(
     css_modules: bool,
     selector_term: Term<'a>,
 ) -> NifResult<Term<'a>> {
+    run_nif_with_large_stack(env, &[selector_term], |env, args| {
+        select_css_nif_impl(env, source, filename, custom_media, css_modules, args[0])
+    })
+}
+
+fn select_css_nif_impl<'a>(
+    env: Env<'a>,
+    source: &str,
+    filename: &str,
+    custom_media: bool,
+    css_modules: bool,
+    selector_term: Term<'a>,
+) -> NifResult<Term<'a>> {
     let selector = Selector::from_term(selector_term)?;
 
     let stylesheet = match StyleSheet::parse(
@@ -1235,6 +1320,18 @@ fn parse_css_ast_nif<'a>(
     custom_media: bool,
     css_modules: bool,
 ) -> NifResult<Term<'a>> {
+    run_nif_with_large_stack(env, &[], |env, _args| {
+        parse_css_ast_nif_impl(env, source, filename, custom_media, css_modules)
+    })
+}
+
+fn parse_css_ast_nif_impl<'a>(
+    env: Env<'a>,
+    source: &str,
+    filename: &str,
+    custom_media: bool,
+    css_modules: bool,
+) -> NifResult<Term<'a>> {
     let options = CssCompileOptions {
         filename: if filename.is_empty() {
             None
@@ -1253,6 +1350,19 @@ fn parse_css_ast_nif<'a>(
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn print_css_ast_nif<'a>(
+    env: Env<'a>,
+    ast: Term<'a>,
+    minify: bool,
+    chrome: i64,
+    firefox: i64,
+    safari: i64,
+) -> NifResult<Term<'a>> {
+    run_nif_with_large_stack(env, &[ast], |env, args| {
+        print_css_ast_nif_impl(env, args[0], minify, chrome, firefox, safari)
+    })
+}
+
+fn print_css_ast_nif_impl<'a>(
     env: Env<'a>,
     ast: Term<'a>,
     minify: bool,
@@ -1290,6 +1400,35 @@ fn print_css_ast_nif<'a>(
 #[rustler::nif(schedule = "DirtyCpu")]
 #[allow(clippy::too_many_arguments)]
 fn compile_css_nif<'a>(
+    env: Env<'a>,
+    source: &str,
+    minify: bool,
+    scoped: bool,
+    scope_id_str: &str,
+    filename: &str,
+    chrome: i64,
+    firefox: i64,
+    safari: i64,
+    css_modules: bool,
+) -> NifResult<Term<'a>> {
+    run_nif_with_large_stack(env, &[], |env, _args| {
+        compile_css_nif_impl(
+            env,
+            source,
+            minify,
+            scoped,
+            scope_id_str,
+            filename,
+            chrome,
+            firefox,
+            safari,
+            css_modules,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_css_nif_impl<'a>(
     env: Env<'a>,
     source: &str,
     minify: bool,
@@ -1360,6 +1499,28 @@ fn bundle_css_nif<'a>(
     safari: i64,
     css_modules: bool,
 ) -> NifResult<Term<'a>> {
+    run_nif_with_large_stack(env, &[], |env, _args| {
+        bundle_css_nif_impl(
+            env,
+            entry_path,
+            minify,
+            chrome,
+            firefox,
+            safari,
+            css_modules,
+        )
+    })
+}
+
+fn bundle_css_nif_impl<'a>(
+    env: Env<'a>,
+    entry_path: &str,
+    minify: bool,
+    chrome: i64,
+    firefox: i64,
+    safari: i64,
+    css_modules: bool,
+) -> NifResult<Term<'a>> {
     let targets = if chrome >= 0 || firefox >= 0 || safari >= 0 {
         Some(CssTargets {
             chrome: if chrome >= 0 {
@@ -1397,6 +1558,10 @@ fn bundle_css_nif<'a>(
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn vapor_split_nif<'a>(env: Env<'a>, source: &str) -> NifResult<Term<'a>> {
+    run_nif_with_large_stack(env, &[], |env, _args| vapor_split_nif_impl(env, source))
+}
+
+fn vapor_split_nif_impl<'a>(env: Env<'a>, source: &str) -> NifResult<Term<'a>> {
     let allocator = Allocator::default();
     let parser_opts = ParserOptions::default();
     let (mut root, mut diagnostics) = parse_with_options(&allocator, source, parser_opts);
@@ -1456,6 +1621,12 @@ fn vapor_split_nif<'a>(env: Env<'a>, source: &str) -> NifResult<Term<'a>> {
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn generate_dts_nif<'a>(env: Env<'a>, source: &str, filename: &str) -> NifResult<Term<'a>> {
+    run_nif_with_large_stack(env, &[], |env, _args| {
+        generate_dts_nif_impl(env, source, filename)
+    })
+}
+
+fn generate_dts_nif_impl<'a>(env: Env<'a>, source: &str, filename: &str) -> NifResult<Term<'a>> {
     let parse_opts = SfcParseOptions {
         filename: if filename.is_empty() {
             "component.vue".into()

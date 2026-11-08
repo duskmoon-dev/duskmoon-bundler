@@ -255,6 +255,26 @@ fn decode_sort_tailwindcss(m: Term) -> oxc_formatter::SortTailwindcssOptions {
     s
 }
 
+// The formatter/linter parse and walk ASTs recursively. Deeply nested input can
+// exceed the comparatively small dirty NIF stack and take down the whole VM, so
+// that work runs on a dedicated thread with a large stack. The standard library
+// reserves this address space without committing it upfront.
+const LARGE_STACK_SIZE: usize = 64 * 1024 * 1024;
+
+fn run_with_large_stack<T: Send>(operation: impl FnOnce() -> T + Send) -> Result<T, String> {
+    std::thread::scope(|scope| {
+        let worker = std::thread::Builder::new()
+            .name("oxc-format".to_string())
+            .stack_size(LARGE_STACK_SIZE)
+            .spawn_scoped(scope, operation)
+            .map_err(|error| format!("Failed to start formatter worker: {error}"))?;
+
+        worker
+            .join()
+            .map_err(|_| "formatter worker panicked".to_string())
+    })
+}
+
 fn source_from_term<'a>(term: Term<'a>) -> NifResult<Binary<'a>> {
     term.decode_as_binary()
 }
@@ -275,22 +295,30 @@ fn format<'a>(
     let path = Path::new(filename);
     let source_type = SourceType::from_path(path).unwrap_or_default();
 
-    let allocator = Allocator::default();
-    let ret = parse_for_format(&allocator, source, source_type);
-
-    if !ret.diagnostics.is_empty() {
-        let errors: Vec<String> = ret
-            .diagnostics
-            .iter()
-            .map(|e| e.message.to_string())
-            .collect();
-        return Ok((atoms::error(), errors).encode(env));
-    }
-
     let options = decode_format_options(opts);
-    match format_program(&allocator, &ret.program, options).print() {
-        Ok(formatted) => Ok((atoms::ok(), formatted.into_code()).encode(env)),
-        Err(error) => Ok((atoms::error(), vec![error.to_string()]).encode(env)),
+    let formatted = run_with_large_stack(|| {
+        let allocator = Allocator::default();
+        let ret = parse_for_format(&allocator, source, source_type);
+
+        if !ret.diagnostics.is_empty() {
+            let errors: Vec<String> = ret
+                .diagnostics
+                .iter()
+                .map(|e| e.message.to_string())
+                .collect();
+            return Err(errors);
+        }
+
+        format_program(&allocator, &ret.program, options)
+            .print()
+            .map(|formatted| formatted.into_code())
+            .map_err(|error| vec![error.to_string()])
+    })
+    .unwrap_or_else(|error| Err(vec![error]));
+
+    match formatted {
+        Ok(code) => Ok((atoms::ok(), code).encode(env)),
+        Err(errors) => Ok((atoms::error(), errors).encode(env)),
     }
 }
 

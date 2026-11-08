@@ -150,4 +150,17 @@ defmodule Vize.NativeUpgradeTest do
   end
 
   defp operations(block), do: block.operations ++ List.flatten(block.effects)
+
+  test "deeply nested templates do not overflow the scheduler stack" do
+    depth = 2_000
+
+    template =
+      String.duplicate("<div>", depth) <> "{{ msg }}" <> String.duplicate("</div>", depth)
+
+    assert {status, _} = Vize.compile_template(template)
+    assert status in [:ok, :error]
+
+    assert {status, _} = Vize.compile_sfc("<template>#{template}</template>")
+    assert status in [:ok, :error]
+  end
 end
