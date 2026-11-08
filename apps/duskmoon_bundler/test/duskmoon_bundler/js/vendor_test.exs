@@ -980,6 +980,60 @@ defmodule DuskmoonBundler.JS.VendorTest do
   end
 
   describe "bundle_on_demand/2" do
+    test "rebuilds the current static graph together after dependency changes in either request order" do
+      app = Path.join(@fixture_dir, "src/app.ts")
+      opts = [root: Path.dirname(app), node_modules: @node_modules]
+
+      for first_request <- ["editor-a", "editor-late"] do
+        File.rm_rf!(vendor_cache_dir())
+        File.rm_rf!(Path.join(@node_modules, "editor-late"))
+
+        for package <- ["editor-a", "editor-b", "singleton-state"] do
+          write_package(package, "1.0.0", %{"." => "./index.js"})
+        end
+
+        for package <- ["editor-a", "editor-b"] do
+          File.write!(
+            Path.join(@node_modules, "#{package}/index.js"),
+            "export {state} from 'singleton-state';"
+          )
+        end
+
+        singleton = Path.join(@node_modules, "singleton-state/index.js")
+        File.write!(singleton, "export const state = {value: 'first'};")
+        File.write!(app, "import 'editor-a'; import 'editor-b';")
+
+        assert {:ok, _} =
+                 DuskmoonBundler.JS.Vendor.bundle_on_demand("editor-a", @node_modules, opts)
+
+        File.write!(singleton, "export const state = {value: 'later'};")
+        write_package("editor-late", "1.0.0", %{"." => "./index.js"})
+
+        File.write!(
+          Path.join(@node_modules, "editor-late/index.js"),
+          "export {state} from 'singleton-state';"
+        )
+
+        File.write!(app, "import 'editor-a'; import 'editor-b'; import 'editor-late';")
+
+        assert {:ok, _} =
+                 DuskmoonBundler.JS.Vendor.bundle_on_demand(first_request, @node_modules, opts)
+
+        chunks =
+          for package <- ["editor-a", "editor-b", "editor-late"] do
+            assert {:ok, code} = DuskmoonBundler.JS.Vendor.read(package)
+            assert [[chunk]] = Regex.scan(~r{\./chunks/[^"']+\.js}, code)
+            chunk
+          end
+
+        assert [chunk] = Enum.uniq(chunks)
+        chunk_specifier = chunk |> String.trim_leading("./") |> String.trim_trailing(".js")
+        assert {:ok, shared} = DuskmoonBundler.JS.Vendor.read(chunk_specifier)
+        assert shared =~ "later"
+        refute shared =~ "first"
+      end
+    end
+
     test "refreshes optimized external URLs without replacing the compiled graph on restart" do
       assert {:ok, _} =
                DuskmoonBundler.JS.Vendor.prebundle(

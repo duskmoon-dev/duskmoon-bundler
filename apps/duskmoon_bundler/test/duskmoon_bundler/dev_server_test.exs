@@ -306,15 +306,19 @@ defmodule DuskmoonBundler.DevServerTest do
 
       assert app_conn.status == 200
 
-      assert [vendor_url] = Regex.run(~r(/@vendor/editor-a\.js\?v=[a-f0-9]+), app_conn.resp_body)
+      assert [vendor_url] = Regex.run(~r(/@vendor/editor-a\.js\?v=[^"'\s]+), app_conn.resp_body)
 
       vendor_conn =
         call_dev_server(vendor_url, node_modules: Path.join(@fixture_dir, "node_modules"))
 
       assert vendor_conn.status == 200
+      assert get_resp_header(vendor_conn, "cache-control") == ["no-cache"]
 
       assert [[_, chunk_path]] =
-               Regex.scan(~r{from "\./(chunks/[^"']+\.js)"}, vendor_conn.resp_body)
+               Regex.scan(~r{from "\./(chunks/[^"']+\.js\?v=[^"']+)"}, vendor_conn.resp_body)
+
+      assert URI.decode_query(URI.parse(chunk_path).query) ==
+               URI.decode_query(URI.parse(vendor_url).query)
 
       chunk_conn =
         call_dev_server("/@vendor/#{chunk_path}",
@@ -322,6 +326,7 @@ defmodule DuskmoonBundler.DevServerTest do
         )
 
       assert chunk_conn.status == 200
+      assert get_resp_header(chunk_conn, "cache-control") == ["no-cache"]
       assert chunk_conn.resp_body =~ "singleton"
     end
 

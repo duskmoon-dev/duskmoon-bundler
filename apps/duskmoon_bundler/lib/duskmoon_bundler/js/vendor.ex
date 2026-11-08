@@ -165,13 +165,35 @@ defmodule DuskmoonBundler.JS.Vendor do
         :global.trans({{__MODULE__, cache_dir()}, self()}, fn ->
           known = known_vendor_specifiers(module_dirs, plugins, module_types, source_specifiers)
 
+          refresh_static_graph? =
+            if is_binary(root) do
+              bundled = Enum.reject(known, &source_vendor?(&1, source_specifiers))
+              signature = browser_signature(module_dirs, plugins, module_types, source_specifiers)
+
+              bundled == [] or
+                Enum.any?(bundled, fn known_specifier ->
+                  not cache_fresh?(
+                    known_specifier,
+                    module_dirs,
+                    plugins,
+                    module_types,
+                    source_specifiers,
+                    browser_token,
+                    signature
+                  )
+                end)
+            else
+              false
+            end
+
           cond do
-            is_binary(root) and Enum.all?(known, &source_vendor?(&1, source_specifiers)) ->
-              # Build the initial static application graph before any of its
-              # modules escape to the browser. Dynamic imports remain lazy.
+            refresh_static_graph? ->
+              # Initialize or refresh the current static graph before any of its
+              # modules escape. Newly added entries must share its runtime too.
+              # Dynamic imports remain lazy while the existing graph is fresh.
               with {:ok, specifiers} <- scan_bare_imports(root, plugins, opts) do
                 specifiers =
-                  [specifier | specifiers]
+                  ([specifier | specifiers] ++ known)
                   |> Enum.map(&DuskmoonBundler.PluginRunner.prebundle_alias(plugins, &1))
                   |> Enum.uniq()
                   |> Enum.reject(&source_vendor?(&1, source_specifiers))
@@ -335,15 +357,17 @@ defmodule DuskmoonBundler.JS.Vendor do
   end
 
   defp read_vendor_output({:ok, code}, opts) do
-    if Keyword.keyword?(opts) and String.contains?(code, "/@vendor/") do
-      OXC.rewrite_specifiers(code, "vendor.js", fn
-        "/@vendor/" <> _ = specifier ->
+    if Keyword.keyword?(opts) and String.contains?(code, ["/@vendor/", "./", "../"]) do
+      browser_hash = browser_hash_for_url(opts)
+
+      OXC.rewrite_specifiers(code, "vendor.js", fn specifier ->
+        if String.starts_with?(specifier, ["/@vendor/", "./", "../"]) do
           uri = URI.parse(specifier)
           query = URI.decode_query(uri.query || "") |> Map.drop(["v", "t"])
 
           url =
             URI.to_string(%{uri | query: nil})
-            |> DuskmoonBundler.URL.append_query("v=#{browser_hash_for_url(opts)}")
+            |> DuskmoonBundler.URL.append_query("v=#{browser_hash}")
             |> append_browser_token(opts[:browser_token])
 
           url =
@@ -352,9 +376,9 @@ defmodule DuskmoonBundler.JS.Vendor do
               else: DuskmoonBundler.URL.append_query(url, URI.encode_query(query))
 
           {:rewrite, url}
-
-        _ ->
+        else
           :keep
+        end
       end)
     else
       {:ok, code}

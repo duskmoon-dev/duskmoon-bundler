@@ -156,7 +156,8 @@ defmodule DuskmoonBundler.DevServer do
       {:ok, code} ->
         conn
         |> Conn.put_resp_content_type("application/javascript")
-        |> Conn.put_resp_header("cache-control", "max-age=31536000, immutable")
+        # Vendor aliases and their graph queries can change during development.
+        |> Conn.put_resp_header("cache-control", "no-cache")
         |> Conn.send_resp(200, code)
         |> Conn.halt()
 
