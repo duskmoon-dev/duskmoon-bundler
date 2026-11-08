@@ -57,14 +57,20 @@ defmodule DuskmoonBundler.HMR.ImportGraph do
   @doc """
   Find all files that import a specifier matching the given predicate.
 
-  The predicate receives each import specifier and should return `true`
-  if it matches the file being searched for.
+  The predicate receives each import specifier (or, when it has arity 2, the
+  importing file path and the specifier) and should return `true` if it
+  matches the file being searched for.
   """
-  @spec dependents_matching((String.t() -> boolean())) :: [String.t()]
-  def dependents_matching(predicate) do
+  @spec dependents_matching((String.t() -> boolean()) | (String.t(), String.t() -> boolean())) ::
+          [String.t()]
+  def dependents_matching(predicate) when is_function(predicate, 1) do
+    dependents_matching(fn _path, specifier -> predicate.(specifier) end)
+  end
+
+  def dependents_matching(predicate) when is_function(predicate, 2) do
     :ets.foldl(
       fn {path, imports}, acc ->
-        if Enum.any?(imports, predicate), do: [path | acc], else: acc
+        if Enum.any?(imports, &predicate.(path, &1)), do: [path | acc], else: acc
       end,
       [],
       @table

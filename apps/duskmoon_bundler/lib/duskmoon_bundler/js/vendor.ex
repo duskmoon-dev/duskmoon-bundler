@@ -1405,11 +1405,14 @@ defmodule DuskmoonBundler.JS.Vendor do
   end
 
   defp read_cached("chunks/" <> _ = specifier) do
-    Path.join(cache_dir(), specifier <> ".js")
-    |> File.read()
-    |> case do
-      {:ok, _} = ok -> ok
-      {:error, _} -> {:error, :not_found}
+    chunks_dir = Path.join(cache_dir(), "chunks")
+    path = Path.expand(Path.join(cache_dir(), specifier <> ".js"))
+
+    with true <- DuskmoonBundler.Path.inside?(path, chunks_dir),
+         {:ok, _} = ok <- File.read(path) do
+      ok
+    else
+      _ -> {:error, :not_found}
     end
   end
 
@@ -1825,6 +1828,39 @@ defmodule DuskmoonBundler.JS.Vendor do
     |> String.replace("@", "__at__")
     |> String.replace("/", "__slash__")
   end
+
+  @package_segment ~r/\A[A-Za-z0-9~-][A-Za-z0-9._~-]*\z/
+  @path_segment ~r/\A[A-Za-z0-9._~@+=,-]+\z/
+
+  @doc """
+  Return whether a decoded `/@vendor/` request specifier is safe to serve.
+
+  Accepts `chunks/<file>` cache chunks and bare npm package specifiers
+  (`name`, `@scope/name`) with an optional subpath. Rejects `.`/`..` and
+  empty segments, absolute paths, backslashes, NUL bytes and other
+  characters that could escape the vendor cache or `node_modules`.
+  """
+  @spec request_specifier?(String.t()) :: boolean()
+  def request_specifier?("chunks/" <> chunk), do: safe_subpath?(chunk)
+
+  def request_specifier?(specifier) when is_binary(specifier) do
+    case String.split(specifier, "/") do
+      ["@" <> scope, name | subpath] -> package_specifier?([scope, name], subpath)
+      [name | subpath] -> package_specifier?([name], subpath)
+    end
+  end
+
+  def request_specifier?(_specifier), do: false
+
+  defp package_specifier?(package_segments, subpath) do
+    Enum.all?(package_segments, &Regex.match?(@package_segment, &1)) and
+      Enum.all?(subpath, &safe_segment?/1)
+  end
+
+  defp safe_subpath?(subpath), do: subpath |> String.split("/") |> Enum.all?(&safe_segment?/1)
+
+  defp safe_segment?(segment),
+    do: segment not in ["", ".", ".."] and Regex.match?(@path_segment, segment)
 
   @doc "Decode a URL-safe specifier back to its original form."
   def decode_specifier(encoded) do

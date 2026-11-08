@@ -10,22 +10,25 @@ defmodule DuskmoonBundler.Cache do
 
   @type entry :: DuskmoonBundler.DevServer.CacheEntry.t()
 
-  @type cache_entry :: %{mtime: integer(), entry: entry()}
+  @typedoc "Source fingerprint the entry was compiled from (e.g. a content hash)."
+  @type version :: term()
+
+  @type cache_entry :: %{version: version(), entry: entry()}
 
   @doc "Create the cache ETS table. Called once from Application.start/2."
   @spec create_table :: :ok
   def create_table, do: DuskmoonBundler.ETS.create_named_set(@table)
 
-  @doc "Look up a cached entry. Returns `nil` on miss."
-  @spec get(String.t(), integer()) :: entry() | nil
-  def get(path, mtime) do
+  @doc "Look up a cached entry compiled from `version`. Returns `nil` on miss."
+  @spec get(String.t(), version()) :: entry() | nil
+  def get(path, version) do
     case :ets.lookup(@table, path) do
-      [{^path, %{mtime: ^mtime, entry: entry}}] -> entry
+      [{^path, %{version: ^version, entry: entry}}] -> entry
       _ -> nil
     end
   end
 
-  @doc "Look up any cached entry for a file path regardless of mtime."
+  @doc "Look up any cached entry for a file path regardless of version."
   @spec get_file(String.t()) :: entry() | nil
   def get_file(path) do
     case :ets.lookup(@table, path) do
@@ -35,9 +38,9 @@ defmodule DuskmoonBundler.Cache do
   end
 
   @doc "Store a compiled entry."
-  @spec put(String.t(), integer(), entry()) :: :ok
-  def put(path, mtime, entry) do
-    :ets.insert(@table, {path, %{mtime: mtime, entry: entry}})
+  @spec put(String.t(), version(), entry()) :: :ok
+  def put(path, version, entry) do
+    :ets.insert(@table, {path, %{version: version, entry: entry}})
     :ok
   end
 

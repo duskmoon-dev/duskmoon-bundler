@@ -23,10 +23,10 @@ defmodule DuskmoonBundler.HMR.Boundary do
   @doc """
   Find the HMR boundary for a changed file.
 
-  Walks upward through the module graph from `changed_path`. Returns
-  `{:ok, boundary_path}` if a self-accepting module is found, or
-  `:full_reload` if the change bubbles up to the root without finding
-  a boundary.
+  Returns `{:ok, boundary_path}` when the update is accepted by exactly one
+  boundary. When propagation needs several boundaries, or any importer path
+  reaches a root without a boundary, returns `:full_reload`. Use
+  `find_boundaries/2` to receive every boundary.
 
   The `read_source` function is called with an absolute path and should
   return the module's source code for boundary detection.
@@ -34,17 +34,41 @@ defmodule DuskmoonBundler.HMR.Boundary do
   @spec find_boundary(String.t(), (String.t() -> String.t() | nil)) ::
           {:ok, String.t()} | :full_reload
   def find_boundary(changed_path, read_source) do
+    case find_boundaries(changed_path, read_source) do
+      {:ok, [boundary]} -> {:ok, boundary}
+      _ -> :full_reload
+    end
+  end
+
+  @doc """
+  Find every HMR boundary for a changed file.
+
+  Walks upward through the module graph from `changed_path` (falling back to
+  the raw import graph). Every importer path must reach a module that accepts
+  the update; all such boundaries are collected. If any path reaches a module
+  without importers (an entry) before a boundary, returns `:full_reload`.
+  """
+  @spec find_boundaries(String.t(), (String.t() -> String.t() | nil)) ::
+          {:ok, [String.t()]} | :full_reload
+  def find_boundaries(changed_path, read_source) do
     source = read_source.(changed_path)
 
     cond do
       source && self_accepting?(source) ->
-        {:ok, changed_path}
+        {:ok, [changed_path]}
 
-      graph_boundary = find_graph_boundary(changed_path, read_source) ->
-        graph_boundary
+      graph_result = find_graph_boundaries(changed_path, read_source) ->
+        graph_result
 
       true ->
-        walk_up(changed_path, changed_path, read_source, MapSet.new([changed_path]))
+        walker = %{
+          key: & &1,
+          parents: &find_importers/1,
+          accepts?: &source_accepts_update?(read_source.(&1), &1, changed_path),
+          boundary: & &1
+        }
+
+        propagate_all([changed_path], walker, MapSet.new([changed_path]))
     end
   end
 
@@ -131,100 +155,96 @@ defmodule DuskmoonBundler.HMR.Boundary do
     resolved == changed_path or Path.rootname(resolved) == Path.rootname(changed_path)
   end
 
-  defp find_graph_boundary(changed_path, read_source) do
-    changed_path
-    |> DuskmoonBundler.HMR.ModuleGraph.get_by_file()
-    |> case do
+  defp find_graph_boundaries(changed_path, read_source) do
+    case DuskmoonBundler.HMR.ModuleGraph.get_by_file(changed_path) do
       [] ->
         nil
 
       nodes ->
-        find_graph_boundary_in_nodes(
-          nodes,
-          changed_path,
-          read_source,
-          MapSet.new(Enum.map(nodes, & &1.id))
-        )
+        walker = %{
+          key: & &1.id,
+          parents: &graph_importers/1,
+          accepts?: &graph_accepts_update?(&1, changed_path, read_source),
+          boundary: & &1.file
+        }
+
+        propagate_all(nodes, walker, MapSet.new(nodes, & &1.id))
     end
   end
 
-  defp find_graph_boundary_in_nodes(nodes, changed_path, read_source, visited) do
-    Enum.find_value(nodes, :full_reload, fn node ->
-      cond do
-        graph_accepts_update?(node, changed_path, read_source) ->
-          {:ok, node.file}
-
-        MapSet.size(node.importers) == 0 ->
-          nil
-
-        true ->
-          node.importers
-          |> Enum.flat_map(&List.wrap(DuskmoonBundler.HMR.ModuleGraph.get_by_id(&1)))
-          |> Enum.reject(&MapSet.member?(visited, &1.id))
-          |> find_graph_boundary_in_nodes(
-            changed_path,
-            read_source,
-            MapSet.union(visited, node.importers)
-          )
-          |> case do
-            :full_reload -> nil
-            found -> found
-          end
-      end
-    end)
+  defp graph_importers(node) do
+    Enum.flat_map(node.importers, &List.wrap(DuskmoonBundler.HMR.ModuleGraph.get_by_id(&1)))
   end
 
   defp graph_accepts_update?(node, changed_path, read_source) do
     case read_source.(node.file) do
-      source when is_binary(source) ->
-        self_accepting?(source) or dependency_accepting?(source, node.file, changed_path)
-
-      _ ->
-        node.self_accepting
+      source when is_binary(source) -> source_accepts_update?(source, node.file, changed_path)
+      _ -> node.self_accepting
     end
   end
 
-  defp walk_up(path, changed_path, read_source, visited) do
-    case find_importers(path) do
-      [] -> :full_reload
-      parents -> find_boundary_in_parents(parents, changed_path, read_source, visited)
-    end
+  defp source_accepts_update?(nil, _path, _changed_path), do: false
+
+  defp source_accepts_update?(source, path, changed_path) do
+    self_accepting?(source) or dependency_accepting?(source, path, changed_path)
   end
 
-  defp find_boundary_in_parents(parents, changed_path, read_source, visited) do
-    Enum.find_value(parents, :full_reload, fn parent ->
-      if MapSet.member?(visited, parent) do
-        nil
-      else
-        visit_parent(parent, changed_path, read_source, MapSet.put(visited, parent))
+  # Propagates from each start module; every importer path must hit a boundary.
+  defp propagate_all(modules, walker, visited) do
+    modules
+    |> Enum.reduce_while({[], visited}, fn module, acc ->
+      case propagate(module, walker, acc) do
+        :full_reload -> {:halt, :full_reload}
+        acc -> {:cont, acc}
       end
     end)
+    |> case do
+      :full_reload -> :full_reload
+      {boundaries, _visited} -> {:ok, boundaries |> Enum.reverse() |> Enum.uniq()}
+    end
   end
 
-  defp visit_parent(parent, changed_path, read_source, visited) do
-    source = read_source.(parent)
+  defp propagate(module, walker, acc) do
+    case walker.parents.(module) do
+      [] -> :full_reload
+      parents -> Enum.reduce_while(parents, acc, &visit_parent(&1, walker, &2))
+    end
+  end
 
-    if source != nil and
-         (self_accepting?(source) or dependency_accepting?(source, parent, changed_path)) do
-      {:ok, parent}
-    else
-      case walk_up(parent, changed_path, read_source, visited) do
-        {:ok, _} = found -> found
-        :full_reload -> nil
-      end
+  defp visit_parent(parent, walker, {boundaries, visited} = acc) do
+    key = walker.key.(parent)
+
+    cond do
+      MapSet.member?(visited, key) ->
+        {:cont, acc}
+
+      walker.accepts?.(parent) ->
+        {:cont, {[walker.boundary.(parent) | boundaries], MapSet.put(visited, key)}}
+
+      true ->
+        case propagate(parent, walker, {boundaries, MapSet.put(visited, key)}) do
+          :full_reload -> {:halt, :full_reload}
+          acc -> {:cont, acc}
+        end
     end
   end
 
   defp find_importers(path) do
-    basename = Path.basename(path)
-    rootname = Path.rootname(basename)
-
-    DuskmoonBundler.HMR.ImportGraph.dependents_matching(fn specifier ->
-      spec_base = specifier |> String.split("/") |> List.last()
-
-      spec_base == basename or
-        spec_base == rootname or
-        Path.rootname(spec_base) == rootname
+    DuskmoonBundler.HMR.ImportGraph.dependents_matching(fn importer, specifier ->
+      relative_specifier_resolves_to?(specifier, importer, path)
     end)
+  end
+
+  # Only relative specifiers are resolvable here; bare and alias specifiers never match.
+  defp relative_specifier_resolves_to?(specifier, importer, path) do
+    if String.starts_with?(specifier, ["./", "../"]) do
+      resolved = Path.expand(specifier, Path.dirname(importer))
+
+      resolved == path or resolved == Path.rootname(path) or
+        Path.rootname(resolved) == Path.rootname(path) or
+        (Path.basename(path) |> Path.rootname() == "index" and resolved == Path.dirname(path))
+    else
+      false
+    end
   end
 end

@@ -938,4 +938,62 @@ defmodule DuskmoonBundler.DevServerTest do
       refute conn.resp_body =~ "import.meta.hot"
     end
   end
+
+  describe "vendor request validation" do
+    test "rejects chunk path traversal out of the vendor cache" do
+      secret = Path.join(@fixture_dir, "secret.js")
+      File.write!(secret, "export const secret = 'TOPSECRET'")
+
+      ups = List.duplicate("..", 32)
+      target = secret |> String.trim_leading("/") |> String.trim_trailing(".js")
+
+      encoded =
+        ["chunks" | ups]
+        |> Enum.join("/")
+        |> Path.join(target)
+        |> DuskmoonBundler.JS.Vendor.encode_specifier()
+
+      for path <- [
+            "/@vendor/#{encoded}.js",
+            "/@vendor/chunks/#{Enum.join(ups, "/")}/#{target}.js"
+          ] do
+        conn = call_dev_server(path)
+        assert conn.status == 404
+        refute conn.resp_body =~ "TOPSECRET"
+      end
+    end
+
+    test "does not bundle project files through non-package specifiers" do
+      File.mkdir_p!(Path.join(@fixture_dir, "node_modules"))
+      File.mkdir_p!(Path.join(@fixture_dir, "lib"))
+      File.write!(Path.join(@fixture_dir, "lib/secret.js"), "export const s = 'TOPSECRET'")
+
+      for specifier <- ["..__slash__lib__slash__secret", "..__slash__..__slash__lib", "."] do
+        conn =
+          call_dev_server("/@vendor/#{specifier}.js",
+            node_modules: Path.join(@fixture_dir, "node_modules")
+          )
+
+        assert conn.status == 404
+        refute conn.resp_body =~ "TOPSECRET"
+      end
+    end
+  end
+
+  describe "compiled module cache" do
+    test "same-second, same-size edits are not served stale" do
+      path = Path.join(@fixture_dir, "src/same_second.ts")
+      mtime = {{2030, 1, 1}, {0, 0, 0}}
+
+      File.write!(path, "export const v = 'aaa'")
+      File.touch!(path, mtime)
+      assert call_dev_server("/assets/same_second.ts").resp_body =~ "aaa"
+
+      File.write!(path, "export const v = 'bbb'")
+      File.touch!(path, mtime)
+      conn = call_dev_server("/assets/same_second.ts")
+      assert conn.resp_body =~ "bbb"
+      refute conn.resp_body =~ "aaa"
+    end
+  end
 end

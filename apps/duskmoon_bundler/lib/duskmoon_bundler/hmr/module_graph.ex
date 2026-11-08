@@ -6,9 +6,14 @@ defmodule DuskmoonBundler.HMR.ModuleGraph do
   the primary source for HMR boundary lookup: served modules record their
   resolved imports, importers, query variants, and whether the module accepts
   itself with `import.meta.hot.accept()`.
+
+  Importer links and file-to-id mappings live as individual rows in a separate
+  `:bag` table, so concurrent request processes add links with a single atomic
+  insert instead of a read-modify-write of a shared node.
   """
 
   @table :duskmoon_bundler_hmr_module_graph
+  @links :duskmoon_bundler_hmr_module_graph_links
 
   defmodule Node do
     @moduledoc "A dev-server module graph node."
@@ -23,13 +28,15 @@ defmodule DuskmoonBundler.HMR.ModuleGraph do
               last_invalidated_at: nil
   end
 
-  @doc "Create the module graph ETS table."
-  def create_table, do: DuskmoonBundler.ETS.create_named_set(@table)
+  @doc "Create the module graph ETS tables."
+  def create_table do
+    DuskmoonBundler.ETS.create_named_set(@table)
+    create_links_table()
+  end
 
   @doc "Upsert a module and update importer links for its resolved imports."
   def update_module(url, id, file, imports, opts \\ []) do
-    old_node = get_by_id(id)
-    remove_old_importer_links(old_node, id)
+    remove_old_importer_links(get_by_id(id), id)
 
     node = %Node{
       url: url,
@@ -37,12 +44,11 @@ defmodule DuskmoonBundler.HMR.ModuleGraph do
       file: file,
       type: Keyword.get(opts, :type, module_type(url)),
       imports: MapSet.new(imports),
-      importers: existing_importers(id, old_node),
       self_accepting: Keyword.get(opts, :self_accepting, false)
     }
 
     put_node(node)
-    Enum.each(node.imports, &put_importer_link(&1, id))
+    :ets.insert(@links, Enum.map(node.imports, &{{:importers, &1}, id}))
     :ok
   end
 
@@ -50,10 +56,9 @@ defmodule DuskmoonBundler.HMR.ModuleGraph do
   def get_by_id(id), do: lookup({:id, id})
 
   def get_by_file(file) do
-    case :ets.lookup(@table, {:file, file}) do
-      [{_, ids}] -> Enum.flat_map(ids, &List.wrap(get_by_id(&1)))
-      [] -> []
-    end
+    @links
+    |> :ets.lookup({:file, file})
+    |> Enum.flat_map(fn {_, id} -> List.wrap(get_by_id(id)) end)
   end
 
   @doc "Mark every graph node for a file as invalidated and return affected nodes."
@@ -73,50 +78,48 @@ defmodule DuskmoonBundler.HMR.ModuleGraph do
     |> get_by_file()
     |> Enum.each(&remove_node/1)
 
-    :ets.delete(@table, {:file, file})
+    :ets.delete(@links, {:file, file})
     :ok
   end
 
   def clear do
     DuskmoonBundler.ETS.clear(@table)
+
+    if :ets.whereis(@links) == :undefined,
+      do: create_links_table(),
+      else: :ets.delete_all_objects(@links)
+
+    :ok
   end
 
-  defp put_node(node) do
-    :ets.insert(@table, {{:url, node.url}, node.id})
-    :ets.insert(@table, {{:id, node.id}, node})
-    :ets.insert(@table, {{:file, node.file}, file_ids(node.file, node.id)})
-  end
-
-  defp existing_importers(id, nil), do: existing_importers(id, %Node{})
-
-  defp existing_importers(id, old_node) do
-    @table
-    |> :ets.tab2list()
-    |> Enum.reduce(old_node.importers, fn
-      {{:id, importer_id}, %Node{imports: imports}}, acc when importer_id != id ->
-        if MapSet.member?(imports, id), do: MapSet.put(acc, importer_id), else: acc
-
-      _entry, acc ->
-        acc
-    end)
-  end
-
-  defp put_importer_link(import_id, importer_id) do
-    case get_by_id(import_id) do
-      nil -> :ok
-      node -> put_node(%{node | importers: MapSet.put(node.importers, importer_id)})
+  defp create_links_table do
+    if :ets.whereis(@links) == :undefined do
+      :ets.new(@links, [:named_table, :bag, :public, read_concurrency: true])
     end
+
+    :ok
+  end
+
+  # Importers are stored as link rows, never on the persisted node.
+  defp put_node(node) do
+    :ets.insert(@table, [
+      {{:url, node.url}, node.id},
+      {{:id, node.id}, %{node | importers: MapSet.new()}}
+    ])
+
+    :ets.insert(@links, {{:file, node.file}, node.id})
+  end
+
+  defp importers_of(id) do
+    @links
+    |> :ets.lookup({:importers, id})
+    |> MapSet.new(fn {_, importer_id} -> importer_id end)
   end
 
   defp remove_old_importer_links(nil, _id), do: :ok
 
   defp remove_old_importer_links(node, id) do
-    Enum.each(node.imports, fn import_id ->
-      case get_by_id(import_id) do
-        nil -> :ok
-        imported -> put_node(%{imported | importers: MapSet.delete(imported.importers, id)})
-      end
-    end)
+    Enum.each(node.imports, &:ets.delete_object(@links, {{:importers, &1}, id}))
   end
 
   defp remove_node(node) do
@@ -129,23 +132,14 @@ defmodule DuskmoonBundler.HMR.ModuleGraph do
       end
     end)
 
+    :ets.delete(@links, {:importers, node.id})
     :ets.delete(@table, {:url, node.url})
     :ets.delete(@table, {:id, node.id})
   end
 
-  defp file_ids(file, id) do
-    existing =
-      case :ets.lookup(@table, {:file, file}) do
-        [{_, ids}] -> ids
-        [] -> MapSet.new()
-      end
-
-    MapSet.put(existing, id)
-  end
-
   defp lookup(key) do
     case :ets.lookup(@table, key) do
-      [{_, %Node{} = node}] -> node
+      [{_, %Node{} = node}] -> %{node | importers: importers_of(node.id)}
       [{_, id}] when elem(key, 0) == :url -> get_by_id(id)
       [] -> nil
     end

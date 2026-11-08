@@ -74,4 +74,42 @@ defmodule DuskmoonBundler.HMR.ModuleGraphTest do
     refute MapSet.member?(ModuleGraph.get_by_id("/app/a.ts").importers, "/app/app.ts")
     assert MapSet.member?(ModuleGraph.get_by_id("/app/b.ts").importers, "/app/app.ts")
   end
+
+  test "concurrent importer links to the same importee are all retained" do
+    ModuleGraph.update_module("/assets/dep.ts", "/app/dep.ts", "/app/dep.ts", [])
+
+    importers = for i <- 1..200, do: "/app/importer_#{i}.ts"
+
+    importers
+    |> Task.async_stream(
+      &ModuleGraph.update_module(&1, &1, &1, ["/app/dep.ts"]),
+      max_concurrency: 50
+    )
+    |> Stream.run()
+
+    assert ModuleGraph.get_by_id("/app/dep.ts").importers == MapSet.new(importers)
+  end
+
+  test "concurrent query variants for the same file are all retained" do
+    ids = for i <- 1..100, do: "/app/style.css?v=#{i}"
+
+    ids
+    |> Task.async_stream(&ModuleGraph.update_module(&1, &1, "/app/style.css", []),
+      max_concurrency: 50
+    )
+    |> Stream.run()
+
+    assert ModuleGraph.get_by_file("/app/style.css") |> Enum.map(& &1.id) |> Enum.sort() ==
+             Enum.sort(ids)
+  end
+
+  test "removing a file drops its importer links" do
+    ModuleGraph.update_module("/assets/dep.ts", "/app/dep.ts", "/app/dep.ts", [])
+    ModuleGraph.update_module("/assets/app.ts", "/app/app.ts", "/app/app.ts", ["/app/dep.ts"])
+
+    ModuleGraph.remove_file("/app/app.ts")
+
+    assert ModuleGraph.get_by_id("/app/dep.ts").importers == MapSet.new()
+    assert ModuleGraph.get_by_id("/app/app.ts") == nil
+  end
 end

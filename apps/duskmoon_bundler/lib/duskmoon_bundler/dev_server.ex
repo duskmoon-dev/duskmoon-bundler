@@ -236,21 +236,25 @@ defmodule DuskmoonBundler.DevServer do
 
   defp serve_compiled(conn, file_path, relative, config) do
     config = %{config | vendor_hash: current_vendor_hash(config)}
-    mtime = DuskmoonBundler.Format.file_mtime(file_path)
+    # Validate cached output against the exact source it was compiled from:
+    # whole-second mtimes miss same-second saves, and an in-flight compile
+    # may store its result after the watcher evicted the entry.
+    source = File.read!(file_path)
+    version = :crypto.hash(:sha256, source)
     css_import? = css_import_request?(conn, file_path)
     content_type = content_type_for(file_path, css_import?)
     cache_key = cache_key_for(file_path, css_import?, config)
 
-    case DuskmoonBundler.Cache.get(cache_key, mtime) do
+    case DuskmoonBundler.Cache.get(cache_key, version) do
       %{code: code, sourcemap: sourcemap} ->
         send_compiled(conn, code, sourcemap, content_type)
 
       nil ->
         compile_and_serve(
           conn,
-          file_path,
+          {file_path, source},
           relative,
-          mtime,
+          version,
           content_type,
           cache_key,
           css_import?,
@@ -261,16 +265,14 @@ defmodule DuskmoonBundler.DevServer do
 
   defp compile_and_serve(
          conn,
-         file_path,
+         {file_path, source},
          relative,
-         mtime,
+         version,
          content_type,
          cache_key,
          css_import?,
          config
        ) do
-    source = File.read!(file_path)
-
     pipeline_opts = [
       target: config.target,
       import_source: config.import_source,
@@ -301,7 +303,7 @@ defmodule DuskmoonBundler.DevServer do
           content_type: content_type
         }
 
-        DuskmoonBundler.Cache.put(cache_key, mtime, entry)
+        DuskmoonBundler.Cache.put(cache_key, version, entry)
         send_compiled(conn, code, result.sourcemap, content_type)
 
       {:error, errors} ->
@@ -627,12 +629,16 @@ defmodule DuskmoonBundler.DevServer do
   end
 
   defp serve_vendor(specifier, config, browser_hash, browser_token) do
-    vendor_opts = config |> vendor_opts() |> DuskmoonBundler.JS.Vendor.snapshot()
+    if DuskmoonBundler.JS.Vendor.request_specifier?(specifier) do
+      vendor_opts = config |> vendor_opts() |> DuskmoonBundler.JS.Vendor.snapshot()
 
-    if current_vendor_request?(browser_hash, browser_token, config, vendor_opts) do
-      read_or_bundle_vendor(specifier, config, vendor_opts)
+      if current_vendor_request?(browser_hash, browser_token, config, vendor_opts) do
+        read_or_bundle_vendor(specifier, config, vendor_opts)
+      else
+        {:error, :outdated}
+      end
     else
-      {:error, :outdated}
+      {:error, :not_found}
     end
   end
 

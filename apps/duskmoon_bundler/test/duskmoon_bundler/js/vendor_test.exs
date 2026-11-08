@@ -1430,4 +1430,44 @@ defmodule DuskmoonBundler.JS.VendorTest do
   defp vendor_cache_path(path) do
     Path.join(vendor_cache_dir(), path)
   end
+
+  describe "request_specifier?/1" do
+    test "accepts bare package specifiers and cache chunks" do
+      for specifier <- [
+            "vue",
+            "phoenix_html",
+            "@vue/runtime-core",
+            "lodash/fp.js",
+            "@scope/pkg/dist/index.mjs",
+            "chunks/shared-AbC123"
+          ] do
+        assert DuskmoonBundler.JS.Vendor.request_specifier?(specifier), specifier
+      end
+    end
+
+    test "rejects traversal, absolute and malformed specifiers" do
+      for specifier <- [
+            "",
+            ".",
+            "..",
+            "../lib/secret",
+            "pkg/../../secret",
+            "pkg/./x",
+            "pkg//x",
+            "/etc/passwd",
+            "@scope",
+            "@/pkg",
+            "@scope/..",
+            ".hidden",
+            "C:\\windows",
+            "pkg\\..\\x",
+            "pkg/x\0",
+            "chunks/../../secret",
+            "chunks/",
+            "chunks//x"
+          ] do
+        refute DuskmoonBundler.JS.Vendor.request_specifier?(specifier), inspect(specifier)
+      end
+    end
+  end
 end

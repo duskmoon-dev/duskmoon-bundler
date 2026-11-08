@@ -146,10 +146,97 @@ defmodule DuskmoonBundler.HMR.BoundaryTest do
                Boundary.find_boundary("/app/Button.tsx", read)
     end
 
+    test "graph propagation full-reloads when any importer path reaches an entry" do
+      graph_module("/app/util.ts", [])
+      graph_module("/app/Accepting.vue", ["/app/util.ts"])
+      graph_module("/app/Plain.ts", ["/app/util.ts"])
+      graph_module("/app/main.ts", ["/app/Accepting.vue", "/app/Plain.ts"])
+
+      read = fn
+        "/app/Accepting.vue" -> "import './util'\nimport.meta.hot.accept()"
+        _ -> "export const x = 1"
+      end
+
+      assert :full_reload = Boundary.find_boundary("/app/util.ts", read)
+      assert :full_reload = Boundary.find_boundaries("/app/util.ts", read)
+    end
+
+    test "graph propagation collects every boundary" do
+      graph_module("/app/util.ts", [])
+      graph_module("/app/A.ts", ["/app/util.ts"])
+      graph_module("/app/B.ts", ["/app/util.ts"])
+      graph_module("/app/main.ts", ["/app/A.ts", "/app/B.ts"])
+
+      read = fn
+        path when path in ["/app/A.ts", "/app/B.ts"] -> "import.meta.hot.accept()"
+        _ -> "export const x = 1"
+      end
+
+      assert {:ok, boundaries} = Boundary.find_boundaries("/app/util.ts", read)
+      assert Enum.sort(boundaries) == ["/app/A.ts", "/app/B.ts"]
+      assert :full_reload = Boundary.find_boundary("/app/util.ts", read)
+    end
+
+    test "fallback propagation full-reloads when any importer path reaches an entry" do
+      DuskmoonBundler.HMR.ImportGraph.update("/app/Accepting.ts", ["./util"])
+      DuskmoonBundler.HMR.ImportGraph.update("/app/Plain.ts", ["./util"])
+      DuskmoonBundler.HMR.ImportGraph.update("/app/main.ts", ["./Accepting", "./Plain"])
+
+      read = fn
+        "/app/Accepting.ts" -> "import './util'\nimport.meta.hot.accept()"
+        _ -> "export const x = 1"
+      end
+
+      assert :full_reload = Boundary.find_boundaries("/app/util.ts", read)
+    end
+
+    test "fallback propagation collects every boundary" do
+      DuskmoonBundler.HMR.ImportGraph.update("/app/A.ts", ["./util"])
+      DuskmoonBundler.HMR.ImportGraph.update("/app/B.ts", ["./util.ts"])
+
+      read = fn
+        path when path in ["/app/A.ts", "/app/B.ts"] -> "import.meta.hot.accept()"
+        _ -> "export const x = 1"
+      end
+
+      assert {:ok, boundaries} = Boundary.find_boundaries("/app/util.ts", read)
+      assert Enum.sort(boundaries) == ["/app/A.ts", "/app/B.ts"]
+    end
+
+    test "fallback importer lookup resolves full paths, not basenames" do
+      DuskmoonBundler.HMR.ImportGraph.update("/app/main.ts", ["./b/index"])
+      DuskmoonBundler.HMR.ImportGraph.update("/app/lib.ts", ["lib/index", "@/a/index"])
+
+      read = fn
+        path when path in ["/app/main.ts", "/app/lib.ts"] -> "import.meta.hot.accept()"
+        _ -> "export const x = 1"
+      end
+
+      assert :full_reload = Boundary.find_boundary("/app/a/index.ts", read)
+      assert {:ok, "/app/main.ts"} = Boundary.find_boundary("/app/b/index.ts", read)
+    end
+
+    test "fallback importer lookup resolves directory index and parent specifiers" do
+      DuskmoonBundler.HMR.ImportGraph.update("/app/main.ts", ["./a"])
+      DuskmoonBundler.HMR.ImportGraph.update("/app/pages/page.ts", ["../shared/util.js"])
+
+      read = fn
+        path when path in ["/app/main.ts", "/app/pages/page.ts"] -> "import.meta.hot.accept()"
+        _ -> "export const x = 1"
+      end
+
+      assert {:ok, "/app/main.ts"} = Boundary.find_boundary("/app/a/index.ts", read)
+      assert {:ok, "/app/pages/page.ts"} = Boundary.find_boundary("/app/shared/util.ts", read)
+    end
+
     test "returns :full_reload when file doesn't exist" do
       read = fn _path -> nil end
 
       assert :full_reload = Boundary.find_boundary("/app/missing.ts", read)
     end
+  end
+
+  defp graph_module(file, imports) do
+    DuskmoonBundler.HMR.ModuleGraph.update_module(file, file, file, imports)
   end
 end
