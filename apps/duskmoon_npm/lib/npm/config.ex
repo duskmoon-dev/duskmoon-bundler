@@ -20,16 +20,39 @@ defmodule NPM.Config do
     |> normalize_registry_url()
   end
 
+  @default_registry "https://registry.npmjs.org"
+
   @doc """
   Read the auth token for the configured registry.
 
   Priority: `NPM_TOKEN` env var > `config :duskmoon_npm, :token` > registry-matched project `.npmrc` > registry-matched home `.npmrc`.
+
+  The `NPM_TOKEN` / `:token` values are only returned when `registry_url` has
+  the same origin as `https://registry.npmjs.org` or as a registry configured
+  through `NPM_REGISTRY` / `config :duskmoon_npm, :registry` (never through
+  `.npmrc`, which a checked-out repository can control). Other registries only
+  receive `.npmrc` tokens keyed to their own host (`//host/path/:_authToken`).
   """
   @spec auth_token(String.t()) :: String.t() | nil
   def auth_token(registry_url \\ registry()) do
-    System.get_env("NPM_TOKEN") ||
-      Application.get_env(:duskmoon_npm, :token) ||
-      read_npmrc_auth_token(registry_url)
+    global_token =
+      if trusted_token_registry?(registry_url),
+        do: System.get_env("NPM_TOKEN") || Application.get_env(:duskmoon_npm, :token)
+
+    global_token || read_npmrc_auth_token(registry_url)
+  end
+
+  defp trusted_token_registry?(registry_url) do
+    origin = NPM.Security.RegistryPolicy.origin(registry_url)
+
+    origin != nil and
+      [
+        @default_registry,
+        System.get_env("NPM_REGISTRY"),
+        Application.get_env(:duskmoon_npm, :registry)
+      ]
+      |> Enum.map(&NPM.Security.RegistryPolicy.origin/1)
+      |> Enum.member?(origin)
   end
 
   @doc "Read the async resolver prefetch timeout in milliseconds."

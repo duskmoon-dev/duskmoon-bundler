@@ -17,58 +17,118 @@ defmodule NPM.Cache do
     NPM.Config.cache_dir()
   end
 
-  @doc "Path to a specific package version in the cache."
+  @doc """
+  Path to a specific package version in the cache.
+
+  Raises `ArgumentError` when the name or version is not safe to use as a
+  cache path (see `validate_package/2`).
+  """
   @spec package_dir(String.t(), String.t()) :: String.t()
   def package_dir(name, version) do
-    Path.join([dir(), "cache", name, version])
+    case validate_package(name, version) do
+      :ok -> contained_package_dir!(name, version)
+      {:error, reason} -> raise ArgumentError, "unsafe cache entry: #{inspect(reason)}"
+    end
   end
+
+  defp contained_package_dir!(name, version) do
+    root = Path.expand(Path.join(dir(), "cache"))
+    path = Path.expand(Path.join([root, name, version]))
+
+    if String.starts_with?(path, root <> "/") do
+      path
+    else
+      raise ArgumentError, "cache path escapes cache root: #{inspect({name, version})}"
+    end
+  end
+
+  @doc """
+  Validate that a package name and version are safe cache/install path segments.
+
+  The name must be an installable npm name and the version a strict semver.
+  """
+  @spec validate_package(term(), term()) ::
+          :ok
+          | {:error, {:invalid_package_name, term()}}
+          | {:error, {:invalid_package_version, term(), term()}}
+  def validate_package(name, version) do
+    cond do
+      not NPM.Scope.installable_name?(name) -> {:error, {:invalid_package_name, name}}
+      not valid_version?(version) -> {:error, {:invalid_package_version, name, version}}
+      true -> :ok
+    end
+  end
+
+  @doc "Whether `version` is a strict, untrimmed semver string."
+  @spec valid_version?(term()) :: boolean()
+  def valid_version?(version) when is_binary(version) do
+    version == String.trim(version) and match?({:ok, _}, NPMSemver.Version.parse(version))
+  end
+
+  def valid_version?(_version), do: false
 
   @doc "Check if a package version is already cached."
   @spec cached?(String.t(), String.t()) :: boolean()
   def cached?(name, version) do
-    name
-    |> package_dir(version)
-    |> cache_intact?()
+    validate_package(name, version) == :ok and cache_intact?(package_dir(name, version))
+  end
+
+  @doc """
+  Check if a package version is cached and was verified against an integrity
+  that satisfies `integrity` (see `NPM.Tarball.integrity_satisfied?/2`).
+  """
+  @spec cached?(String.t(), String.t(), String.t() | nil) :: boolean()
+  def cached?(name, version, integrity) do
+    cached?(name, version) and
+      NPM.Tarball.integrity_satisfied?(recorded_integrity(package_dir(name, version)), integrity)
   end
 
   @doc """
   Ensure a package version is in the cache.
 
-  Downloads and extracts the tarball if not already cached.
+  Downloads and extracts the tarball if not already cached. A cached copy is
+  reused only when the integrity recorded at download time satisfies
+  `integrity`; otherwise it is re-downloaded and verified.
   Returns `{:ok, cache_path}`, `{:ok, :missing_optional}` when an
   optional package fails to fetch, or `{:error, reason}`.
   """
   @spec ensure(String.t(), String.t(), String.t(), String.t(), keyword()) ::
           {:ok, String.t()} | {:ok, :missing_optional} | {:error, term()}
   def ensure(name, version, tarball_url, integrity, opts \\ []) do
-    with_lock(name, version, fn ->
-      dest = package_dir(name, version)
+    with :ok <- validate_package(name, version) do
+      with_lock(name, version, fn ->
+        ensure_locked(name, version, tarball_url, integrity, opts)
+      end)
+    end
+  end
 
-      if cached?(name, version) do
-        {:ok, dest}
-      else
-        try do
-          RegistryPolicy.validate_url!(tarball_url)
-          File.rm_rf(dest)
+  defp ensure_locked(name, version, tarball_url, integrity, opts) do
+    dest = package_dir(name, version)
 
-          case fetch_and_extract(
-                 candidate_tarball_urls(name, version, tarball_url, integrity),
-                 integrity,
-                 dest
-               ) do
-            {:ok, _count} ->
-              write_complete_marker!(dest)
-              {:ok, dest}
+    if cached?(name, version, integrity) do
+      {:ok, dest}
+    else
+      try do
+        RegistryPolicy.validate_url!(tarball_url)
+        File.rm_rf(dest)
 
-            {:error, reason} ->
-              handle_fetch_error({:fetch_failed, name, version, reason}, dest, opts)
-          end
-        rescue
-          error in RegistryPolicy.Error ->
-            handle_fetch_error(error, dest, opts)
+        case fetch_and_extract(
+               candidate_tarball_urls(name, version, tarball_url, integrity),
+               integrity,
+               dest
+             ) do
+          {:ok, _count} ->
+            write_complete_marker!(dest, integrity)
+            {:ok, dest}
+
+          {:error, reason} ->
+            handle_fetch_error({:fetch_failed, name, version, reason}, dest, opts)
         end
+      rescue
+        error in RegistryPolicy.Error ->
+          handle_fetch_error(error, dest, opts)
       end
-    end)
+    end
   end
 
   @doc false
@@ -143,8 +203,17 @@ defmodule NPM.Cache do
     {{__MODULE__, name, version}, requester}
   end
 
-  defp write_complete_marker!(dest) do
-    File.write!(Path.join(dest, @complete_marker), "1\n")
+  # The marker records the integrity the tarball was verified against so later
+  # cache hits can be checked against the integrity the caller expects.
+  defp write_complete_marker!(dest, integrity) do
+    File.write!(Path.join(dest, @complete_marker), "1\n#{integrity || ""}\n")
+  end
+
+  defp recorded_integrity(dest) do
+    case File.read(Path.join(dest, @complete_marker)) do
+      {:ok, content} -> content |> String.split("\n") |> Enum.at(1, "") |> String.trim()
+      {:error, _} -> ""
+    end
   end
 
   defp complete_marker?(dest) do

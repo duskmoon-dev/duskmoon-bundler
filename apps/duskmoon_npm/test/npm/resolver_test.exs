@@ -183,6 +183,77 @@ defmodule NPM.ResolverTest do
     NPM.Resolver.clear_cache()
   end
 
+  test "unparseable transitive ranges fail resolution naming the package and range" do
+    cache_child_versions()
+    cache_parent("parent-a", %{"child" => "not a range!"})
+
+    assert {:error, message} = NPM.Resolver.resolve(%{"parent-a" => "1.0.0"})
+    assert message =~ "parent-a@1.0.0 depends on child"
+    assert message =~ ~s("not a range!")
+  end
+
+  test "transitive npm: aliases fail resolution instead of being dropped" do
+    cache_child_versions()
+    cache_parent("parent-a", %{"child" => "npm:other@^1.0.0"})
+
+    assert {:error, message} = NPM.Resolver.resolve(%{"parent-a" => "1.0.0"})
+    assert message =~ "child"
+    assert message =~ "npm:other@^1.0.0"
+  end
+
+  test "dist-tag specs resolve to the tagged version" do
+    NPM.PackumentCache.put("child", %{
+      name: "child",
+      dist_tags: %{"latest" => "1.0.0", "next" => "2.0.0-rc.1"},
+      versions: %{
+        "1.0.0" => version_info(),
+        "2.0.0-rc.1" => version_info(),
+        "1.5.0" => version_info()
+      }
+    })
+
+    cache_parent("parent-a", %{"child" => "latest"})
+    cache_parent("parent-b", %{"child" => "next"})
+    cache_parent("parent-c", %{"child" => "beta"})
+
+    assert {:ok, %{"child" => "1.0.0"}} = NPM.Resolver.resolve(%{"parent-a" => "1.0.0"})
+    assert {:ok, %{"child" => "2.0.0-rc.1"}} = NPM.Resolver.resolve(%{"parent-b" => "1.0.0"})
+    assert {:ok, %{"child" => "1.0.0"}} = NPM.Resolver.resolve(%{"child" => "latest"})
+    assert {:error, message} = NPM.Resolver.resolve(%{"parent-c" => "1.0.0"})
+    assert message =~ ~s(dist-tag "beta")
+  end
+
+  test "a prerelease request from one dependent does not leak into stable ranges" do
+    NPM.PackumentCache.put("child", %{
+      name: "child",
+      versions: %{
+        "1.2.3" => version_info(),
+        "1.4.0" => version_info(),
+        "1.5.0-beta.1" => version_info()
+      }
+    })
+
+    cache_parent("parent-a", %{"child" => "^1.2.3"})
+    cache_parent("parent-b", %{"child" => "1.x || ^1.5.0-beta.1"})
+
+    assert {:ok, %{"child" => "1.4.0"} = resolved} =
+             NPM.Resolver.resolve(%{"parent-a" => "1.0.0", "parent-b" => "1.0.0"})
+
+    refute Map.has_key?(resolved, :nested)
+
+    assert {:ok, %{"child" => "1.5.0-beta.1"}} =
+             NPM.Resolver.resolve(%{"child" => ">=1.5.0-beta.1"})
+
+    assert {:ok, %{"child" => "1.4.0"}} = NPM.Resolver.resolve(%{"child" => "*"})
+  end
+
+  defp cache_parent(name, deps) do
+    NPM.PackumentCache.put(name, %{
+      name: name,
+      versions: %{"1.0.0" => %{version_info() | dependencies: deps}}
+    })
+  end
+
   defp owned_tables do
     :ets.all()
     |> Enum.filter(&(:ets.info(&1, :owner) == self()))

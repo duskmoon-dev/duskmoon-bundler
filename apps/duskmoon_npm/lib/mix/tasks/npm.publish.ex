@@ -91,7 +91,8 @@ defmodule Mix.Tasks.Npm.Publish do
 
       body = build_publish_body(name, version, tag, access)
 
-      case NPM.HTTPClient.put(url, body: body, headers: auth_headers(token)) do
+      # Never follow redirects with the token attached.
+      case NPM.HTTPClient.put(url, body: body, headers: auth_headers(token), redirect: false) do
         {:ok, %{status: s}} when s in [200, 201] ->
           Mix.shell().info("Published #{name}@#{version}")
           :ok

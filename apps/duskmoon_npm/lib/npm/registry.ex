@@ -132,13 +132,22 @@ defmodule NPM.Registry do
         {version_str, parse_version_info(name, version_str, info, times)}
       end
 
-    %{name: name, versions: versions}
+    %{name: name, versions: versions, dist_tags: parse_dist_tags(data)}
   end
+
+  defp parse_dist_tags(%{"dist-tags" => tags}) when is_map(tags) do
+    for {tag, version} <- tags,
+        is_binary(tag) and is_binary(version),
+        into: %{},
+        do: {tag, version}
+  end
+
+  defp parse_dist_tags(_data), do: %{}
 
   defp parse_version_info(name, version, info, times) do
     dist = Map.get(info, "dist", %{})
     tarball = Map.get(dist, "tarball", "")
-    integrity = Map.get(dist, "integrity", "")
+    integrity = dist_integrity(dist)
 
     %{
       dependencies: Map.get(info, "dependencies", %{}),
@@ -161,6 +170,19 @@ defmodule NPM.Registry do
       }
     }
   end
+
+  # Old packuments only carry a hex sha1 `shasum`; npm converts it to SRI.
+  defp dist_integrity(%{"integrity" => integrity}) when is_binary(integrity) and integrity != "",
+    do: integrity
+
+  defp dist_integrity(%{"shasum" => shasum}) when is_binary(shasum) do
+    case Base.decode16(shasum, case: :mixed) do
+      {:ok, digest} when byte_size(digest) == 20 -> "sha1-" <> Base.encode64(digest)
+      _ -> ""
+    end
+  end
+
+  defp dist_integrity(_dist), do: ""
 
   defp parse_bin(%{"bin" => bin}) when is_map(bin), do: bin
   defp parse_bin(%{"bin" => bin}) when is_binary(bin), do: %{}

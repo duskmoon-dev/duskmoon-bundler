@@ -361,7 +361,10 @@ defmodule NPM.Install.Linker do
       {:ok, content} ->
         data = NPM.JSON.decode!(content)
         pkg_dir = Path.join(node_modules_dir, name)
-        parse_bin_field(data, pkg_dir)
+
+        data
+        |> parse_bin_field(pkg_dir)
+        |> Enum.flat_map(&safe_bin_entry(&1, name, pkg_dir))
 
       {:error, _} ->
         []
@@ -369,22 +372,73 @@ defmodule NPM.Install.Linker do
   end
 
   defp parse_bin_field(%{"bin" => bin} = data, pkg_dir) when is_binary(bin) do
-    [{bin_command_name(data, pkg_dir), Path.expand(bin, pkg_dir)}]
+    [{bin_command_name(data, pkg_dir), bin}]
   end
 
-  defp parse_bin_field(%{"bin" => bin}, pkg_dir) when is_map(bin) do
-    Enum.map(bin, fn {command, path} -> {command, Path.expand(path, pkg_dir)} end)
-  end
+  defp parse_bin_field(%{"bin" => bin}, _pkg_dir) when is_map(bin), do: Map.to_list(bin)
 
-  defp parse_bin_field(%{"directories" => %{"bin" => bin_dir}}, pkg_dir) do
-    dir = Path.join(pkg_dir, bin_dir)
+  defp parse_bin_field(%{"directories" => %{"bin" => bin_dir}}, pkg_dir)
+       when is_binary(bin_dir) do
+    case contained_path(pkg_dir, bin_dir) do
+      {:ok, dir} ->
+        dir
+        |> list_dir()
+        |> Enum.map(fn file -> {Path.rootname(file), Path.join(bin_dir, file)} end)
 
-    dir
-    |> list_dir()
-    |> Enum.map(fn file -> {Path.rootname(file), Path.join(dir, file)} end)
+      :error ->
+        warn_unsafe_bin(Path.basename(pkg_dir), "directories.bin", bin_dir)
+        []
+    end
   end
 
   defp parse_bin_field(_data, _pkg_dir), do: []
+
+  # Like npm's normalize-package-bin: a command is a single path segment (the
+  # scope of `@scope/cmd` is dropped) and its target must stay inside the
+  # package directory. Unsafe entries are skipped with a warning.
+  defp safe_bin_entry({command, target}, name, pkg_dir) do
+    with {:ok, command} <- safe_bin_command(command),
+         true <- is_binary(target),
+         {:ok, target_path} <- contained_path(pkg_dir, target),
+         false <- symlink?(target_path) do
+      [{command, target_path}]
+    else
+      _ ->
+        warn_unsafe_bin(name, command, target)
+        []
+    end
+  end
+
+  defp safe_bin_command(command) when is_binary(command) do
+    command =
+      case String.split(command, "/") do
+        ["@" <> _scope, bare] -> bare
+        _ -> command
+      end
+
+    if command in ["", ".", ".."] or String.contains?(command, ["/", "\\", <<0>>]),
+      do: :error,
+      else: {:ok, command}
+  end
+
+  defp safe_bin_command(_command), do: :error
+
+  defp contained_path(pkg_dir, relative) do
+    root = Path.expand(pkg_dir)
+    path = Path.expand(relative, root)
+
+    if not String.contains?(relative, <<0>>) and String.starts_with?(path, root <> "/"),
+      do: {:ok, path},
+      else: :error
+  end
+
+  defp symlink?(path), do: match?({:ok, %File.Stat{type: :symlink}}, File.lstat(path))
+
+  defp warn_unsafe_bin(name, command, target) do
+    Mix.shell().error(
+      "warning: skipping unsafe bin #{inspect(command)} -> #{inspect(target)} in #{name}"
+    )
+  end
 
   defp bin_command_name(%{"name" => name}, _pkg_dir) do
     case String.split(name, "/") do

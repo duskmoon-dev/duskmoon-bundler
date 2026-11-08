@@ -1,10 +1,27 @@
+defmodule NPM.Lockfile.InvalidEntryError do
+  @moduledoc "Raised when a lockfile entry has an unsafe package name, location, or version."
+  defexception [:location, :reason]
+
+  @impl true
+  def message(%{location: location, reason: reason}),
+    do: "invalid lockfile entry #{inspect(location)}: #{inspect(reason)}"
+end
+
 defmodule NPM.Lockfile do
   @moduledoc """
   Read and write npm `package-lock.json` lockfiles.
 
   The lockfile records resolved versions, integrity hashes, and dependency
   relationships to ensure reproducible installs.
+
+  Entries are validated while reading: package names must be installable npm
+  names and versions strict semver, because both become filesystem paths.
+  `read/1`, `read_nested/1`, `migrate_legacy/2` and `all_package_names/1`
+  return `{:error, {:invalid_lockfile_entry, location, reason}}` for unsafe
+  entries; `parse/1` and `parse_packages/1` raise `NPM.Lockfile.InvalidEntryError`.
   """
+
+  alias NPM.Lockfile.InvalidEntryError
 
   alias NPM.Config
   alias NPM.Security.RegistryPolicy
@@ -54,6 +71,10 @@ defmodule NPM.Lockfile do
   @doc false
   @spec read_nested(String.t()) :: {:ok, %{String.t() => entry()}} | {:error, term()}
   def read_nested(path \\ @default_path) do
+    with_valid_entries(fn -> read_nested_json(path) end)
+  end
+
+  defp read_nested_json(path) do
     case read_json(path) do
       {:ok, %{"packages" => packages} = data} when is_map(packages) ->
         if package_lock?(data, packages) do
@@ -81,7 +102,10 @@ defmodule NPM.Lockfile do
   @spec migrate_legacy(String.t(), String.t()) :: {:ok, t()} | {:error, term()}
   def migrate_legacy(legacy_path \\ @legacy_path, target_path \\ @default_path) do
     with {:ok, data} <- read_json(legacy_path),
-         lockfile <- parse_legacy_packages(Map.get(data, "packages", %{})),
+         {:ok, lockfile} <-
+           with_valid_entries(fn ->
+             {:ok, parse_legacy_packages(Map.get(data, "packages", %{}))}
+           end),
          policy <- lockfile_policy(data),
          :ok <- write_package_lock(lockfile, target_path, policy) do
       {:ok, lockfile}
@@ -92,14 +116,29 @@ defmodule NPM.Lockfile do
     case File.read(path) do
       {:ok, content} ->
         data = NPM.JSON.decode!(content)
-        lockfile = parse_data(data)
-        {:ok, lockfile}
+        with_valid_entries(fn -> {:ok, parse_data(data)} end)
 
       {:error, :enoent} ->
         {:ok, %{}}
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp with_valid_entries(fun) do
+    fun.()
+  rescue
+    error in InvalidEntryError ->
+      {:error, {:invalid_lockfile_entry, error.location, error.reason}}
+  end
+
+  # Names and versions become cache and node_modules paths, so reject anything
+  # that is not an installable npm name or a strict semver version.
+  defp validate_entry!(location, name, entry) do
+    case NPM.Cache.validate_package(name, entry.version) do
+      :ok -> entry
+      {:error, reason} -> raise InvalidEntryError, location: location, reason: reason
     end
   end
 
@@ -290,9 +329,9 @@ defmodule NPM.Lockfile do
     case read_json(@default_path) do
       {:ok, %{"lockfileVersion" => version, "packages" => packages} = data}
       when version in [2, 3] and is_map(packages) ->
-        with {:ok, manifests} <- NPM.Workspace.manifests(".") do
-          updated = sync_package_metadata(data, manifests)
-
+        with {:ok, manifests} <- NPM.Workspace.manifests("."),
+             {:ok, updated} <-
+               with_valid_entries(fn -> {:ok, sync_package_metadata(data, manifests)} end) do
           cond do
             updated == data -> :ok
             opts[:frozen] -> {:error, :frozen_lockfile}
@@ -410,14 +449,14 @@ defmodule NPM.Lockfile do
   defp parse_legacy_packages(packages) do
     for {name, info} <- packages, into: %{} do
       {name,
-       %{
+       validate_entry!(name, name, %{
          version: Map.get(info, "version", ""),
          integrity: Map.get(info, "integrity", ""),
          tarball: Map.get(info, "tarball", ""),
          dependencies: Map.get(info, "dependencies", %{}),
          optional_dependencies: optional_dependencies(info),
          has_install_script: has_install_script?(info)
-       }}
+       })}
     end
   end
 
@@ -426,7 +465,7 @@ defmodule NPM.Lockfile do
     |> Enum.flat_map(fn {location, info} ->
       with false <- Map.get(info, "link") == true,
            {:ok, name} <- package_name_from_location(location) do
-        [{name, package_lock_entry_from_info(info)}]
+        [{name, validate_entry!(location, name, package_lock_entry_from_info(info))}]
       else
         _ -> []
       end
@@ -442,7 +481,9 @@ defmodule NPM.Lockfile do
           {:cont, {:ok, acc}}
 
         match?({:ok, _name}, nested_package_name(location)) ->
-          {:cont, {:ok, Map.put(acc, location, package_lock_entry_from_info(info))}}
+          {:ok, name} = nested_package_name(location)
+          entry = validate_entry!(location, name, package_lock_entry_from_info(info))
+          {:cont, {:ok, Map.put(acc, location, entry)}}
 
         true ->
           {:halt, {:error, {:invalid_nested_package_location, location}}}
@@ -518,14 +559,14 @@ defmodule NPM.Lockfile do
   defp parse_legacy_dependencies(deps) do
     Map.new(deps, fn {name, info} ->
       {name,
-       %{
+       validate_entry!(name, name, %{
          version: Map.get(info, "version", ""),
          integrity: Map.get(info, "integrity", ""),
          tarball: Map.get(info, "resolved", ""),
          dependencies: Map.get(info, "requires", %{}),
          optional_dependencies: optional_dependencies(info),
          has_install_script: has_install_script?(info)
-       }}
+       })}
     end)
   end
 
@@ -582,6 +623,10 @@ defmodule NPM.Lockfile do
   @doc false
   @spec all_package_names(String.t()) :: {:ok, [String.t()]} | {:error, term()}
   def all_package_names(path \\ @default_path) do
+    with_valid_entries(fn -> read_all_package_names(path) end)
+  end
+
+  defp read_all_package_names(path) do
     case read_json(path) do
       {:ok, %{"packages" => packages} = data} when is_map(packages) ->
         names =
@@ -734,11 +779,31 @@ defmodule NPM.Lockfile do
   defp package_location?("node_modules/" <> _), do: true
   defp package_location?(_), do: false
 
-  defp package_name_from_location("node_modules/" <> rest) do
-    case String.split(rest, "/") do
-      ["@" <> _ = scope, package] -> {:ok, "#{scope}/#{package}"}
-      [package] when package != "" -> {:ok, package}
-      _ -> :error
+  # Top-level `node_modules/<name>` locations yield a name; deeper (nested)
+  # locations return :error and are handled by `read_nested/1`. Locations with
+  # traversal or malformed segments are rejected outright.
+  defp package_name_from_location("node_modules/" <> rest = location) do
+    segments = String.split(rest, "/")
+
+    name =
+      case segments do
+        ["@" <> _ = scope, package] -> "#{scope}/#{package}"
+        [package] -> package
+        _ -> nil
+      end
+
+    cond do
+      Enum.any?(segments, &unsafe_location_segment?/1) ->
+        raise InvalidEntryError, location: location, reason: :unsafe_location
+
+      is_nil(name) ->
+        :error
+
+      NPM.Scope.installable_name?(name) ->
+        {:ok, name}
+
+      true ->
+        raise InvalidEntryError, location: location, reason: {:invalid_package_name, name}
     end
   end
 
@@ -760,6 +825,10 @@ defmodule NPM.Lockfile do
   defp package_name_from_any_location(location) do
     segments = String.split(location, "/")
 
+    if "node_modules" in segments and Enum.any?(segments, &unsafe_location_segment?/1) do
+      raise InvalidEntryError, location: location, reason: :unsafe_location
+    end
+
     segments
     |> Enum.with_index()
     |> Enum.filter(fn {segment, _index} -> segment == "node_modules" end)
@@ -771,10 +840,21 @@ defmodule NPM.Lockfile do
   end
 
   defp package_name_from_segments(["@" <> _ = scope, package | _]),
-    do: {:ok, "#{scope}/#{package}"}
+    do: installable_name("#{scope}/#{package}")
 
-  defp package_name_from_segments([package | _]) when package != "", do: {:ok, package}
+  defp package_name_from_segments([package | _]) when package != "",
+    do: installable_name(package)
+
   defp package_name_from_segments(_), do: :error
+
+  defp installable_name(name) do
+    if NPM.Scope.installable_name?(name),
+      do: {:ok, name},
+      else: raise(InvalidEntryError, location: name, reason: {:invalid_package_name, name})
+  end
+
+  defp unsafe_location_segment?(segment),
+    do: segment in ["", ".", ".."] or String.contains?(segment, ["\\", <<0>>])
 
   defp optional_dependencies(info) do
     Map.get(info, "optionalDependencies") || Map.get(info, "optional_dependencies", %{})

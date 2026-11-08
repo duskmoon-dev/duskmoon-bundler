@@ -2,7 +2,7 @@ defmodule NPM.Tarball do
   @moduledoc """
   Download and extract npm package tarballs.
 
-  Verifies SHA-512 integrity and extracts contents to disk.
+  Verifies SRI integrity and extracts contents to disk.
   """
 
   @max_retries 3
@@ -23,7 +23,7 @@ defmodule NPM.Tarball do
   defp fetch_and_extract(tarball_url, integrity, dest_dir, retries_left) do
     case fetch(tarball_url) do
       {:ok, %{status: 200, body: body}} ->
-        with :ok <- verify_integrity(body, integrity) do
+        with :ok <- maybe_verify_integrity(body, integrity, tarball_url) do
           extract(body, dest_dir)
         end
 
@@ -64,28 +64,91 @@ defmodule NPM.Tarball do
     fetch_and_extract(tarball_url, integrity, dest_dir, retries_left - 1)
   end
 
+  # npm installs entries without a recorded integrity (old lockfiles, legacy
+  # packuments) without verification; mirror that, but warn. A present but
+  # unusable integrity string is an error.
+  defp maybe_verify_integrity(_body, integrity, tarball_url) when integrity in [nil, ""] do
+    Mix.shell().error("warning: no integrity recorded for #{tarball_url}; skipping verification")
+    :ok
+  end
+
+  defp maybe_verify_integrity(body, integrity, _tarball_url),
+    do: verify_integrity(body, integrity)
+
   defp retry_delay_ms(retries_left), do: 1000 * (@max_retries - retries_left + 1)
 
-  @doc "Verify SHA-512 integrity of a binary against an SRI hash."
-  @spec verify_integrity(binary(), String.t()) :: :ok | {:error, :integrity_mismatch}
-  def verify_integrity(_body, ""), do: :ok
+  @supported_algorithms [
+    {"sha512", :sha512},
+    {"sha384", :sha384},
+    {"sha256", :sha256},
+    {"sha1", :sha}
+  ]
 
-  def verify_integrity(body, "sha512-" <> expected_b64) do
-    actual = :crypto.hash(:sha512, body) |> Base.encode64()
-    if actual == expected_b64, do: :ok, else: {:error, :integrity_mismatch}
+  @doc """
+  Verify a binary against an SRI integrity string.
+
+  Follows npm/ssri semantics: the string may hold several space-separated
+  hashes, and only the strongest supported algorithm present is checked (any
+  hash of that algorithm may match). Empty, malformed, or unsupported-only
+  integrity strings are rejected with `{:error, :invalid_integrity}`.
+  """
+  @spec verify_integrity(binary(), String.t() | nil) ::
+          :ok | {:error, :integrity_mismatch | :invalid_integrity}
+  def verify_integrity(body, integrity) do
+    case strongest_hashes(integrity) do
+      {:ok, algorithm, expected} ->
+        actual = :crypto.hash(algorithm, body) |> Base.encode64()
+        if actual in expected, do: :ok, else: {:error, :integrity_mismatch}
+
+      :error ->
+        {:error, :invalid_integrity}
+    end
   end
 
-  def verify_integrity(body, "sha256-" <> expected_b64) do
-    actual = :crypto.hash(:sha256, body) |> Base.encode64()
-    if actual == expected_b64, do: :ok, else: {:error, :integrity_mismatch}
+  @doc """
+  Whether a previously verified integrity string satisfies an expected one.
+
+  A missing expectation is always satisfied. Otherwise `recorded` must contain
+  one of the expected digests for the strongest algorithm in `expected`.
+  """
+  @spec integrity_satisfied?(String.t() | nil, String.t() | nil) :: boolean()
+  def integrity_satisfied?(_recorded, expected) when expected in [nil, ""], do: true
+
+  def integrity_satisfied?(recorded, expected) do
+    with {:ok, algorithm, expected_digests} <- strongest_hashes(expected),
+         recorded_digests when recorded_digests != [] <- digests(recorded, algorithm) do
+      Enum.any?(recorded_digests, &(&1 in expected_digests))
+    else
+      _ -> false
+    end
   end
 
-  def verify_integrity(body, "sha1-" <> expected_b64) do
-    actual = :crypto.hash(:sha, body) |> Base.encode64()
-    if actual == expected_b64, do: :ok, else: {:error, :integrity_mismatch}
+  defp strongest_hashes(integrity) when is_binary(integrity) do
+    Enum.find_value(@supported_algorithms, :error, fn {_name, algorithm} ->
+      case digests(integrity, algorithm) do
+        [] -> nil
+        digests -> {:ok, algorithm, digests}
+      end
+    end)
   end
 
-  def verify_integrity(_body, _unknown), do: :ok
+  defp strongest_hashes(_integrity), do: :error
+
+  defp digests(integrity, algorithm) when is_binary(integrity) do
+    {name, ^algorithm} = List.keyfind(@supported_algorithms, algorithm, 1)
+
+    integrity
+    |> String.split()
+    |> Enum.flat_map(fn hash ->
+      case String.split(hash, "-", parts: 2) do
+        [^name, digest] -> digest |> String.split("?", parts: 2) |> hd() |> List.wrap()
+        _ -> []
+      end
+    end)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp digests(_integrity, _algorithm), do: []
 
   @doc """
   Extract a `.tgz` tarball into a destination directory.
@@ -186,7 +249,7 @@ defmodule NPM.Tarball do
   defp maybe_apply_mode(full_path, original_path, modes) do
     case Map.get(modes, original_path) do
       mode when is_integer(mode) and :erlang.band(mode, 0o111) != 0 ->
-        File.chmod(full_path, :erlang.band(mode, 0o7777))
+        File.chmod(full_path, :erlang.band(mode, 0o777))
 
       _ ->
         :ok

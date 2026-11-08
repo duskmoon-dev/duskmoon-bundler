@@ -68,6 +68,29 @@ defmodule NPM.Scope do
   end
 
   @doc """
+  Checks whether a package name is safe to use as an install path.
+
+  Accepts npm names including legacy ones (uppercase letters and the URL-safe
+  punctuation npm historically allowed) but rejects anything that is not a
+  single path segment (or `@scope/name`), such as `.`, `..`, empty segments,
+  separators, or names starting with `.` or `_`.
+  """
+  @spec installable_name?(term()) :: boolean()
+  def installable_name?(name) when is_binary(name) and byte_size(name) <= 214 do
+    case String.split(name, "/") do
+      ["@" <> scope, bare] -> installable_segment?(scope) and installable_segment?(bare)
+      [bare] -> installable_segment?(bare)
+      _ -> false
+    end
+  end
+
+  def installable_name?(_name), do: false
+
+  defp installable_segment?(segment) do
+    Regex.match?(~r/^[A-Za-z0-9~!*'()-][A-Za-z0-9._~!*'()-]*\z/, segment)
+  end
+
+  @doc """
   Lists all unique scopes found in a set of package names.
   """
   @spec unique_scopes([String.t()]) :: [String.t()]

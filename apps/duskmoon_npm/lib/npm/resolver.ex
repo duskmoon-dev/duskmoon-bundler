@@ -24,8 +24,25 @@ defmodule NPM.Resolver do
     end
   end
 
+  defmodule SpecError do
+    @moduledoc "Raised when a dependency spec cannot be turned into a registry constraint."
+
+    defexception [:package, :version, :dependency, :spec, :reason]
+
+    @impl true
+    def message(%__MODULE__{package: nil} = error) do
+      "#{error.dependency}: #{inspect(error.spec)} #{error.reason}"
+    end
+
+    def message(%__MODULE__{} = error) do
+      "#{error.package}@#{error.version} depends on #{error.dependency}: " <>
+        "#{inspect(error.spec)} #{error.reason}"
+    end
+  end
+
   @cache_key {__MODULE__, :cache}
   @original_deps_key {__MODULE__, :original_deps}
+  @dist_tag_regex ~r/^[A-Za-z][A-Za-z0-9._-]*$/
   @max_nesting_depth 128
   @max_prefetch_depth 10
   @prefetch_concurrency 16
@@ -77,7 +94,7 @@ defmodule NPM.Resolver do
 
       result
     rescue
-      error in [ExoticDeps.Error, PrefetchError, RegistryPolicy.Error] ->
+      error in [ExoticDeps.Error, PrefetchError, RegistryPolicy.Error, SpecError] ->
         {:error, Exception.message(error)}
     after
       :ets.delete(table)
@@ -154,19 +171,8 @@ defmodule NPM.Resolver do
   end
 
   defp build_dependencies(root_deps) do
-    Enum.map(root_deps, fn {name, range} ->
-      track_prerelease_requirement(name, range)
-      {:ok, constraint} = normalize_range(range)
-
-      %{
-        repo: nil,
-        name: name,
-        constraint: constraint,
-        optional: false,
-        label: name,
-        dependencies: []
-      }
-    end)
+    ensure_packuments!(Map.keys(root_deps))
+    Enum.map(root_deps, fn {name, range} -> to_solver_dep({name, range, false}, nil) end)
   end
 
   defp run_solver(dependencies, excluded) do
@@ -414,31 +420,30 @@ defmodule NPM.Resolver do
 
   defp prefetch_error_message(reason), do: Exception.message(%PrefetchError{reason: reason})
 
+  # Prerelease versions are always candidates; each requirement's constraint
+  # excludes the prereleases npm semantics would not let it match.
   defp parse_sorted_versions(packument) do
-    include_prerelease? = prerelease_requested?(packument.name)
-    key = {:__sorted_versions__, packument.name, include_prerelease?}
+    key = {:__sorted_versions__, packument.name}
 
     case :ets.lookup(cache_table(), key) do
       [{^key, versions}] ->
         versions
 
       [] ->
-        versions = do_parse_sorted_versions(packument, include_prerelease?)
+        versions = do_parse_sorted_versions(packument)
         :ets.insert(cache_table(), {key, versions})
         versions
     end
   end
 
-  defp do_parse_sorted_versions(packument, include_prerelease?) do
+  defp do_parse_sorted_versions(packument) do
     packument.versions
     |> Enum.reject(fn {version_str, info} ->
       exotic_candidate?(packument.name, version_str, info)
     end)
     |> Enum.flat_map(fn {v, _info} ->
       case Version.parse(v) do
-        {:ok, %Version{pre: []} = version} -> [version]
-        {:ok, version} when include_prerelease? -> [version]
-        {:ok, _version} -> []
+        {:ok, version} -> [version]
         :error -> []
       end
     end)
@@ -466,6 +471,7 @@ defmodule NPM.Resolver do
         deps =
           info
           |> solver_dependencies(package, excluded, overrides)
+          |> to_solver_deps({package, version_str})
 
         {:ok, deps}
     end
@@ -518,67 +524,197 @@ defmodule NPM.Resolver do
       end)
       |> Enum.map(fn {name, range} -> {name, Map.get(overrides, name, range), false} end)
 
-    (required ++ optional)
-    |> Enum.flat_map(&to_solver_dep/1)
+    required ++ optional
   end
 
-  defp to_solver_dep({name, range, optional?}) do
-    track_prerelease_requirement(name, range)
+  defp to_solver_deps(deps, parent) do
+    deps |> Enum.map(&elem(&1, 0)) |> ensure_packuments!()
+    Enum.map(deps, &to_solver_dep(&1, parent))
+  end
 
-    case normalize_range(range) do
-      {:ok, constraint} ->
-        [
-          %{
-            repo: nil,
-            name: name,
-            constraint: constraint,
-            optional: optional?,
-            label: name,
-            dependencies: []
-          }
-        ]
+  defp to_solver_dep({name, spec, optional?}, parent) do
+    %{
+      repo: nil,
+      name: name,
+      constraint: requirement_constraint!(name, spec, parent),
+      optional: optional?,
+      label: name,
+      dependencies: []
+    }
+  end
 
-      :error ->
-        []
+  defp ensure_packuments!(names) do
+    names
+    |> Enum.uniq()
+    |> Enum.reject(&cached?/1)
+    |> prefetch_packages(get_resolver_opts())
+    |> case do
+      :ok -> :ok
+      {:error, reason} -> raise PrefetchError, reason: reason
     end
   end
 
-  defp to_solver_dep({name, range}) do
-    to_solver_dep({name, range, false})
-  end
+  defp requirement_constraint!(name, spec, parent) do
+    key = {:__constraint__, name, spec}
 
-  defp normalize_range(range) when range in ["*", "", "latest"] do
-    NPMSemver.to_hex_constraint(">=0.0.0")
-  end
+    case :ets.lookup(cache_table(), key) do
+      [{^key, constraint}] ->
+        constraint
 
-  defp normalize_range(range), do: NPMSemver.to_hex_constraint(range)
-
-  defp track_prerelease_requirement(package, range) do
-    if prerelease_range?(range) do
-      :ets.insert(cache_table(), {{:__prerelease_requested__, package}, true})
+      [] ->
+        constraint = build_constraint!(name, spec, parent)
+        :ets.insert(cache_table(), {key, constraint})
+        constraint
     end
   end
 
-  defp prerelease_requested?(package) do
-    :ets.member(cache_table(), {:__prerelease_requested__, package})
-  end
+  defp build_constraint!(name, spec, parent) do
+    packument =
+      case get_cached_packument(name) do
+        {:ok, packument} -> packument
+        {:error, _} -> nil
+      end
 
-  defp prerelease_range?(range) when is_binary(range) do
-    case NPMSemver.parse_range(range) do
-      {:ok, %NPMSemver.Range{sets: sets}} ->
-        Enum.any?(sets, fn comparators ->
-          Enum.any?(comparators, fn
-            {:lt, %NPMSemver.Version{pre: [0]}} -> false
-            {_operator, %NPMSemver.Version{pre: prerelease}} -> prerelease != []
-          end)
-        end)
+    range_string = effective_range!(name, spec, packument, parent)
 
-      :error ->
-        false
+    with {:ok, range} <- NPMSemver.parse_range(range_string),
+         {:ok, constraint} <- NPMSemver.to_hex_constraint(range_string) do
+      exclude_disallowed_prereleases(constraint, range, packument)
+    else
+      :error -> raise_spec_error!(name, spec, parent, "is not a valid semver range or dist-tag")
     end
   end
 
-  defp prerelease_range?(_range), do: false
+  defp effective_range!(name, spec, packument, parent) when is_binary(spec) do
+    trimmed = String.trim(spec)
+
+    cond do
+      match?({:ok, _}, NPMSemver.parse_range(trimmed)) ->
+        trimmed
+
+      String.starts_with?(trimmed, "npm:") ->
+        raise_spec_error!(name, spec, parent, "uses an npm: alias, which is not supported here")
+
+      Regex.match?(@dist_tag_regex, trimmed) ->
+        dist_tag_version!(name, spec, trimmed, packument, parent)
+
+      true ->
+        raise_spec_error!(name, spec, parent, "is not a valid semver range or dist-tag")
+    end
+  end
+
+  defp effective_range!(name, spec, _packument, parent) do
+    raise_spec_error!(name, spec, parent, "is not a valid semver range or dist-tag")
+  end
+
+  defp dist_tag_version!(name, spec, tag, packument, parent) do
+    case packument_dist_tags(packument) do
+      # The packument carries no dist-tag data at all, so `latest` falls back to
+      # the highest stable version, which is what the registry's `latest` tag
+      # points to unless a publisher retargeted it.
+      nil when tag == "latest" ->
+        "*"
+
+      nil ->
+        raise_spec_error!(name, spec, parent, "names a dist-tag but no dist-tags are available")
+
+      tags ->
+        case Map.get(tags, tag) do
+          version when is_binary(version) and is_map_key(packument.versions, version) ->
+            version
+
+          nil ->
+            raise_spec_error!(
+              name,
+              spec,
+              parent,
+              "names dist-tag #{inspect(tag)}, which is not published"
+            )
+
+          version ->
+            raise_spec_error!(
+              name,
+              spec,
+              parent,
+              "names dist-tag #{inspect(tag)}, which points to unknown version #{inspect(version)}"
+            )
+        end
+    end
+  end
+
+  defp packument_dist_tags(%{dist_tags: tags}) when is_map(tags) and map_size(tags) > 0, do: tags
+  defp packument_dist_tags(%{"dist-tags" => tags}) when is_map(tags), do: tags
+  defp packument_dist_tags(_packument), do: nil
+
+  defp raise_spec_error!(name, spec, {package, version}, reason) do
+    raise SpecError,
+      package: package,
+      version: version,
+      dependency: name,
+      spec: spec,
+      reason: reason
+  end
+
+  defp raise_spec_error!(name, spec, nil, reason) do
+    raise SpecError, dependency: name, spec: spec, reason: reason
+  end
+
+  # npm (includePrerelease=false): a prerelease satisfies a range only when the
+  # same comparator set names a prerelease on the same [major, minor, patch].
+  # hex_solver ranges have no such rule, so carve the disallowed prereleases
+  # found in the packument out of this requirement's constraint.
+  defp exclude_disallowed_prereleases(constraint, _range, nil), do: constraint
+
+  defp exclude_disallowed_prereleases(constraint, range, packument) do
+    prerelease_tuples = prerelease_tuples(range)
+
+    packument.versions
+    |> Map.keys()
+    |> Enum.flat_map(&disallowed_prerelease(&1, range))
+    |> Enum.map(&prerelease_exclusion(&1, prerelease_tuples))
+    |> Enum.uniq()
+    |> case do
+      [] ->
+        constraint
+
+      exclusions ->
+        excluded = exclusions |> Enum.map(&HexSolver.parse_constraint!/1) |> union_constraints()
+        HexSolver.Constraint.difference(constraint, excluded)
+    end
+  end
+
+  defp disallowed_prerelease(version_str, range) do
+    with {:ok, %Version{pre: [_ | _]}} <- Version.parse(version_str),
+         {:ok, version} <- NPMSemver.parse_version(version_str),
+         true <- NPMSemver.Range.satisfies?(range, version, include_prerelease: true),
+         false <- NPMSemver.Range.satisfies?(range, version) do
+      [{version_str, version}]
+    else
+      _ -> []
+    end
+  end
+
+  defp prerelease_exclusion({version_str, version}, prerelease_tuples) do
+    tuple = {version.major, version.minor, version.patch}
+
+    if MapSet.member?(prerelease_tuples, tuple) do
+      "== #{version_str}"
+    else
+      release = "#{version.major}.#{version.minor}.#{version.patch}"
+      ">= #{release}-0 and < #{release}"
+    end
+  end
+
+  defp prerelease_tuples(%NPMSemver.Range{sets: sets}) do
+    for comparators <- sets,
+        {_op, %NPMSemver.Version{pre: [_ | _]} = version} <- comparators,
+        into: MapSet.new(),
+        do: {version.major, version.minor, version.patch}
+  end
+
+  defp union_constraints([first | rest]) do
+    Enum.reduce(rest, first, &HexSolver.Constraint.union(&2, &1))
+  end
 
   # --- Cache ---
 

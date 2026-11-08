@@ -28,31 +28,22 @@ defmodule Mix.Tasks.Npm.Token do
       token ->
         masked = mask_token(token)
         Mix.shell().info("Token: #{masked}")
-        Mix.shell().info("Source: #{token_source()}")
+        Mix.shell().info("Source: #{token_source(token)}")
 
         if opts[:verify], do: verify_token(token)
     end
   end
 
+  # Only tokens scoped to the configured registry are used, since `--verify`
+  # sends the token there.
   defp resolve_token do
-    NPM.Config.auth_token() || read_npmrc_token()
+    NPM.Config.auth_token()
   end
 
-  defp read_npmrc_token do
-    case File.read(".npmrc") do
-      {:ok, content} ->
-        config = NPM.Config.parse_npmrc(content)
-        config["//registry.npmjs.org/:_authToken"]
-
-      {:error, _} ->
-        nil
-    end
-  end
-
-  defp token_source do
+  defp token_source(token) do
     cond do
-      System.get_env("NPM_TOKEN") -> "NPM_TOKEN environment variable"
-      Application.get_env(:duskmoon_npm, :token) -> "application config"
+      System.get_env("NPM_TOKEN") == token -> "NPM_TOKEN environment variable"
+      Application.get_env(:duskmoon_npm, :token) == token -> "application config"
       true -> ".npmrc file"
     end
   end
@@ -66,7 +57,7 @@ defmodule Mix.Tasks.Npm.Token do
   defp verify_token(token) do
     url = "#{NPM.Registry.registry_url()}/-/whoami"
 
-    case NPM.HTTPClient.get(url, headers: [authorization: "Bearer #{token}"]) do
+    case NPM.HTTPClient.get(url, headers: [authorization: "Bearer #{token}"], redirect: false) do
       {:ok, %{status: 200, body: %{"username" => user}}} ->
         Mix.shell().info("Authenticated as: #{user}")
 
