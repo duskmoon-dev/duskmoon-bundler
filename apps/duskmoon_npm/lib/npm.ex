@@ -80,6 +80,8 @@ defmodule NPM do
 
   Ordinary and frozen installs validate each manifest from its package location,
   so workspace-local pins may coexist with different hoisted versions.
+  Ordinary installs refresh changed root and workspace package metadata without
+  re-resolving current dependencies; frozen installs reject stale metadata.
 
   ## Options
 
@@ -91,17 +93,30 @@ defmodule NPM do
   def install(opts \\ []) when is_list(opts) do
     with_root_dir(fn ->
       if opts[:frozen] do
-        with {:ok, dependencies, local_links} <- NPM.Workspace.frozen_dependencies(opts) do
+        with {:ok, dependencies, local_links} <- NPM.Workspace.frozen_dependencies(opts),
+             :ok <- NPM.Lockfile.sync_package_metadata(frozen: true) do
           if Enum.all?(dependencies, fn {_location, deps} -> deps == [] end) do
             do_install(%{}, local_links: local_links)
           else
             frozen_install(dependencies, local_links)
           end
+        else
+          {:error, :frozen_lockfile} = error ->
+            Mix.shell().error(
+              "package-lock.json contains stale root or workspace package metadata.\n" <>
+                "Run `mix npm.install` to update the lockfile."
+            )
+
+            error
+
+          error ->
+            error
         end
       else
         with {:ok, project} <- NPM.Workspace.read_all(),
-             {:ok, deps} <- NPM.Workspace.install_dependencies(project, opts) do
-          do_install(deps, Keyword.put(opts, :local_links, project.local_links))
+             {:ok, deps} <- NPM.Workspace.install_dependencies(project, opts),
+             :ok <- do_install(deps, Keyword.put(opts, :local_links, project.local_links)) do
+          NPM.Lockfile.sync_package_metadata()
         end
       end
     end)

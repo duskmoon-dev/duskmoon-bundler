@@ -13,6 +13,8 @@ defmodule NPM.Lockfile do
   @legacy_path "npm.lock"
   @npm_ex_metadata "x-npm-ex"
   @package_lock_version 3
+  @package_metadata_fields ~w(name version workspaces dependencies devDependencies optionalDependencies peerDependencies)
+  @dependency_metadata_fields ~w(dependencies devDependencies optionalDependencies peerDependencies)
 
   @type entry :: %{
           version: String.t(),
@@ -281,6 +283,100 @@ defmodule NPM.Lockfile do
         {:error, reason}
     end
   end
+
+  @doc false
+  @spec sync_package_metadata(keyword()) :: :ok | {:error, term()}
+  def sync_package_metadata(opts \\ []) do
+    case read_json(@default_path) do
+      {:ok, %{"lockfileVersion" => version, "packages" => packages} = data}
+      when version in [2, 3] and is_map(packages) ->
+        with {:ok, manifests} <- NPM.Workspace.manifests(".") do
+          updated = sync_package_metadata(data, manifests)
+
+          cond do
+            updated == data -> :ok
+            opts[:frozen] -> {:error, :frozen_lockfile}
+            true -> File.write(@default_path, NPM.JSON.encode_pretty(updated))
+          end
+        end
+
+      {:ok, _legacy} ->
+        :ok
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp sync_package_metadata(data, [%{root?: true, data: root_data} | _] = manifests) do
+    descriptors =
+      %{"" => root_package_descriptor(root_data)}
+      |> put_workspace_package_descriptors(manifests)
+
+    workspace_links =
+      for manifest <- manifests,
+          not manifest.root?,
+          name = manifest.data["name"],
+          is_binary(name) and name != "",
+          into: %{},
+          do: {relative_path(manifest.dir), "node_modules/#{name}"}
+
+    root_changed? = not package_metadata_current?(data["packages"][""], descriptors[""], "")
+
+    packages =
+      data["packages"]
+      |> Map.new(fn {location, record} ->
+        if record["link"] == true and match?({:ok, _}, package_name_from_location(location)) do
+          {Map.get(workspace_links, record["resolved"], location), record}
+        else
+          {location, record}
+        end
+      end)
+
+    packages =
+      Enum.reduce(descriptors, packages, fn {location, descriptor}, packages ->
+        previous = Map.get(packages, location, %{})
+
+        if package_metadata_current?(previous, descriptor, location) do
+          packages
+        else
+          record =
+            previous |> Map.drop(package_metadata_fields(location)) |> Map.merge(descriptor)
+
+          Map.put(packages, location, record)
+        end
+      end)
+
+    Enum.reduce(~w(name version), Map.put(data, "packages", packages), fn field, updated ->
+      if root_changed? or Map.has_key?(data, field) do
+        updated |> Map.delete(field) |> maybe_put(field, root_data[field])
+      else
+        updated
+      end
+    end)
+  end
+
+  defp package_metadata_current?(nil, _descriptor, _location), do: false
+
+  defp package_metadata_current?(previous, descriptor, location) do
+    fields = package_metadata_fields(location)
+
+    normalize = fn record ->
+      record
+      |> Map.take(fields)
+      |> Map.reject(fn {field, value} ->
+        field in @dependency_metadata_fields and value == %{}
+      end)
+    end
+
+    normalize.(previous) == normalize.(descriptor)
+  end
+
+  defp package_metadata_fields(""), do: @package_metadata_fields
+  defp package_metadata_fields(_workspace), do: @package_metadata_fields -- ["workspaces"]
 
   defp maybe_mismatch_reason(reasons, true, _message), do: reasons
   defp maybe_mismatch_reason(reasons, false, message), do: reasons ++ [message]

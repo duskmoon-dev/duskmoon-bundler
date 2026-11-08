@@ -763,6 +763,115 @@ defmodule NPM.InstallTest do
     end
   end
 
+  test "ordinary install refreshes workspace versions without changing locked registry records",
+       context do
+    {workspace, _packages} = split_workspace_fixture!(context.project_dir)
+    lock_path = Path.join(context.project_dir, "package-lock.json")
+    capture_io(fn -> assert :ok = NPM.install(frozen: true) end)
+    assert {:ok, original} = NPM.JSON.read_file(lock_path)
+
+    for {version, reinstall?} <- [{"1.1.0", false}, {"1.2.0", true}] do
+      manifest = Map.put(read_package!(workspace), "version", version)
+      write_package!(workspace, manifest)
+
+      if reinstall? do
+        File.rm_rf!(Path.join(context.project_dir, "node_modules"))
+        File.rm_rf!(Path.join(workspace, "node_modules"))
+      end
+
+      File.cd!(workspace, fn -> capture_io(fn -> assert :ok = NPM.install() end) end)
+      assert {:ok, refreshed} = NPM.JSON.read_file(lock_path)
+      assert refreshed == put_in(original, ["packages", "apps/web", "version"], version)
+
+      written = File.read!(lock_path)
+      capture_io(fn -> assert :ok = NPM.install(frozen: true) end)
+      capture_io(fn -> assert :ok = NPM.install() end)
+      assert File.read!(lock_path) == written
+    end
+  end
+
+  test "ordinary install refreshes root and workspace names while retaining registry records",
+       context do
+    {workspace, _packages} = split_workspace_fixture!(context.project_dir)
+    lock_path = Path.join(context.project_dir, "package-lock.json")
+    capture_io(fn -> assert :ok = NPM.install(frozen: true) end)
+    assert {:ok, original} = NPM.JSON.read_file(lock_path)
+
+    root =
+      Map.merge(read_package!(context.project_dir), %{
+        "name" => "renamed-root",
+        "version" => "2.0.0"
+      })
+
+    write_package!(context.project_dir, root)
+    write_package!(workspace, Map.put(read_package!(workspace), "name", "renamed-web"))
+    capture_io(fn -> assert :ok = NPM.install() end)
+    assert {:ok, refreshed} = NPM.JSON.read_file(lock_path)
+
+    assert %{"name" => "renamed-root", "version" => "2.0.0"} = refreshed
+    assert %{"name" => "renamed-root", "version" => "2.0.0"} = refreshed["packages"][""]
+    assert %{"name" => "renamed-web", "version" => "1.0.0"} = refreshed["packages"]["apps/web"]
+
+    assert %{"link" => true, "resolved" => "apps/web"} =
+             refreshed["packages"]["node_modules/renamed-web"]
+
+    refute Map.has_key?(refreshed["packages"], "node_modules/web")
+
+    for {location, record} <- Map.drop(original["packages"], ["", "apps/web", "node_modules/web"]) do
+      assert refreshed["packages"][location] == record
+    end
+
+    capture_io(fn -> assert :ok = NPM.install(frozen: true) end)
+  end
+
+  for {location, field, value} <- [
+        {"", "name", "renamed-root"},
+        {"", "version", "2.0.0"},
+        {"apps/web", "name", "renamed-web"},
+        {"apps/web", "version", "2.0.0"}
+      ] do
+    @tag location: location, field: field, value: value
+    test "frozen install rejects stale #{location} #{field} metadata without changing the lock",
+         context do
+      split_workspace_fixture!(context.project_dir)
+      package_dir = Path.join(context.project_dir, context.location)
+
+      write_package!(
+        package_dir,
+        Map.put(read_package!(package_dir), context.field, context.value)
+      )
+
+      original = File.read!("package-lock.json")
+
+      capture_io(:stderr, fn ->
+        assert {:error, :frozen_lockfile} = NPM.install(frozen: true)
+      end)
+
+      assert File.read!("package-lock.json") == original
+      refute File.exists?("node_modules")
+    end
+  end
+
+  test "metadata-only workspaces refresh ordinary locks and reject stale frozen locks", context do
+    workspace = Path.join(context.project_dir, "apps/web")
+    write_package!(context.project_dir, %{"name" => "metadata-root", "workspaces" => ["apps/*"]})
+    write_package!(workspace, %{"name" => "web", "version" => "1.0.0"})
+    assert :ok = NPM.Lockfile.write(%{})
+    original = File.read!("package-lock.json")
+    write_package!(workspace, %{"name" => "web", "version" => "2.0.0"})
+
+    capture_io(:stderr, fn ->
+      assert {:error, :frozen_lockfile} = NPM.install(frozen: true)
+    end)
+
+    assert File.read!("package-lock.json") == original
+    refute File.exists?("node_modules")
+    capture_io(fn -> assert :ok = NPM.install() end)
+    assert {:ok, document} = NPM.JSON.read_file("package-lock.json")
+    assert %{"name" => "web", "version" => "2.0.0"} = document["packages"]["apps/web"]
+    capture_io(fn -> assert :ok = NPM.install(frozen: true) end)
+  end
+
   test "adding another workspace dependency preserves valid split locked versions", context do
     {workspace, original} = split_workspace_fixture!(context.project_dir)
     put_packument!("new-neighbor", "1.0.0")
