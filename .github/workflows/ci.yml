@@ -38,4 +38,6 @@ jobs:
       - name: Redirect header regressions
         run: elixir scripts/native-url-test.exs
       - name: Cold published-native consumer with candidate download callbacks
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: elixir .github/scripts/native_download_probe.exs

@@ -49,6 +49,70 @@ defmodule ReleasePlanningTest do
            })
   end
 
+  test "release downloads alternate to the download query variant on retries" do
+    url = "https://github.com/o/r/releases/download/v1.0.0/a.tar.gz"
+    assert ReleaseSupport.http_attempt_url(url, 0) == url
+    assert ReleaseSupport.http_attempt_url(url, 1) == url <> "?download=1"
+    assert ReleaseSupport.http_attempt_url(url, 2) == url
+
+    hex = "https://repo.hex.pm/tarballs/a-1.0.0.tar"
+    assert ReleaseSupport.http_attempt_url(hex, 1) == hex
+    assert ReleaseSupport.http_attempt_url(url <> "?x=1", 1) == url <> "?x=1"
+  end
+
+  @tag :tmp_dir
+  test "http! retries transient 5xx and still fails on persistent errors", %{tmp_dir: tmp} do
+    {:ok, listener} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, {_, port}} = :inet.sockname(listener)
+    counter = :counters.new(1, [])
+
+    server =
+      spawn_link(fn ->
+        serve = fn serve ->
+          case :gen_tcp.accept(listener) do
+            {:ok, socket} ->
+              {:ok, request} = :gen_tcp.recv(socket, 0, 5_000)
+              [_, path | _] = String.split(request, " ")
+              :counters.add(counter, 1, 1)
+
+              status =
+                case {path, :counters.get(counter, 1)} do
+                  {"/flaky", n} when n < 3 -> "503 Service Unavailable"
+                  {"/flaky", _} -> "200 OK"
+                  {"/down", _} -> "504 Gateway Timeout"
+                end
+
+              :gen_tcp.send(
+                socket,
+                "HTTP/1.1 #{status}\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+              )
+
+              :gen_tcp.close(socket)
+              serve.(serve)
+
+            {:error, :closed} ->
+              :ok
+          end
+        end
+
+        serve.(serve)
+      end)
+
+    on_exit(fn ->
+      :gen_tcp.close(listener)
+      Process.exit(server, :normal)
+    end)
+
+    out = Path.join(tmp, "out")
+    origin = "http://127.0.0.1:#{port}"
+    assert ReleaseSupport.http!(origin <> "/flaky", out, retry_base_ms: 1) == out
+    assert File.read!(out) == "ok"
+
+    assert_raise RuntimeError, ~r/unexpected status 504/, fn ->
+      ReleaseSupport.http!(origin <> "/down", out, attempts: 2, retry_base_ms: 1)
+    end
+  end
+
   test "retry reuses matching output and refuses replacement" do
     assert :create = ReleaseSupport.immutable_action(nil, "sha256:a")
     assert :reuse = ReleaseSupport.immutable_action("sha256:a", "sha256:a")

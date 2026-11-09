@@ -3,8 +3,10 @@
 ## 10.1.6 - 2026-11-09
 
 - Retry native artifact URL resolution with backoff, alternating to the
-  `?download=1` release-download variant when GitHub returns a sticky 5xx for
-  one asset URL; downloaded bytes are still checksum-verified (#22).
+  `?download=1` release-download variant, and fall back to the GitHub REST
+  asset route when the release-download route returns a sticky 5xx for one
+  asset URL; downloaded bytes are still checksum-verified (#22).
+- Apply the same retry and REST fallback to release and CI artifact downloads.
 
 ## 10.1.5 - 2026-11-09
 

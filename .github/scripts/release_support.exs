@@ -154,10 +154,24 @@ defmodule ReleaseSupport do
     :ok
   end
 
-  def http!(url, output) do
-    status =
-      cmd!("curl", [
-        "--fail-with-body",
+  @http_attempts 6
+  @http_retry_base_ms 250
+
+  # GitHub's release-download route intermittently returns a 5xx that sticks to
+  # one exact asset URL (#20, #22). Retry transient failures with backoff,
+  # alternating release downloads to the `?download=1` variant, then fall back
+  # to the REST asset route; every caller still verifies the bytes by digest.
+  def http!(url, output, opts \\ []) do
+    attempts = Keyword.get(opts, :attempts, @http_attempts)
+    base_ms = Keyword.get(opts, :retry_base_ms, @http_retry_base_ms)
+    http_attempt!(url, output, 0, attempts, base_ms)
+  end
+
+  defp http_attempt!(url, output, attempt, attempts, base_ms) do
+    target = http_attempt_url(url, attempt)
+
+    {status, exit_status} =
+      System.cmd("curl", [
         "--location",
         "--silent",
         "--show-error",
@@ -165,12 +179,71 @@ defmodule ReleaseSupport do
         output,
         "--write-out",
         "%{http_code}",
-        url
+        target
       ])
 
-    if status != "200", do: raise("unexpected status #{status}: #{url}")
-    output
+    cond do
+      exit_status == 0 and status == "200" ->
+        output
+
+      (exit_status != 0 or String.starts_with?(status, "5")) and attempt + 1 < attempts ->
+        Process.sleep(base_ms * Integer.pow(2, attempt))
+        http_attempt!(url, output, attempt + 1, attempts, base_ms)
+
+      true ->
+        release_api_download!(
+          url,
+          output,
+          "unexpected status #{status} (curl exit #{exit_status}): #{target}"
+        )
+    end
   end
+
+  # The REST asset route stays available while the web route is stuck; gh uses
+  # it with the workflow token. Callers verify the downloaded digest.
+  defp release_api_download!(url, output, failure) do
+    with %URI{scheme: "https", host: "github.com", path: "/" <> path, query: nil} <-
+           URI.parse(url),
+         [owner, repo, "releases", "download", tag, name] <- String.split(path, "/") do
+      {log, status} =
+        System.cmd(
+          "gh",
+          [
+            "release",
+            "download",
+            URI.decode(tag),
+            "--repo",
+            "#{owner}/#{repo}",
+            "--pattern",
+            URI.decode(name),
+            "--output",
+            output,
+            "--clobber"
+          ],
+          stderr_to_stdout: true
+        )
+
+      if status == 0,
+        do: output,
+        else: raise("#{failure}; gh release download failed (#{status}): #{log}")
+    else
+      _ -> raise(failure)
+    end
+  end
+
+  def http_attempt_url(url, attempt) when rem(attempt, 2) == 1 do
+    case URI.parse(url) do
+      %URI{scheme: "https", host: "github.com", path: "/" <> path, query: nil} = uri ->
+        if String.contains?(path, "/releases/download/"),
+          do: URI.to_string(%{uri | query: "download=1"}),
+          else: url
+
+      _ ->
+        url
+    end
+  end
+
+  def http_attempt_url(url, _attempt), do: url
 
   def verify_public_packages!(version, sha, stage) do
     stable!(version)

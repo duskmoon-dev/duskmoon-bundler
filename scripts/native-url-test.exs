@@ -61,6 +61,21 @@ defmodule NativeURLTest do
       assert @resolver.resolve(origin <> "/sticky") == origin <> "/asset"
     end
 
+    test "#{resolver} falls back to the API asset route when the release route stays 5xx", %{
+      origin: origin
+    } do
+      assert @resolver.resolve(origin <> "/o/r/releases/download/v1.0.0/a.tar.gz", origin) ==
+               origin <> "/asset"
+    end
+
+    test "#{resolver} reports the release failure when the API has no matching asset", %{
+      origin: origin
+    } do
+      assert_raise RuntimeError, ~r/HTTP 504; GitHub API asset fallback was unavailable/, fn ->
+        @resolver.resolve(origin <> "/o/r/releases/download/v1.0.0/missing.tar.gz", origin)
+      end
+    end
+
     test "#{resolver} rejects redirects to non-HTTP schemes", %{origin: origin} do
       assert_raise RuntimeError, ~r/Unsafe native artifact redirect/, fn ->
         @resolver.resolve(origin <> "/unsafe")
@@ -80,7 +95,7 @@ defmodule NativeURLTest do
         request = read_headers(socket, "")
         [_, path | _] = String.split(request, " ")
 
-        {status, headers} =
+        {status, headers, body} =
           case path do
             "/sticky" <> _ ->
               path
@@ -112,16 +127,31 @@ defmodule NativeURLTest do
             "/unavailable" ->
               {"504 Gateway Timeout", ""}
 
+            "/o/r/releases/download/" <> _ ->
+              {"504 Gateway Timeout", ""}
+
+            "/repos/o/r/releases/tags/v1.0.0" ->
+              {"200 OK", "",
+               ~s({"assets":[{"name":"a.tar.gz","url":"#{origin}/repos/o/r/releases/assets/7"}]})}
+
+            "/repos/o/r/releases/assets/7" ->
+              {"302 Found", "Location: #{origin}/asset\r\n"}
+
             "/missing" ->
               {"404 Not Found", ""}
 
             "/asset" ->
               {"200 OK", ""}
           end
+          |> case do
+            {status, headers} -> {status, headers, ""}
+            response -> response
+          end
 
         :gen_tcp.send(
           socket,
-          "HTTP/1.1 #{status}\r\n#{headers}Content-Length: 0\r\nConnection: close\r\n\r\n"
+          "HTTP/1.1 #{status}\r\n#{headers}Content-Length: #{byte_size(body)}\r\n" <>
+            "Connection: close\r\n\r\n" <> body
         )
 
         :gen_tcp.close(socket)

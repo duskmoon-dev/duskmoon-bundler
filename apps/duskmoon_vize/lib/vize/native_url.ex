@@ -4,12 +4,14 @@ defmodule Vize.NativeURL do
   # Kept in each native package so standalone Hex consumers need no new dependency.
   @base_url "https://github.com/duskmoon-dev/duskmoon-bundler/releases/download/v#{Mix.Project.config()[:version]}"
   @max_header_size 65_536
-  @max_attempts 6
+  @max_attempts 4
+  @github_api "https://api.github.com"
   @retry_base_ms 250
 
   def url(filename), do: resolve(@base_url <> "/" <> filename)
 
-  def resolve(url) do
+  # `api` is only overridden by tests; other hosts never use the API fallback.
+  def resolve(url, api \\ nil) do
     {:ok, _} = Application.ensure_all_started(:inets)
     {:ok, _} = Application.ensure_all_started(:ssl)
 
@@ -44,13 +46,15 @@ defmodule Vize.NativeURL do
     http_options =
       if proxy_auth, do: [{:proxy_auth, proxy_auth} | http_options], else: http_options
 
-    request(url, http_options, 0)
+    api = api || if(URI.parse(url).host == "github.com", do: @github_api)
+    request(url, http_options, api, 0)
   end
 
-  # GitHub's release-download route intermittently returns a sticky 5xx for one
-  # exact URL while the same asset resolves with an extra query parameter.
-  # Retry with backoff, alternating to that variant; rustler/zigler precompiled
-  # still verify the downloaded bytes against the packaged checksums.
+  # GitHub's release-download route intermittently returns a 5xx that sticks to
+  # one exact asset URL (#20, #22). Retry with backoff, alternating to the
+  # `?download=1` variant, then resolve the same immutable asset through the
+  # REST API asset route. rustler/zigler precompiled still verify the downloaded
+  # bytes against the packaged checksums.
   defp attempt_url(url, attempt) when rem(attempt, 2) == 1 do
     case URI.parse(url) do
       %URI{query: nil} = uri -> URI.to_string(%{uri | query: "download=1"})
@@ -60,54 +64,122 @@ defmodule Vize.NativeURL do
 
   defp attempt_url(url, _attempt), do: url
 
-  defp retry(url, http_options, attempt) do
-    Process.sleep(@retry_base_ms * Integer.pow(2, attempt))
-    request(url, http_options, attempt + 1)
-  end
-
-  defp request(url, http_options, attempt) do
+  defp request(url, http_options, api, attempt) do
     target_url = attempt_url(url, attempt)
 
-    response =
-      :httpc.request(
-        :head,
-        {String.to_charlist(target_url), []},
-        http_options,
-        [body_format: :binary, max_header_size: @max_header_size],
-        __MODULE__
-      )
-
-    case response do
+    case head(target_url, [], http_options) do
       {:ok, {{_, status, _}, headers, _}} when status in [301, 302, 303, 307, 308] ->
-        case List.keyfind(headers, ~c"location", 0) do
-          {_, location} ->
-            target = URI.merge(target_url, to_string(location))
-
-            if target.scheme not in ["http", "https"] or not is_nil(target.userinfo) or
-                 (URI.parse(target_url).scheme == "https" and target.scheme != "https") do
-              raise "Unsafe native artifact redirect"
-            end
-
-            URI.to_string(target)
-
-          nil ->
-            raise "Native artifact redirect has no Location header"
-        end
+        redirect_target!(target_url, headers)
 
       {:ok, {{_, 200, _}, _, _}} ->
         target_url
 
-      {:ok, {{_, status, _}, _, _}} when status >= 500 and attempt + 1 < @max_attempts ->
-        retry(url, http_options, attempt)
+      {:ok, {{_, status, _}, _, _}} when status >= 500 ->
+        retry_or_fallback(url, http_options, api, attempt, "HTTP #{status}")
 
       {:ok, {{_, status, _}, _, _}} ->
         raise "Native artifact redirect returned HTTP #{status}"
 
-      {:error, _reason} when attempt + 1 < @max_attempts ->
-        retry(url, http_options, attempt)
-
       {:error, reason} ->
-        raise "Native artifact redirect failed: #{inspect(reason)}"
+        retry_or_fallback(url, http_options, api, attempt, inspect(reason))
+    end
+  end
+
+  defp retry_or_fallback(url, http_options, api, attempt, _failure)
+       when attempt + 1 < @max_attempts do
+    Process.sleep(@retry_base_ms * Integer.pow(2, attempt))
+    request(url, http_options, api, attempt + 1)
+  end
+
+  defp retry_or_fallback(url, http_options, api, _attempt, failure) do
+    with api when is_binary(api) <- api,
+         %URI{path: path, query: nil} <- URI.parse(url),
+         [_, owner, repo, tag, name] <-
+           Regex.run(~r{\A/([^/]+)/([^/]+)/releases/download/([^/]+)/([^/]+)\z}, path || "") do
+      api_resolve(api, owner, repo, URI.decode(tag), URI.decode(name), http_options, failure)
+    else
+      _ -> raise native_failure(failure)
+    end
+  end
+
+  defp native_failure("HTTP " <> _ = failure), do: "Native artifact redirect returned #{failure}"
+  defp native_failure(failure), do: "Native artifact redirect failed: #{failure}"
+
+  defp api_resolve(api, owner, repo, tag, name, http_options, failure) do
+    release_url = "#{api}/repos/#{owner}/#{repo}/releases/tags/#{URI.encode(tag)}"
+    asset_url = release_assets(release_url, http_options) |> Map.get(name)
+
+    with asset_url when is_binary(asset_url) <- asset_url,
+         true <- String.starts_with?(asset_url, api <> "/"),
+         {:ok, {{_, status, _}, response_headers, _}} when status in [301, 302, 303, 307, 308] <-
+           head(asset_url, [{~c"accept", ~c"application/octet-stream"}], http_options) do
+      redirect_target!(asset_url, response_headers)
+    else
+      _ -> raise native_failure(failure) <> "; GitHub API asset fallback was unavailable"
+    end
+  end
+
+  # One release lookup per process keeps the unauthenticated API budget for
+  # the per-asset redirects when several NIFs fall back during one compile.
+  defp release_assets(release_url, http_options) do
+    key = {__MODULE__, :release_assets, release_url}
+
+    case :persistent_term.get(key, nil) do
+      nil ->
+        headers = [{~c"accept", ~c"application/vnd.github+json"} | api_headers()]
+
+        case :httpc.request(
+               :get,
+               {String.to_charlist(release_url), headers},
+               http_options,
+               [body_format: :binary, max_header_size: @max_header_size],
+               __MODULE__
+             ) do
+          {:ok, {{_, 200, _}, _, body}} ->
+            assets =
+              for %{"name" => name, "url" => url} <- Map.get(JSON.decode!(body), "assets", []),
+                  is_binary(name) and is_binary(url),
+                  into: %{},
+                  do: {name, url}
+
+            :persistent_term.put(key, assets)
+            assets
+
+          _ ->
+            %{}
+        end
+
+      assets ->
+        assets
+    end
+  end
+
+  defp api_headers, do: [{~c"user-agent", ~c"duskmoon-native-url"}]
+
+  defp head(url, headers, http_options) do
+    :httpc.request(
+      :head,
+      {String.to_charlist(url), headers ++ api_headers()},
+      http_options,
+      [body_format: :binary, max_header_size: @max_header_size],
+      __MODULE__
+    )
+  end
+
+  defp redirect_target!(url, headers) do
+    case List.keyfind(headers, ~c"location", 0) do
+      {_, location} ->
+        target = URI.merge(url, to_string(location))
+
+        if target.scheme not in ["http", "https"] or not is_nil(target.userinfo) or
+             (URI.parse(url).scheme == "https" and target.scheme != "https") do
+          raise "Unsafe native artifact redirect"
+        end
+
+        URI.to_string(target)
+
+      nil ->
+        raise "Native artifact redirect has no Location header"
     end
   end
 
