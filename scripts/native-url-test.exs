@@ -55,10 +55,22 @@ defmodule NativeURLTest do
       end
     end
 
+    test "#{resolver} retries a sticky 5xx through the download query variant", %{
+      origin: origin
+    } do
+      assert @resolver.resolve(origin <> "/sticky") == origin <> "/asset"
+    end
+
     test "#{resolver} rejects redirects to non-HTTP schemes", %{origin: origin} do
       assert_raise RuntimeError, ~r/Unsafe native artifact redirect/, fn ->
         @resolver.resolve(origin <> "/unsafe")
       end
+    end
+  end
+
+  test "persistent 5xx still fails after bounded retries", %{origin: origin} do
+    assert_raise RuntimeError, ~r/HTTP 504/, fn ->
+      OXC.NativeURL.resolve(origin <> "/unavailable")
     end
   end
 
@@ -70,6 +82,13 @@ defmodule NativeURLTest do
 
         {status, headers} =
           case path do
+            "/sticky" <> _ ->
+              path
+
+            _ ->
+              path |> String.split("?") |> hd()
+          end
+          |> case do
             "/expanded" ->
               {"302 Found",
                "Location: #{origin}/asset\r\nContent-Security-Policy: " <>
@@ -83,6 +102,15 @@ defmodule NativeURLTest do
 
             "/unsafe" ->
               {"302 Found", "Location: ftp://127.0.0.1/artifact\r\n"}
+
+            "/sticky" ->
+              {"504 Gateway Timeout", ""}
+
+            "/sticky?download=1" ->
+              {"302 Found", "Location: #{origin}/asset\r\n"}
+
+            "/unavailable" ->
+              {"504 Gateway Timeout", ""}
 
             "/missing" ->
               {"404 Not Found", ""}

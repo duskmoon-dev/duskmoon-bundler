@@ -4,6 +4,8 @@ defmodule Oxide.NativeURL do
   # Kept in each native package so standalone Hex consumers need no new dependency.
   @base_url "https://github.com/duskmoon-dev/duskmoon-bundler/releases/download/v#{Mix.Project.config()[:version]}"
   @max_header_size 65_536
+  @max_attempts 6
+  @retry_base_ms 250
 
   def url(filename), do: resolve(@base_url <> "/" <> filename)
 
@@ -42,14 +44,34 @@ defmodule Oxide.NativeURL do
     http_options =
       if proxy_auth, do: [{:proxy_auth, proxy_auth} | http_options], else: http_options
 
-    request(url, http_options, 3)
+    request(url, http_options, 0)
   end
 
-  defp request(url, http_options, attempts) do
+  # GitHub's release-download route intermittently returns a sticky 5xx for one
+  # exact URL while the same asset resolves with an extra query parameter.
+  # Retry with backoff, alternating to that variant; rustler/zigler precompiled
+  # still verify the downloaded bytes against the packaged checksums.
+  defp attempt_url(url, attempt) when rem(attempt, 2) == 1 do
+    case URI.parse(url) do
+      %URI{query: nil} = uri -> URI.to_string(%{uri | query: "download=1"})
+      _ -> url
+    end
+  end
+
+  defp attempt_url(url, _attempt), do: url
+
+  defp retry(url, http_options, attempt) do
+    Process.sleep(@retry_base_ms * Integer.pow(2, attempt))
+    request(url, http_options, attempt + 1)
+  end
+
+  defp request(url, http_options, attempt) do
+    target_url = attempt_url(url, attempt)
+
     response =
       :httpc.request(
         :head,
-        {String.to_charlist(url), []},
+        {String.to_charlist(target_url), []},
         http_options,
         [body_format: :binary, max_header_size: @max_header_size],
         __MODULE__
@@ -59,10 +81,10 @@ defmodule Oxide.NativeURL do
       {:ok, {{_, status, _}, headers, _}} when status in [301, 302, 303, 307, 308] ->
         case List.keyfind(headers, ~c"location", 0) do
           {_, location} ->
-            target = URI.merge(url, to_string(location))
+            target = URI.merge(target_url, to_string(location))
 
             if target.scheme not in ["http", "https"] or not is_nil(target.userinfo) or
-                 (URI.parse(url).scheme == "https" and target.scheme != "https") do
+                 (URI.parse(target_url).scheme == "https" and target.scheme != "https") do
               raise "Unsafe native artifact redirect"
             end
 
@@ -73,18 +95,16 @@ defmodule Oxide.NativeURL do
         end
 
       {:ok, {{_, 200, _}, _, _}} ->
-        url
+        target_url
 
-      {:ok, {{_, status, _}, _, _}} when status >= 500 and attempts > 1 ->
-        Process.sleep(250)
-        request(url, http_options, attempts - 1)
+      {:ok, {{_, status, _}, _, _}} when status >= 500 and attempt + 1 < @max_attempts ->
+        retry(url, http_options, attempt)
 
       {:ok, {{_, status, _}, _, _}} ->
         raise "Native artifact redirect returned HTTP #{status}"
 
-      {:error, _reason} when attempts > 1 ->
-        Process.sleep(250)
-        request(url, http_options, attempts - 1)
+      {:error, _reason} when attempt + 1 < @max_attempts ->
+        retry(url, http_options, attempt)
 
       {:error, reason} ->
         raise "Native artifact redirect failed: #{inspect(reason)}"
