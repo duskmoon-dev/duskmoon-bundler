@@ -1,5 +1,11 @@
 # Changelog
 
+## 10.1.6 - 2026-11-09
+
+- Retry native artifact URL resolution with backoff, alternating to the
+  `?download=1` release-download variant when GitHub returns a sticky 5xx for
+  one asset URL; downloaded bytes are still checksum-verified (#22).
+
 ## 10.1.5 - 2026-11-09
 
 - Prune npm lock records that are no longer reachable from root or workspace
