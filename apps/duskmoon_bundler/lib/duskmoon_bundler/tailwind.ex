@@ -20,7 +20,9 @@ defmodule DuskmoonBundler.Tailwind do
   ## Tailwind directives
 
   DuskmoonBundler supports Tailwind's CSS-first directives like `@theme`, `@source`,
-  `@utility`, `@variant`, and `@apply` through the Tailwind compiler.
+  `@utility`, `@variant`, and `@apply` through the Tailwind compiler. CSS source
+  declarations are scanned alongside configured sources, relative to their
+  declaring stylesheet, including explicitly selected ignored directories.
 
   DuskmoonBundler also resolves local `@import`, `@reference`, `@plugin`, and `@config`
   files inside QuickBEAM, plus installed package plugins like
@@ -43,7 +45,7 @@ defmodule DuskmoonBundler.Tailwind do
   ## Options
 
     * `:css` — custom input CSS (default: Tailwind's base with theme + preflight + utilities)
-    * `:css_base` — base directory for resolving local `@import`, `@reference`, `@plugin`, and `@config` paths
+    * `:css_base` — base directory for resolving local `@import`, `@reference`, `@plugin`, `@config`, and `@source` paths
     * `:resolve_dirs` — additional package directories for resolving bare stylesheet imports
     * `:sources` — override source patterns (default: from config)
     * `:minify` — minify the output CSS (default: `false`)
@@ -79,7 +81,10 @@ defmodule DuskmoonBundler.Tailwind do
      %{
        runtime: nil,
        scanner: nil,
+       scanner_sources: nil,
        sources: sources,
+       css_input: nil,
+       css_base: File.cwd!(),
        default_resolve_dirs: resolve_dirs,
        resolve_dirs: resolve_dirs,
        last_css: nil
@@ -107,7 +112,14 @@ defmodule DuskmoonBundler.Tailwind do
         entry: {:duskmoon_bundler_asset, "dev/tailwind.ts"}
       )
 
-    %{state | runtime: runtime, scanner: build_scanner(state.sources)}
+    scanner_sources = Enum.map(state.sources, &to_oxide_source/1)
+
+    %{
+      state
+      | runtime: runtime,
+        scanner: build_scanner(scanner_sources),
+        scanner_sources: scanner_sources
+    }
   end
 
   defp ensure_runtime(state), do: state
@@ -134,18 +146,21 @@ defmodule DuskmoonBundler.Tailwind do
     resolve_dirs =
       opts |> Keyword.get(:resolve_dirs, state.default_resolve_dirs) |> normalize_resolve_dirs()
 
-    scanner =
-      if(opts[:sources],
-        do: build_scanner(sources),
-        else: state.scanner || Oxide.new(sources: [])
-      )
-
-    case compile_css(state.runtime, css_input, Oxide.scan(scanner), css_base, resolve_dirs) do
-      {:ok, css} ->
+    case compile_css(state, css_input, sources, css_base, resolve_dirs) do
+      {:ok, css, scanner, scanner_sources} ->
         css = maybe_minify(css, minify)
 
         {:reply, {:ok, css},
-         %{state | scanner: scanner, sources: sources, resolve_dirs: resolve_dirs, last_css: css}}
+         %{
+           state
+           | scanner: scanner,
+             scanner_sources: scanner_sources,
+             sources: sources,
+             css_input: css_input,
+             css_base: css_base,
+             resolve_dirs: resolve_dirs,
+             last_css: css
+         }}
 
       {:error, _} = error ->
         {:reply, error, state}
@@ -155,8 +170,8 @@ defmodule DuskmoonBundler.Tailwind do
   def handle_call({:rebuild, changed_files, opts}, _from, state) do
     state = ensure_runtime(state)
     minify = Keyword.get(opts, :minify, false)
-    css_input = opts[:css]
-    css_base = opts[:css_base] || File.cwd!()
+    css_input = Keyword.get(opts, :css, state.css_input)
+    css_base = opts[:css_base] || state.css_base
 
     resolve_dirs =
       opts |> Keyword.get(:resolve_dirs, state.resolve_dirs) |> normalize_resolve_dirs()
@@ -170,29 +185,27 @@ defmodule DuskmoonBundler.Tailwind do
           struct!(Oxide.Changed, map)
       end)
 
-    case state.scanner do
-      nil ->
-        {:reply, {:error, :no_scanner}, state}
+    if Oxide.scan_files(state.scanner, changed) == [] and not Keyword.get(opts, :force, false) do
+      {:reply, :unchanged, state}
+    else
+      case compile_css(state, css_input, state.sources, css_base, resolve_dirs) do
+        {:ok, css, scanner, scanner_sources} ->
+          css = maybe_minify(css, minify)
 
-      scanner ->
-        if Oxide.scan_files(scanner, changed) == [] and not Keyword.get(opts, :force, false) do
-          {:reply, :unchanged, state}
-        else
-          case compile_css(
-                 state.runtime,
-                 css_input,
-                 Oxide.scan(scanner),
-                 css_base,
-                 resolve_dirs
-               ) do
-            {:ok, css} ->
-              css = maybe_minify(css, minify)
-              {:reply, {:ok, css}, %{state | resolve_dirs: resolve_dirs, last_css: css}}
+          {:reply, {:ok, css},
+           %{
+             state
+             | scanner: scanner,
+               scanner_sources: scanner_sources,
+               css_input: css_input,
+               css_base: css_base,
+               resolve_dirs: resolve_dirs,
+               last_css: css
+           }}
 
-            {:error, _} = error ->
-              {:reply, error, state}
-          end
-        end
+        {:error, _} = error ->
+          {:reply, error, state}
+      end
     end
   end
 
@@ -204,21 +217,33 @@ defmodule DuskmoonBundler.Tailwind do
     :ok
   end
 
-  defp build_scanner([]), do: nil
-
   defp build_scanner(sources) do
     oxide_sources = Enum.map(sources, &to_oxide_source/1)
     Oxide.new(sources: oxide_sources)
   end
 
-  defp compile_css(runtime, css_input, candidates, css_base, resolve_dirs) do
-    case DuskmoonBundler.JS.Runtime.call(runtime, "compileTailwindCss", [
-           css_input,
-           candidates,
-           Path.expand(css_base),
-           resolve_dirs
-         ]) do
-      {:ok, css} when is_binary(css) -> {:ok, css}
+  defp compile_css(state, css_input, sources, css_base, resolve_dirs) do
+    with {:ok, css_sources} when is_list(css_sources) <-
+           DuskmoonBundler.JS.Runtime.call(state.runtime, "prepareTailwindCss", [
+             css_input,
+             Path.expand(css_base),
+             resolve_dirs
+           ]) do
+      scanner_sources = Enum.map(sources ++ css_sources, &to_oxide_source/1)
+
+      scanner =
+        if scanner_sources == state.scanner_sources,
+          do: state.scanner,
+          else: build_scanner(scanner_sources)
+
+      case DuskmoonBundler.JS.Runtime.call(state.runtime, "buildTailwindCss", [
+             Oxide.scan(scanner)
+           ]) do
+        {:ok, css} when is_binary(css) -> {:ok, css, scanner, scanner_sources}
+        {:ok, _} -> {:error, :unexpected_result}
+        {:error, _} = error -> error
+      end
+    else
       {:ok, _} -> {:error, :unexpected_result}
       {:error, _} = error -> error
     end
@@ -245,5 +270,9 @@ defmodule DuskmoonBundler.Tailwind do
       pattern: pattern,
       negated: Map.get(source, :negated, false)
     }
+  end
+
+  defp to_oxide_source(%{"base" => base, "pattern" => pattern} = source) do
+    to_oxide_source(%{base: base, pattern: pattern, negated: Map.get(source, "negated", false)})
   end
 end

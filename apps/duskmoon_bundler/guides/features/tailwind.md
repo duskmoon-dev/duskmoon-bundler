@@ -20,6 +20,28 @@ config :duskmoon_bundler,
 - `css` — path to your Tailwind input CSS file (with `@import "tailwindcss"`)
 - `sources` — list of `%{base, pattern}` maps defining where to scan for class names
 
+## CSS Source Declarations
+
+CSS `@source` paths are scanned alongside configured source patterns, including
+explicit paths into gitignored dependencies:
+
+```css
+/* assets/css/app.css */
+@import "tailwindcss" source(none);
+@source "../../lib";
+@source "../../deps/my_component/assets/js";
+```
+
+Paths are relative to the stylesheet declaring them, including declarations in
+imported stylesheets. Negated declarations (`@source not`), inline candidates,
+and explicit `source("path")` roots are supported. An empty `sources: []` list
+allows CSS-only source configuration. For programmatic builds, set `css_base`
+to the input stylesheet's directory.
+
+Incremental rebuilds retain the CSS input, its base directory and the combined
+scanner. Watcher subscriptions use configured `tailwind.sources` and
+`server.watch_dirs`; include external directories there to receive change events.
+
 ## Plugins and Config Files
 
 Tailwind `@plugin` and `@config` directives are resolved and bundled automatically:

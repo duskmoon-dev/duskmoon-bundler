@@ -292,6 +292,144 @@ defmodule DuskmoonBundler.TailwindTest do
     end
   end
 
+  describe "CSS source declarations" do
+    @tag :tmp_dir
+    test "scans ignored dependencies relative to normal and umbrella CSS files", %{tmp_dir: root} do
+      File.write!(Path.join(root, ".gitignore"), "deps/\n")
+      dependency = Path.join(root, "deps/component/assets/js")
+      File.mkdir_p!(dependency)
+
+      File.write!(
+        Path.join(dependency, "chat.js"),
+        ~s(export const classes = "bottom-3 end-3 pb-16 shadow-md")
+      )
+
+      File.write!(Path.join(root, "unrelated.html"), ~s(<div class="w-[991.131px]"></div>))
+
+      for {app, source} <- [
+            {".", "../../deps/component/assets/js"},
+            {"apps/demo", "../../../../deps/component/assets/js"}
+          ] do
+        assets = Path.join([root, app, "assets"])
+        css_base = Path.join(assets, "css")
+        File.mkdir_p!(css_base)
+        server = start_supervised!({DuskmoonBundler.Tailwind, name: nil}, id: app)
+
+        for minify <- [false, true] do
+          assert {:ok, css} =
+                   DuskmoonBundler.Tailwind.build(
+                     server: server,
+                     sources: [%{base: assets, pattern: "**/*.js"}],
+                     css: ~s|@import "tailwindcss" source(none); @source "#{source}";|,
+                     css_base: css_base,
+                     minify: minify
+                   )
+
+          for utility <- ["bottom-3", "end-3", "pb-16", "shadow-md"],
+              do: assert(css =~ ".#{utility}")
+
+          refute css =~ "991.131px"
+        end
+      end
+    end
+
+    @tag :tmp_dir
+    test "accepts empty sources and resolves imported declarations and exclusions", %{
+      tmp_dir: root
+    } do
+      css_base = Path.join(root, "assets/css")
+      nested = Path.join(css_base, "nested")
+      dependency = Path.join(root, "deps/component")
+      File.mkdir_p!(nested)
+      File.mkdir_p!(dependency)
+      File.write!(Path.join(root, ".gitignore"), "deps/\n")
+      File.write!(Path.join(dependency, "included.js"), ~s(export const cls = "bottom-3"))
+      File.write!(Path.join(dependency, "excluded.js"), ~s(export const cls = "w-[881.131px]"))
+
+      File.write!(Path.join(nested, "sources.css"), """
+      @source "../../../deps/component/*.js";
+      @source not "../../../deps/component/excluded.js";
+      """)
+
+      server = start_supervised!({DuskmoonBundler.Tailwind, name: nil, sources: []})
+
+      assert {:ok, css} =
+               DuskmoonBundler.Tailwind.build(
+                 server: server,
+                 sources: [],
+                 css_base: css_base,
+                 css: ~s|@import "tailwindcss" source(none); @import "./nested/sources.css";|
+               )
+
+      assert css =~ ".bottom-3"
+      refute css =~ "881.131px"
+    end
+
+    @tag :tmp_dir
+    test "uses CSS-declared files during incremental scans", %{tmp_dir: root} do
+      File.mkdir_p!(Path.join(root, "components"))
+      source = Path.join(root, "components/chat.js")
+      File.write!(source, ~s(export const cls = "bottom-3"))
+      css_input = ~s|@import "tailwindcss" source(none); @source "./components";|
+      server = start_supervised!({DuskmoonBundler.Tailwind, name: nil, sources: []})
+      opts = [server: server, css: css_input, css_base: root]
+
+      assert {:ok, initial} = DuskmoonBundler.Tailwind.build(opts)
+      assert initial =~ ".bottom-3"
+      refute initial =~ "391.125px"
+      File.write!(source, ~s(export const cls = "bottom-3 w-[391.125px]"))
+
+      assert {:ok, changed} = DuskmoonBundler.Tailwind.rebuild([source], server: server)
+      assert changed =~ ".bottom-3"
+      assert changed =~ "391.125px"
+      assert :unchanged = DuskmoonBundler.Tailwind.rebuild([source], server: server)
+    end
+
+    @tag :tmp_dir
+    test "supports CSS-only roots and inline candidates with no configured sources", %{
+      tmp_dir: root
+    } do
+      File.mkdir_p!(Path.join(root, "components"))
+      File.write!(Path.join(root, "components/root.js"), ~s(export const cls = "w-[387.125px]"))
+
+      for {id, css_input} <- [
+            {:root, ~s|@import "tailwindcss" source("./components");|},
+            {:inline, ~s|@import "tailwindcss" source(none); @source inline("w-[387.125px]");|}
+          ] do
+        server = start_supervised!({DuskmoonBundler.Tailwind, name: nil, sources: []}, id: id)
+
+        assert {:ok, css} =
+                 DuskmoonBundler.Tailwind.build(server: server, css: css_input, css_base: root)
+
+        assert css =~ "387.125px"
+      end
+    end
+
+    @tag :tmp_dir
+    test "replaces the scanner when CSS source declarations change", %{tmp_dir: root} do
+      File.write!(Path.join(root, "left.js"), ~s(export const cls = "w-[381.125px]"))
+      File.write!(Path.join(root, "right.js"), ~s(export const cls = "w-[383.125px]"))
+      css_input = ~s|@import "tailwindcss" source(none); @source "./left.js";|
+      server = start_supervised!({DuskmoonBundler.Tailwind, name: nil, sources: []})
+
+      assert {:ok, initial} =
+               DuskmoonBundler.Tailwind.build(server: server, css: css_input, css_base: root)
+
+      assert initial =~ "381.125px"
+      refute initial =~ "383.125px"
+
+      assert {:ok, changed} =
+               DuskmoonBundler.Tailwind.rebuild([],
+                 server: server,
+                 css: String.replace(css_input, "left.js", "right.js"),
+                 force: true
+               )
+
+      assert changed =~ "383.125px"
+      refute changed =~ "381.125px"
+    end
+  end
+
   describe "independent servers" do
     @tag :tmp_dir
     test "retain each profile's sources in both startup orders", %{tmp_dir: tmp_dir} do

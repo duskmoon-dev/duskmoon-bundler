@@ -18,7 +18,11 @@ type TailwindCompiler = {
         type?: string
       ) => Promise<{ module: unknown; base: string }>
     }
-  ) => Promise<{ build: (candidates: string[]) => string }>
+  ) => Promise<{
+    build: (candidates: string[]) => string
+    sources: { base: string; pattern: string; negated: boolean }[]
+    root: 'none' | { base: string; pattern: string } | null
+  }>
   Features?: unknown
 }
 
@@ -66,9 +70,10 @@ const tailwindRuntimeSpec = Beam.callSync(
 ) as BeamModuleSpec
 const tailwindExports = requireResolvedModule(tailwindRuntimeSpec, new Map()) as TailwindCompiler
 
-async function compileTailwindCss(
+let activeCompiler: Awaited<ReturnType<TailwindCompiler['compile']>> | null = null
+
+async function prepareTailwindCss(
   inputCss: string | null,
-  candidates: string[] | null,
   base: string | null,
   resolveDirs: string[] | null = null
 ) {
@@ -124,7 +129,18 @@ async function compileTailwindCss(
     }
   })
 
-  return compiler.build(candidates ?? [])
+  activeCompiler = compiler
+  return compiler.root && compiler.root !== 'none'
+    ? [{ ...compiler.root, negated: false }, ...compiler.sources]
+    : compiler.sources
+}
+
+function buildTailwindCss(candidates: string[]) {
+  if (activeCompiler == null) {
+    throw new Error('Tailwind CSS must be prepared before building')
+  }
+
+  return activeCompiler.build(candidates)
 }
 
 function normalizeBase(base: string | null | undefined, fallbackBase: string) {
@@ -200,4 +216,5 @@ function loadCommonJSModule(
   }
 }
 
-globalThis.compileTailwindCss = compileTailwindCss
+globalThis.prepareTailwindCss = prepareTailwindCss
+globalThis.buildTailwindCss = buildTailwindCss

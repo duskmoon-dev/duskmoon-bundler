@@ -1,5 +1,12 @@
 # Changelog
 
+## 10.1.7 - 2026-11-11
+
+- Scan Tailwind CSS source declarations relative to their declaring stylesheet,
+  including imported CSS, explicit roots and ignored dependency directories (#23).
+- Support empty configured sources and retain CSS source scanning, input and base
+  directories across incremental rebuilds.
+
 ## 10.1.6 - 2026-11-09
 
 - Retry native artifact URL resolution with backoff, alternating to the
