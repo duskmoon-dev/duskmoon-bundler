@@ -90,14 +90,14 @@ defmodule DuskmoonBundler.DevServerTest do
       opts = [root: Path.join(@fixture_dir, "src"), prefix: "/assets"]
       first = DuskmoonBundler.DevServer.init(opts)
       first_conn = conn(:get, "/assets/app.ts") |> DuskmoonBundler.DevServer.call(first)
-      assert first_conn.resp_body =~ ~s|createHotContext("/assets/app.ts")|
+      assert first_conn.resp_body =~ ~r|createHotContext\("/assets/app\.ts"[,)]|
       File.write!(Path.join(@fixture_dir, "bun.lock"), "changed-runtime-dependencies")
       second = DuskmoonBundler.DevServer.init(opts)
       assert second.vendor_url_token == first.vendor_url_token
       other = DuskmoonBundler.DevServer.init(Keyword.put(opts, :prefix, "/other-assets"))
       refute other.vendor_url_token == first.vendor_url_token
       other_conn = conn(:get, "/other-assets/app.ts") |> DuskmoonBundler.DevServer.call(other)
-      assert other_conn.resp_body =~ ~s|createHotContext("/other-assets/app.ts")|
+      assert other_conn.resp_body =~ ~r|createHotContext\("/other-assets/app\.ts"[,)]|
     end
 
     test "serves HMR client JS" do
@@ -276,7 +276,7 @@ defmodule DuskmoonBundler.DevServerTest do
 
       inherited = request.("/assets/app.ts?" <> URI.encode_query(trusted_query))
       assert inherited.resp_body =~ url
-      assert inherited.resp_body =~ ~s|createHotContext("/assets/app.ts")|
+      assert inherited.resp_body =~ ~r|createHotContext\("/assets/app\.ts"[,)]|
 
       for hash <- ["ABCDEF12", "1234567", "123456789", "0123456g", "01234567\n", ""] do
         query = Map.put(trusted_query, "__duskmoon_vendor", hash)

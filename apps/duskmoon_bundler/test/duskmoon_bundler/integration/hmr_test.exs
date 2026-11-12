@@ -220,6 +220,113 @@ defmodule DuskmoonBundler.Integration.HMRTest do
       assert color == "rgb(10, 20, 30)"
     end
 
+    for acceptance <- [:self, :dependency] do
+      @tag :hmr_generation
+      @tag acceptance: acceptance
+      test "#{acceptance}-accepted updates retain generation context across a local entry cycle",
+           %{
+             page: page,
+             hmr_clients: hmr_clients,
+             acceptance: acceptance
+           } do
+        callback = """
+        (mod) => {
+          store.value = mod.value
+          store.events.push(`accept:${mod.value}`)
+        }
+        """
+
+        leaf_accept =
+          if acceptance == :self,
+            do: "import.meta.hot?.accept(#{callback})",
+            else: ""
+
+        root_accept =
+          if acceptance == :dependency,
+            do: "import.meta.hot?.accept('./cycle_leaf', #{callback})",
+            else: ""
+
+        write_fixture("cycle_leaf.ts", """
+        import './cycle_app'
+        export const value = 'one'
+        const store = (window.__cycleHMR ??= { entryRuns: 0, events: [] })
+        store.value = value
+        store.leafUrl = import.meta.url
+        #{leaf_accept}
+        """)
+
+        write_fixture("cycle_app.ts", """
+        import { value } from './cycle_leaf'
+        const store = (window.__cycleHMR ??= { entryRuns: 0, events: [] })
+        store.entryRuns += 1
+        store.value = value
+        #{root_accept}
+        """)
+
+        write_fixture("cycle_page.html", """
+        <!DOCTYPE html>
+        <html><body>
+          <script type="module" src="/assets/cycle_app.ts?custom&mode=#{acceptance}"></script>
+        </body></html>
+        """)
+
+        assert :ok = CDPBrowser.goto(page, base_url("/cycle_page.html"), timeout: 10_000)
+        assert {:ok, "one"} = eval_until(page, "window.__cycleHMR?.value", "one")
+        assert {:ok, 1} = CDPBrowser.evaluate(page, "window.__cycleHMR.entryRuns")
+
+        assert {:ok, initial_query} =
+                 CDPBrowser.evaluate(
+                   page,
+                   "Object.fromEntries(new URL(window.__cycleHMR.leafUrl).searchParams)"
+                 )
+
+        assert initial_query["__duskmoon_entry"] ==
+                 "/assets/cycle_app.ts?custom&mode=#{acceptance}"
+
+        assert {:ok, "survives"} =
+                 CDPBrowser.evaluate(page, "window.__cyclePageMarker = 'survives'")
+
+        {:ok, watcher} = start_watcher(hmr_clients)
+
+        update_fixture("cycle_leaf.ts", &String.replace(&1, "'one'", "'two'"))
+
+        assert {:ok, true} =
+                 eval_until(page, "window.__cycleHMR?.events.includes('accept:two')", true)
+
+        assert {:ok, %{"entryRuns" => 1, "value" => "two", "marker" => "survives"}} =
+                 CDPBrowser.evaluate(page, """
+                 ({ entryRuns: window.__cycleHMR.entryRuns,
+                    value: window.__cycleHMR.value,
+                    marker: window.__cyclePageMarker })
+                 """)
+
+        assert {:ok, updated_query} =
+                 CDPBrowser.evaluate(
+                   page,
+                   "Object.fromEntries(new URL(window.__cycleHMR.leafUrl).searchParams)"
+                 )
+
+        assert Map.delete(updated_query, "t") == initial_query
+        assert is_binary(updated_query["t"])
+
+        update_fixture("cycle_leaf.ts", &String.replace(&1, "'two'", "'three'"))
+
+        assert {:ok, true} =
+                 eval_until(page, "window.__cycleHMR?.events.includes('accept:three')", true)
+
+        assert {:ok, 1} = CDPBrowser.evaluate(page, "window.__cycleHMR.entryRuns")
+        assert {:ok, "survives"} = CDPBrowser.evaluate(page, "window.__cyclePageMarker")
+
+        assert {:ok, 1} =
+                 CDPBrowser.evaluate(
+                   page,
+                   "new URL(window.__cycleHMR.leafUrl).searchParams.getAll('t').length"
+                 )
+
+        GenServer.stop(watcher)
+      end
+    end
+
     test "self-accepting modules update without reloading and preserve hot data", %{
       page: page,
       hmr_clients: hmr_clients

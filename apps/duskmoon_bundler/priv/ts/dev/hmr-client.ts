@@ -8,6 +8,7 @@ interface HotCallback {
 
 interface HotModule {
   id: string
+  url: string
   callbacks: HotCallback[]
   disposeCallbacks: ((data: Record<string, unknown>) => void)[]
   data: Record<string, unknown>
@@ -17,7 +18,7 @@ interface HotModule {
 const hotModules = new Map<string, HotModule>()
 const dataMap = new Map<string, Record<string, unknown>>()
 
-export function createHotContext(ownerPath: string) {
+export function createHotContext(ownerPath: string, servedUrl: string = ownerPath) {
   const existing = hotModules.get(ownerPath)
   if (existing) {
     existing.callbacks = []
@@ -28,12 +29,14 @@ export function createHotContext(ownerPath: string) {
 
   const mod: HotModule = existing ?? {
     id: ownerPath,
+    url: servedUrl,
     callbacks: [],
     disposeCallbacks: [],
     data: dataMap.get(ownerPath) ?? {},
     acceptSelf: false
   }
 
+  mod.url = servedUrl
   hotModules.set(ownerPath, mod)
 
   return {
@@ -286,7 +289,16 @@ function stripExtension(url: string) {
 }
 
 function importVersion(url: string, timestamp: number) {
-  return import(/* @vite-ignore */ `${url}${url.includes('?') ? '&' : '?'}t=${timestamp}`)
+  const target = new URL(hotModules.get(url)?.url ?? url, import.meta.url)
+  const query = target.search
+    .slice(1)
+    .split('&')
+    .filter((part) => part && !new URLSearchParams(part).has('t'))
+
+  // Keep module-generation metadata and query flags exactly as served. Only
+  // the HMR timestamp changes, including after several updates of this module.
+  target.search = [...query, `t=${timestamp}`].join('&')
+  return import(/* @vite-ignore */ target.href)
 }
 
 export function updateStyle(id: string, css: string) {

@@ -17,6 +17,8 @@ even if installed dependencies change between concurrent requests. Previously em
 vendor entries retain their shared chunks, so a loading graph keeps one instance of
 singleton dependencies such as React. A fresh entry request selects the current
 dependency generation without restarting the server.
+Hot updates preserve the loaded module's vendor generation and original entry URL,
+including when a local import cycle leads back to that entry.
 
 ## `import.meta.hot`
 

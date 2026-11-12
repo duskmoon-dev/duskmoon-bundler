@@ -8,7 +8,7 @@
 - Continue refreshing dependency generations for new entry requests while
   retaining prior vendor entries for already loaded module graphs.
 - Preserve the original entry URL in local import cycles and retain canonical
-  HMR module identities.
+  HMR module identities while carrying dependency context through hot updates.
 
 ## 10.1.8 - 2026-11-12
 
