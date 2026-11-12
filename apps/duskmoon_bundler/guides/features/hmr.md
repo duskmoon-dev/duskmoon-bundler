@@ -12,6 +12,12 @@ The file watcher monitors your asset and template directories and pushes updates
 
 The browser client auto-reconnects on disconnect and shows compilation errors as an overlay.
 
+An entry module and its local imports keep the same vendor generation while loading,
+even if installed dependencies change between concurrent requests. Previously emitted
+vendor entries retain their shared chunks, so a loading graph keeps one instance of
+singleton dependencies such as React. A fresh entry request selects the current
+dependency generation without restarting the server.
+
 ## `import.meta.hot`
 
 Each module served in dev mode includes an `import.meta.hot` object for granular HMR:

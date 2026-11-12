@@ -14,6 +14,7 @@ defmodule DuskmoonBundler.DevServer.Config do
             node_modules: nil,
             resolve_dirs: [],
             vendor_hash: nil,
+            vendor_entry: nil,
             vendor_source: [],
             vendor_url_token: nil,
             module_types: %{},

@@ -6,6 +6,24 @@ defmodule DuskmoonBundler.DevServerTest do
 
   @fixture_dir Path.expand("fixtures", __DIR__)
 
+  defmodule GenerationBarrier do
+    def name, do: "generation-barrier"
+
+    def transform(code, path, opts) do
+      if Path.basename(path) == "leaf-a.ts" do
+        send(Keyword.fetch!(opts, :owner), {:compiling_generation, self()})
+
+        receive do
+          :continue_generation -> :ok
+        after
+          10_000 -> raise "generation compilation barrier timed out"
+        end
+      end
+
+      {:ok, code}
+    end
+  end
+
   setup do
     File.mkdir_p!(Path.join(@fixture_dir, "src"))
     File.write!(Path.join(@fixture_dir, "src/app.ts"), "const x: number = 42")
@@ -116,6 +134,215 @@ defmodule DuskmoonBundler.DevServerTest do
   end
 
   describe "vendor modules" do
+    @tag :vendor_generation
+    test "concurrent descendants retain the entry vendor graph while installed dependencies change" do
+      for package <- ["editor-a", "editor-b", "singleton-state", "lazy-editor"] do
+        dir = Path.join(@fixture_dir, "node_modules/#{package}")
+        File.mkdir_p!(dir)
+        File.write!(Path.join(dir, "package.json"), JSON.encode!(%{"main" => "index.js"}))
+      end
+
+      for {package, export} <- [{"editor-a", "a"}, {"editor-b", "b"}] do
+        File.write!(
+          Path.join(@fixture_dir, "node_modules/#{package}/index.js"),
+          "export { state as #{export} } from 'singleton-state';"
+        )
+      end
+
+      singleton = Path.join(@fixture_dir, "node_modules/singleton-state/index.js")
+      File.write!(singleton, "export const state = { value: 'initial-generation' };")
+
+      File.write!(
+        Path.join(@fixture_dir, "node_modules/lazy-editor/index.js"),
+        "export { a as lazy } from 'editor-a';"
+      )
+
+      File.write!(
+        Path.join(@fixture_dir, "src/app.ts"),
+        "import './leaf-a'; import './leaf-b'; export { a } from 'editor-a';"
+      )
+
+      File.write!(Path.join(@fixture_dir, "src/leaf-a.ts"), "export { a } from 'editor-a';")
+      File.write!(Path.join(@fixture_dir, "src/leaf-b.ts"), "export { b } from 'editor-b';")
+
+      opts = [
+        root: Path.join(@fixture_dir, "src"),
+        prefix: "/assets",
+        plugins: [{GenerationBarrier, owner: self()}]
+      ]
+
+      config = DuskmoonBundler.DevServer.init(opts)
+      request = fn url -> conn(:get, url) |> DuskmoonBundler.DevServer.call(config) end
+      entry = request.("/assets/app.ts")
+      assert entry.status == 200
+      assert [entry_vendor] = Regex.run(~r{/@vendor/editor-a\.js\?[^"'\s]+}, entry.resp_body)
+      initial_query = URI.decode_query(URI.parse(entry_vendor).query)
+      assert [leaf_a] = Regex.run(~r{/assets/leaf-a\.ts(?:\?[^"'\s]+)?}, entry.resp_body)
+      assert [leaf_b] = Regex.run(~r{/assets/leaf-b\.ts(?:\?[^"'\s]+)?}, entry.resp_body)
+
+      first = Task.async(fn -> request.(leaf_a) end)
+
+      try do
+        assert_receive {:compiling_generation, compiler}, 5_000
+        File.mkdir_p!(Path.join(@fixture_dir, "node_modules/startup-installed"))
+        File.write!(singleton, "export const state = { value: 'updated-generation' };")
+
+        current_hash =
+          DuskmoonBundler.JS.Vendor.browser_hash(
+            node_modules: config.node_modules,
+            plugins: config.plugins
+          )
+
+        refute current_hash == initial_query["v"]
+
+        second =
+          Task.async(fn ->
+            request.(leaf_b <> if(String.contains?(leaf_b, "?"), do: "&t=123", else: "?t=123"))
+          end)
+
+        second_response = Task.await(second, 10_000)
+        send(compiler, :continue_generation)
+        first_response = Task.await(first, 10_000)
+        first_vendor = request.(entry_vendor)
+        assert first_vendor.status == 200
+
+        lazy_vendor = request.("/@vendor/lazy-editor.js?" <> URI.encode_query(initial_query))
+        assert lazy_vendor.status == 200
+        assert lazy_vendor.resp_body =~ entry_vendor
+        refute lazy_vendor.resp_body =~ "updated-generation"
+
+        for response <- [first_response, second_response] do
+          assert response.status == 200
+
+          assert [vendor_url] =
+                   Regex.run(~r{/@vendor/editor-[ab]\.js\?[^"'\s]+}, response.resp_body)
+
+          assert URI.decode_query(URI.parse(vendor_url).query) == initial_query
+          vendor = request.(vendor_url)
+          assert vendor.status == 200
+
+          assert [[_, chunk]] =
+                   Regex.scan(~r{from "\./(chunks/[^"']+\.js\?[^"']+)"}, vendor.resp_body)
+
+          assert URI.decode_query(URI.parse(chunk).query) == initial_query
+          chunk_response = request.("/@vendor/" <> chunk)
+          assert chunk_response.status == 200
+          assert chunk_response.resp_body =~ "initial-generation"
+          refute chunk_response.resp_body =~ "updated-generation"
+        end
+
+        fresh = request.("/assets/app.ts")
+        assert [fresh_vendor] = Regex.run(~r{/@vendor/editor-a\.js\?[^"'\s]+}, fresh.resp_body)
+        refute fresh_vendor == entry_vendor
+        fresh_response = request.(fresh_vendor)
+        assert fresh_response.status == 200
+
+        assert [[_, fresh_chunk]] =
+                 Regex.scan(~r{from "\./(chunks/[^"']+\.js\?[^"']+)"}, fresh_response.resp_body)
+
+        assert request.("/@vendor/" <> fresh_chunk).resp_body =~ "updated-generation"
+        assert request.(entry_vendor).resp_body == first_vendor.resp_body
+      after
+        Task.shutdown(first, :brutal_kill)
+      end
+    end
+
+    @tag :vendor_generation
+    test "inherited generations require a lowercase eight-digit hash and the server token" do
+      dir = Path.join(@fixture_dir, "node_modules/generation-vendor")
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "package.json"), JSON.encode!(%{"main" => "index.js"}))
+      File.write!(Path.join(dir, "index.js"), "export const value = true;")
+      File.write!(Path.join(@fixture_dir, "src/app.ts"), "import 'generation-vendor';")
+
+      config = DuskmoonBundler.DevServer.init(root: Path.join(@fixture_dir, "src"))
+      request = fn url -> conn(:get, url) |> DuskmoonBundler.DevServer.call(config) end
+      first = request.("/assets/app.ts")
+      assert [url] = Regex.run(~r{/@vendor/generation-vendor\.js\?[^"'\s]+}, first.resp_body)
+      initial = URI.decode_query(URI.parse(url).query)
+      File.mkdir_p!(Path.join(@fixture_dir, "node_modules/installed-during-startup"))
+      fresh = request.("/assets/app.ts")
+
+      assert [fresh_url] =
+               Regex.run(~r{/@vendor/generation-vendor\.js\?[^"'\s]+}, fresh.resp_body)
+
+      refute fresh_url == url
+
+      trusted_query = %{
+        "__duskmoon_vendor" => initial["v"],
+        "__duskmoon_server" => initial["t"],
+        "t" => "123"
+      }
+
+      inherited = request.("/assets/app.ts?" <> URI.encode_query(trusted_query))
+      assert inherited.resp_body =~ url
+      assert inherited.resp_body =~ ~s|createHotContext("/assets/app.ts")|
+
+      for hash <- ["ABCDEF12", "1234567", "123456789", "0123456g", "01234567\n", ""] do
+        query = Map.put(trusted_query, "__duskmoon_vendor", hash)
+        response = request.("/assets/app.ts?" <> URI.encode_query(query))
+        assert response.resp_body =~ fresh_url
+
+        vendor_query = URI.encode_query(%{"v" => hash, "t" => initial["t"]})
+        assert request.("/@vendor/generation-vendor.js?" <> vendor_query).status == 504
+      end
+
+      for token <- ["wrong-server", ""] do
+        query = Map.put(trusted_query, "__duskmoon_server", token)
+        assert request.("/assets/app.ts?" <> URI.encode_query(query)).resp_body =~ fresh_url
+      end
+    end
+
+    test "local cycles reuse the original entry URL and keep distinct entry compilation contexts" do
+      File.write!(
+        Path.join(@fixture_dir, "src/app.ts"),
+        "import './cycle'; export const app = true;"
+      )
+
+      File.write!(
+        Path.join(@fixture_dir, "src/other.ts"),
+        "import './cycle'; export const other = true;"
+      )
+
+      File.write!(
+        Path.join(@fixture_dir, "src/cycle.ts"),
+        "import { app } from './app'; import { other } from './other'; console.log(app, other);"
+      )
+
+      config = DuskmoonBundler.DevServer.init(root: Path.join(@fixture_dir, "src"))
+      request = fn url -> conn(:get, url) |> DuskmoonBundler.DevServer.call(config) end
+      original = "/assets/app.ts?custom&mode=first"
+      entry = request.(original)
+      assert entry.status == 200
+      assert [cycle_url] = Regex.run(~r{/assets/cycle\.ts\?[^"'\s]+}, entry.resp_body)
+      cycle = request.(cycle_url)
+      assert cycle.status == 200
+      assert cycle.resp_body =~ ~s|from "#{original}"|
+      refute cycle.resp_body =~ ~r{from "/assets/app\.ts\?[^"']*__duskmoon_}
+
+      other_entry = request.("/assets/other.ts")
+      assert [other_cycle_url] = Regex.run(~r{/assets/cycle\.ts\?[^"'\s]+}, other_entry.resp_body)
+      refute other_cycle_url == cycle_url
+      other_cycle = request.(other_cycle_url)
+      assert other_cycle.status == 200
+      assert other_cycle.resp_body =~ ~s|from "/assets/other.ts"|
+      assert other_cycle.resp_body =~ ~r{from "/assets/app\.ts\?[^"']*__duskmoon_}
+      assert request.(cycle_url).resp_body == cycle.resp_body
+
+      for invalid <- [
+            "https://example.com/assets/app.ts",
+            "//example.com/assets/app.ts",
+            "/outside/app.ts",
+            "/assets/../app.ts",
+            "/assets/app.ts#fragment"
+          ] do
+        uri = URI.parse(cycle_url)
+        query = uri.query |> URI.decode_query() |> Map.put("__duskmoon_entry", invalid)
+        response = request.(URI.to_string(%{uri | query: URI.encode_query(query)}))
+        refute response.resp_body =~ ~s|from "#{invalid}"|
+      end
+    end
+
     test "cached runtime requests remain responsive while optimizer locks are held" do
       packages = Enum.map(1..10, &"burst-vendor-#{&1}")
 

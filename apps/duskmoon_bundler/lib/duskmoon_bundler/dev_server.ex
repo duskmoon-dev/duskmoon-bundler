@@ -235,7 +235,35 @@ defmodule DuskmoonBundler.DevServer do
     do: Path.extname(path) in DuskmoonBundler.JS.Extensions.compilable(config.plugins)
 
   defp serve_compiled(conn, file_path, relative, config) do
-    config = %{config | vendor_hash: current_vendor_hash(config)}
+    query = URL.decode_query(conn.query_string)
+
+    inherited_hash =
+      if valid_vendor_hash?(query["__duskmoon_vendor"]) and
+           same_server_vendor_token?(query["__duskmoon_server"], config),
+         do: query["__duskmoon_vendor"]
+
+    entry =
+      if inherited_hash && local_vendor_entry?(query["__duskmoon_entry"], config) do
+        query["__duskmoon_entry"]
+      else
+        entry_query =
+          conn.query_string
+          |> String.split("&", trim: true)
+          |> Enum.reject(fn component ->
+            key = component |> String.split("=", parts: 2) |> hd() |> URI.decode_www_form()
+            key in ["__duskmoon_vendor", "__duskmoon_server", "__duskmoon_entry"]
+          end)
+          |> Enum.join("&")
+
+        URL.append_query(conn.request_path, entry_query)
+      end
+
+    vendor_snapshot =
+      %{config | vendor_hash: inherited_hash}
+      |> vendor_opts()
+      |> DuskmoonBundler.JS.Vendor.snapshot()
+
+    config = %{config | vendor_hash: vendor_snapshot[:browser_hash], vendor_entry: entry}
     # Validate cached output against the exact source it was compiled from:
     # whole-second mtimes miss same-second saves, and an in-flight compile
     # may store its result after the watcher evicted the entry.
@@ -346,7 +374,7 @@ defmodule DuskmoonBundler.DevServer do
     query =
       (uri.query || "")
       |> DuskmoonBundler.URL.decode_query()
-      |> Map.drop(["t", "v"])
+      |> Map.drop(["t", "v", "__duskmoon_vendor", "__duskmoon_server", "__duskmoon_entry"])
       |> URI.encode_query()
 
     %{uri | query: if(query == "", do: nil, else: query)}
@@ -440,6 +468,7 @@ defmodule DuskmoonBundler.DevServer do
     |> maybe_append_css_import_cache_key(css_import?)
     |> URL.append_query("vendor=#{vendor_hash(config)}")
     |> URL.append_query("server=#{config.vendor_url_token}")
+    |> URL.append_query("entry=#{URI.encode_www_form(config.vendor_entry || "")}")
   end
 
   defp maybe_append_css_import_cache_key(file_path, true),
@@ -550,7 +579,28 @@ defmodule DuskmoonBundler.DevServer do
     if DuskmoonBundler.Path.inside?(resolved, config.root) do
       resolved = resolve_with_extension(resolved, config.plugins)
       relative = Path.relative_to(resolved, config.root)
-      {:rewrite, dev_url_for(config.prefix, relative, resolved, query)}
+      url = dev_url_for(config.prefix, relative, resolved, query)
+
+      url =
+        cond do
+          same_entry_module?(url, config.vendor_entry) ->
+            config.vendor_entry
+
+          compilable?(resolved, config) ->
+            URL.append_query(
+              url,
+              URI.encode_query(%{
+                "__duskmoon_vendor" => vendor_hash(config),
+                "__duskmoon_server" => config.vendor_url_token,
+                "__duskmoon_entry" => config.vendor_entry
+              })
+            )
+
+          true ->
+            url
+        end
+
+      {:rewrite, url}
     else
       :keep
     end
@@ -630,10 +680,16 @@ defmodule DuskmoonBundler.DevServer do
 
   defp serve_vendor(specifier, config, browser_hash, browser_token) do
     if DuskmoonBundler.JS.Vendor.request_specifier?(specifier) do
-      vendor_opts = config |> vendor_opts() |> DuskmoonBundler.JS.Vendor.snapshot()
+      inherited_hash =
+        if valid_vendor_hash?(browser_hash) and same_server_vendor_token?(browser_token, config),
+          do: browser_hash
 
-      if current_vendor_request?(browser_hash, browser_token, config, vendor_opts) do
-        read_or_bundle_vendor(specifier, config, vendor_opts)
+      opts =
+        %{config | vendor_hash: inherited_hash}
+        |> vendor_opts()
+
+      if current_vendor_request?(browser_hash, browser_token, config, opts) do
+        read_or_bundle_vendor(specifier, config, DuskmoonBundler.JS.Vendor.snapshot(opts))
       else
         {:error, :outdated}
       end
@@ -644,8 +700,38 @@ defmodule DuskmoonBundler.DevServer do
 
   defp current_vendor_request?(browser_hash, browser_token, config, vendor_opts) do
     DuskmoonBundler.JS.Vendor.current_browser_hash?(browser_hash, vendor_opts) or
-      same_server_vendor_token?(browser_token, config)
+      (valid_vendor_hash?(browser_hash) and same_server_vendor_token?(browser_token, config))
   end
+
+  defp valid_vendor_hash?(hash) when is_binary(hash), do: Regex.match?(~r/\A[0-9a-f]{8}\z/, hash)
+  defp valid_vendor_hash?(_hash), do: false
+
+  defp local_vendor_entry?(entry, config) when is_binary(entry) do
+    uri = URI.parse(entry)
+
+    with nil <- uri.scheme,
+         nil <- uri.host,
+         nil <- uri.fragment,
+         true <- is_binary(uri.path),
+         {:ok, relative} <- strip_prefix(uri.path, config.prefix) do
+      file = config.root |> Path.join(relative) |> Path.expand()
+      DuskmoonBundler.Path.inside?(file, config.root) and compilable?(file, config)
+    else
+      _ -> false
+    end
+  end
+
+  defp local_vendor_entry?(_entry, _config), do: false
+
+  defp same_entry_module?(url, entry) when is_binary(entry) do
+    uri = URI.parse(url)
+    entry = URI.parse(entry)
+
+    uri.path == entry.path and
+      (is_nil(uri.query) or URL.decode_query(uri.query) == URL.decode_query(entry.query || ""))
+  end
+
+  defp same_entry_module?(_url, _entry), do: false
 
   defp same_server_vendor_token?(token, %{vendor_url_token: token})
        when is_binary(token) and token != "",

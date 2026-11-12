@@ -1,5 +1,15 @@
 # Changelog
 
+## 10.1.9 - 2026-11-12
+
+- Keep local development module imports and vendor responses on the entry
+  module's selected dependency generation when installed dependencies change
+  during concurrent requests, preserving shared singleton chunks (#25).
+- Continue refreshing dependency generations for new entry requests while
+  retaining prior vendor entries for already loaded module graphs.
+- Preserve the original entry URL in local import cycles and retain canonical
+  HMR module identities.
+
 ## 10.1.8 - 2026-11-12
 
 - Repair installed npm packages whose manifest version differs from the lockfile,

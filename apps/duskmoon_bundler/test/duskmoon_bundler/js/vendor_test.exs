@@ -980,6 +980,50 @@ defmodule DuskmoonBundler.JS.VendorTest do
   end
 
   describe "bundle_on_demand/2" do
+    test "historical lazy entries externalize to retained vendors after the current graph was rebuilt" do
+      write_package("late-lib", "1.0.0", %{"." => "./index.js"})
+
+      File.write!(
+        Path.join(@node_modules, "late-lib/index.js"),
+        "import { greet } from 'fake-lib'; export const value = greet('late');"
+      )
+
+      opts = [
+        root: Path.join(@fixture_dir, "src"),
+        node_modules: @node_modules,
+        browser_token: "retained-vendor-server"
+      ]
+
+      old_snapshot = DuskmoonBundler.JS.Vendor.snapshot(opts)
+      old_hash = old_snapshot[:browser_hash]
+      assert {:ok, original} = DuskmoonBundler.JS.Vendor.read("fake-lib", old_snapshot)
+      assert original =~ "Hello"
+
+      File.write!(
+        Path.join(@node_modules, "fake-lib/index.js"),
+        "export const greet = (name) => `Updated, ${name}!`;"
+      )
+
+      current = DuskmoonBundler.JS.Vendor.snapshot(opts)
+      refute current[:browser_hash] == old_hash
+      assert {:ok, current_code} = DuskmoonBundler.JS.Vendor.read("fake-lib", current)
+      assert current_code =~ "Updated"
+      assert File.read!(vendor_cache_path("fake-lib.js")) =~ "Updated"
+
+      historical =
+        opts
+        |> Keyword.put(:browser_hash, old_hash)
+        |> DuskmoonBundler.JS.Vendor.snapshot()
+
+      assert {:ok, lazy} =
+               DuskmoonBundler.JS.Vendor.bundle_on_demand("late-lib", @node_modules, historical)
+
+      assert lazy =~ "/@vendor/fake-lib.js?v=#{old_hash}&t=retained-vendor-server"
+      refute lazy =~ "Updated"
+      assert {:ok, ^original} = DuskmoonBundler.JS.Vendor.read("fake-lib", historical)
+      assert {:ok, ^lazy} = DuskmoonBundler.JS.Vendor.read("late-lib", historical)
+    end
+
     test "rebuilds the current static graph together after dependency changes in either request order" do
       app = Path.join(@fixture_dir, "src/app.ts")
       opts = [root: Path.dirname(app), node_modules: @node_modules]

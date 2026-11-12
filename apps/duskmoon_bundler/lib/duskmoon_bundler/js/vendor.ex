@@ -161,6 +161,7 @@ defmodule DuskmoonBundler.JS.Vendor do
           source_specifiers,
           browser_token
         )
+        |> retain_generation_result(specifier, opts)
       else
         :global.trans({{__MODULE__, cache_dir()}, self()}, fn ->
           known = known_vendor_specifiers(module_dirs, plugins, module_types, source_specifiers)
@@ -186,75 +187,89 @@ defmodule DuskmoonBundler.JS.Vendor do
               false
             end
 
-          cond do
-            refresh_static_graph? ->
-              # Initialize or refresh the current static graph before any of its
-              # modules escape. Newly added entries must share its runtime too.
-              # Dynamic imports remain lazy while the existing graph is fresh.
-              with {:ok, specifiers} <- scan_bare_imports(root, plugins, opts) do
-                specifiers =
-                  ([specifier | specifiers] ++ known)
-                  |> Enum.map(&DuskmoonBundler.PluginRunner.prebundle_alias(plugins, &1))
-                  |> Enum.uniq()
-                  |> Enum.reject(&source_vendor?(&1, source_specifiers))
-
-                vendor_map = Map.new(specifiers, &{&1, cache_path(&1)})
-
-                with {:ok, vendors} <-
-                       bundle_vendors(
-                         specifiers,
-                         module_dirs,
-                         plugins,
-                         module_types,
-                         source_specifiers,
-                         vendor_map,
-                         false
-                       ) do
-                  {:ok, Map.fetch!(vendors, specifier)}
-                end
-              end
-
-            specifier in known and
-                not cache_fresh?(
+          result =
+            cond do
+              historical_generation?(opts) ->
+                # Extend an older graph through its retained vendor entries.
+                # Rebuilding the entire static graph would replace its singletons.
+                bundle_vendor(
                   specifier,
                   module_dirs,
+                  true,
                   plugins,
                   module_types,
                   source_specifiers,
-                  browser_token
-                ) ->
-              # A missing/stale entry must retain the shared graph it belonged to.
-              with {:ok, vendors} <-
-                     prebundle_vendors(
-                       known,
-                       module_dirs,
-                       true,
-                       plugins,
-                       module_types,
-                       source_specifiers
-                     ) do
-                {:ok, Map.fetch!(vendors, specifier)}
-              end
+                  browser_token,
+                  opts[:browser_hash]
+                )
 
-            true ->
-              bundle_vendor(
-                specifier,
-                module_dirs,
-                false,
-                plugins,
-                module_types,
-                source_specifiers,
-                browser_token,
-                if(Keyword.keyword?(opts), do: opts[:browser_hash])
-              )
-          end
+              refresh_static_graph? ->
+                # Initialize or refresh the current static graph before any of its
+                # modules escape. Newly added entries must share its runtime too.
+                # Dynamic imports remain lazy while the existing graph is fresh.
+                with {:ok, specifiers} <- scan_bare_imports(root, plugins, opts) do
+                  specifiers =
+                    ([specifier | specifiers] ++ known)
+                    |> Enum.map(&DuskmoonBundler.PluginRunner.prebundle_alias(plugins, &1))
+                    |> Enum.uniq()
+                    |> Enum.reject(&source_vendor?(&1, source_specifiers))
+
+                  vendor_map = Map.new(specifiers, &{&1, cache_path(&1)})
+
+                  with {:ok, vendors} <-
+                         bundle_vendors(
+                           specifiers,
+                           module_dirs,
+                           plugins,
+                           module_types,
+                           source_specifiers,
+                           vendor_map,
+                           false
+                         ) do
+                    {:ok, Map.fetch!(vendors, specifier)}
+                  end
+                end
+
+              specifier in known and
+                  not cache_fresh?(
+                    specifier,
+                    module_dirs,
+                    plugins,
+                    module_types,
+                    source_specifiers,
+                    browser_token
+                  ) ->
+                # A missing/stale entry must retain the shared graph it belonged to.
+                with {:ok, vendors} <-
+                       prebundle_vendors(
+                         known,
+                         module_dirs,
+                         true,
+                         plugins,
+                         module_types,
+                         source_specifiers
+                       ) do
+                  {:ok, Map.fetch!(vendors, specifier)}
+                end
+
+              true ->
+                bundle_vendor(
+                  specifier,
+                  module_dirs,
+                  false,
+                  plugins,
+                  module_types,
+                  source_specifiers,
+                  browser_token,
+                  if(Keyword.keyword?(opts), do: opts[:browser_hash])
+                )
+            end
+
+          retain_generation_result(result, specifier, opts)
         end)
       end
 
-    case result do
-      {:ok, path} -> read_vendor_output(File.read(path), opts)
-      {:error, _} = error -> error
-    end
+    read_vendor_output(result, opts)
   end
 
   @doc """
@@ -296,11 +311,129 @@ defmodule DuskmoonBundler.JS.Vendor do
 
     module_dirs = module_dirs(Keyword.get(opts, :node_modules), resolve_dirs)
     signature = browser_signature(module_dirs, plugins, module_types, source_specifiers)
+    hash = snapshot_hash(opts, signature)
+    generation = generation_dir(opts, hash)
+
+    # Freeze the shared entry graph before any application URLs escape. Chunk
+    # filenames are already content addressed and historical chunks are retained.
+    # A completed generation never needs the optimizer lock on a cached request.
+    signature =
+      if generation && hash == hash_signature(signature) &&
+           not File.regular?(Path.join(generation, ".complete")) do
+        :global.trans({{__MODULE__, cache_dir()}, self()}, fn ->
+          freeze_generation(opts, module_dirs, plugins, module_types, source_specifiers, false)
+        end)
+      else
+        signature
+      end
+
+    hash = snapshot_hash(opts, signature)
 
     Keyword.merge(opts,
       browser_signature: signature,
-      browser_hash: hash_signature(signature)
+      browser_hash: hash,
+      browser_current_hash: hash_signature(signature),
+      browser_generation: generation_dir(opts, hash)
     )
+  end
+
+  defp snapshot_hash(opts, signature) do
+    case opts[:browser_hash] do
+      hash when is_binary(hash) and hash != "" -> hash
+      _ -> hash_signature(signature)
+    end
+  end
+
+  defp freeze_generation(opts, module_dirs, plugins, module_types, source_specifiers, force) do
+    # Another optimizer may have completed while this request waited for the lock.
+    signature = browser_signature(module_dirs, plugins, module_types, source_specifiers)
+    hash = snapshot_hash(opts, signature)
+    generation = generation_dir(opts, hash)
+
+    if hash == hash_signature(signature) &&
+         not File.regular?(Path.join(generation, ".complete")) do
+      with {:ok, static} <- scan_bare_imports(opts[:root], plugins, opts),
+           known = known_vendor_specifiers(module_dirs, plugins, module_types, source_specifiers),
+           specifiers =
+             Enum.map(static ++ known, &DuskmoonBundler.PluginRunner.prebundle_alias(plugins, &1)),
+           {:ok, vendors} <-
+             prebundle_vendors(
+               Enum.uniq(specifiers),
+               module_dirs,
+               force,
+               plugins,
+               module_types,
+               source_specifiers
+             ) do
+        current = browser_signature(module_dirs, plugins, module_types, source_specifiers)
+
+        if current != signature do
+          # Never label output with a signature sampled before an installation
+          # changed its inputs. Retry once from source, then fail explicitly.
+          if force, do: raise("vendor dependencies changed repeatedly while snapshotting")
+          freeze_generation(opts, module_dirs, plugins, module_types, source_specifiers, true)
+        else
+          Enum.each(vendors, fn {specifier, path} ->
+            retain_generation_file(generation, specifier, File.read!(path))
+          end)
+
+          File.mkdir_p!(generation)
+          File.write!(Path.join(generation, ".complete"), "")
+          signature
+        end
+      else
+        {:error, reason} ->
+          Logger.debug("[DuskmoonBundler] Vendor generation snapshot failed: #{inspect(reason)}")
+          signature
+      end
+    else
+      signature
+    end
+  end
+
+  defp generation_dir(opts, hash) do
+    if is_binary(opts[:root]) and is_binary(opts[:browser_token]) do
+      identity =
+        {opts[:root], opts[:entry], opts[:aliases], opts[:node_modules], opts[:plugins],
+         opts[:resolve_dirs], opts[:module_types], opts[:vendor_source], opts[:browser_token],
+         hash}
+
+      key = :crypto.hash(:sha256, :erlang.term_to_binary(identity)) |> Base.encode16(case: :lower)
+      Path.join([cache_dir(), "generations", key])
+    end
+  end
+
+  defp historical_generation?(opts) do
+    Keyword.keyword?(opts) and is_binary(opts[:browser_generation]) and
+      opts[:browser_hash] != opts[:browser_current_hash]
+  end
+
+  defp retain_generation_result({:ok, path}, specifier, opts) do
+    with {:ok, code} <- File.read(path) do
+      if Keyword.keyword?(opts) and is_binary(opts[:browser_generation]) do
+        retain_generation_file(opts[:browser_generation], specifier, code)
+      end
+
+      {:ok, code}
+    end
+  end
+
+  defp retain_generation_result(error, _specifier, _opts), do: error
+
+  defp retain_generation_file(generation, specifier, code) do
+    path = Path.join(generation, encode_specifier(specifier) <> ".js")
+
+    unless File.regular?(path) do
+      File.mkdir_p!(generation)
+      temp = path <> "." <> cache_nonce() <> ".tmp"
+
+      try do
+        File.write!(temp, code)
+        File.rename!(temp, path)
+      after
+        File.rm(temp)
+      end
+    end
   end
 
   defp browser_hash_for_url(opts) do
@@ -334,6 +467,14 @@ defmodule DuskmoonBundler.JS.Vendor do
     do: read_vendor_output(read_cached(specifier), opts)
 
   def read(specifier, opts) do
+    case opts[:browser_generation] &&
+           File.read(Path.join(opts[:browser_generation], encode_specifier(specifier) <> ".js")) do
+      {:ok, _code} = ok -> read_vendor_output(ok, opts)
+      _ -> read_current_vendor(specifier, opts)
+    end
+  end
+
+  defp read_current_vendor(specifier, opts) do
     {plugins, resolve_dirs, module_types, source_specifiers, browser_token} =
       normalize_on_demand_opts(opts)
 
@@ -341,15 +482,16 @@ defmodule DuskmoonBundler.JS.Vendor do
     module_dirs = module_dirs(node_modules, resolve_dirs)
     specifier = DuskmoonBundler.PluginRunner.prebundle_alias(plugins, specifier)
 
-    if cache_fresh?(
-         specifier,
-         module_dirs,
-         plugins,
-         module_types,
-         source_specifiers,
-         browser_token,
-         Keyword.get(opts, :browser_signature)
-       ) do
+    if not historical_generation?(opts) and
+         cache_fresh?(
+           specifier,
+           module_dirs,
+           plugins,
+           module_types,
+           source_specifiers,
+           browser_token,
+           Keyword.get(opts, :browser_signature)
+         ) do
       read_vendor_output(read_cached(specifier), opts)
     else
       {:error, :not_found}
