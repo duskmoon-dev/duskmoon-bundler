@@ -1,5 +1,12 @@
 # Changelog
 
+## 10.1.8 - 2026-11-12
+
+- Repair installed npm packages whose manifest version differs from the lockfile,
+  including nested packages and explicit symlinks, instead of incorrectly
+  reporting the install is up to date (#24). Invalid installed manifests also
+  trigger relinking from the current lockfile without changing locked versions.
+
 ## 10.1.7 - 2026-11-11
 
 - Scan Tailwind CSS source declarations relative to their declaring stylesheet,

@@ -20,6 +20,12 @@ location. A workspace's exact pin can coexist with a different hoisted version
 used by a broader transitive requirement. Repeating an install or reconstructing
 `node_modules` preserves the existing lockfile bytes when that graph is valid.
 
+An ordinary `mix npm.install` also checks each installed registry package's
+`package.json` version against its lockfile record, including nested packages
+and explicit cache symlinks. A different version or unreadable/invalid manifest
+triggers installation from the current lockfile instead of reporting
+`Already up to date.`; locked versions and lockfile bytes are preserved.
+
 ## Development dependencies
 
 ```bash

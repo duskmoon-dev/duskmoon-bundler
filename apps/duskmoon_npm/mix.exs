@@ -1,7 +1,7 @@
 defmodule DuskmoonNpm.MixProject do
   use Mix.Project
 
-  @version "10.1.7"
+  @version "10.1.8"
   @source_url "https://github.com/duskmoon-dev/duskmoon-bundler"
 
   def project do

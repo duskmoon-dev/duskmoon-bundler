@@ -118,6 +118,95 @@ defmodule NPM.InstallTest do
     assert_symlink_target!(installed_path, cache_path)
   end
 
+  for strategy <- [:copy, :symlink], location <- [:root, :nested] do
+    @tag :installed_manifest
+    @tag strategy: strategy, install_location: location
+    test "repairs a stale #{location} package with #{strategy} linking without changing the lock",
+         %{
+           project_dir: project_dir,
+           strategy: strategy,
+           install_location: install_location
+         } do
+      System.put_env("NPM_EX_LINK_STRATEGY", Atom.to_string(strategy))
+      package = "@fixture/components"
+      version = "0.6.2"
+      cache_path = write_cached_package!(package, version)
+      stale_cache_path = write_cached_package!(package, "0.5.5")
+
+      {dependencies, flat, nested, location} =
+        case install_location do
+          :root ->
+            {%{package => version}, %{package => lock_entry(package, version)}, %{},
+             "node_modules/#{package}"}
+
+          :nested ->
+            parent = "fixture-parent"
+            write_cached_package!(parent, "1.0.0")
+            location = "node_modules/#{parent}/node_modules/#{package}"
+
+            {%{parent => "1.0.0"},
+             %{parent => lock_entry(parent, "1.0.0", dependencies: %{package => version})},
+             %{location => lock_entry(package, version)}, location}
+        end
+
+      write_package!(project_dir, %{"name" => "stale-install", "dependencies" => dependencies})
+      assert :ok = NPM.Lockfile.write(flat, nested: nested)
+      original_lock = File.read!("package-lock.json")
+      capture_io(fn -> assert :ok = NPM.install(frozen: true) end)
+      installed_path = Path.join(project_dir, location)
+      File.rm_rf!(installed_path)
+      File.mkdir_p!(Path.dirname(installed_path))
+
+      case strategy do
+        :copy -> File.cp_r!(stale_cache_path, installed_path)
+        :symlink -> File.ln_s!(stale_cache_path, installed_path)
+      end
+
+      assert installed_version!(installed_path) == "0.5.5"
+      output = capture_io(fn -> assert :ok = NPM.install() end)
+
+      assert output =~ "Installing from current package-lock.json."
+      refute output =~ "Already up to date."
+      assert installed_version!(installed_path) == version
+      assert File.read!("package-lock.json") == original_lock
+
+      case strategy do
+        :copy -> assert_copied_package(cache_path, installed_path)
+        :symlink -> assert_symlink_target!(installed_path, cache_path)
+      end
+
+      output = capture_io(fn -> assert :ok = NPM.install() end)
+      assert output =~ "Already up to date."
+      assert File.read!("package-lock.json") == original_lock
+    end
+  end
+
+  for {description, manifest} <- [
+        {"invalid JSON", "{"},
+        {"missing version", ~s({"name":"manifest-package"})},
+        {"non-string version", ~s({"version":1})},
+        {"non-object JSON", "[]"}
+      ] do
+    @tag :installed_manifest
+    test "repairs an installed manifest containing #{description}", %{project_dir: project_dir} do
+      package = "manifest-package"
+      version = "1.0.0"
+      write_cached_package!(package, version)
+      write_package!(project_dir, %{"dependencies" => %{package => version}})
+      assert :ok = NPM.Lockfile.write(%{package => lock_entry(package, version)})
+      original_lock = File.read!("package-lock.json")
+      installed_path = Path.join([project_dir, "node_modules", package])
+      File.mkdir_p!(installed_path)
+      File.write!(Path.join(installed_path, "package.json"), unquote(manifest))
+
+      output = capture_io(fn -> assert :ok = NPM.install() end)
+
+      assert output =~ "Installing from current package-lock.json."
+      assert installed_version!(installed_path) == version
+      assert File.read!("package-lock.json") == original_lock
+    end
+  end
+
   test "re-resolves a lockfile with missing transitive package records", %{
     project_dir: project_dir
   } do
