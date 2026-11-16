@@ -39,6 +39,10 @@ package-lock.json
 # Generated QuickBEAM precompiled NIF copied during local compiles.
 /apps/duskmoon_quickbeam/priv/lib/
 
+# QuickBEAM's generated Zigler wrapper and compiled test addon.
+/apps/duskmoon_quickbeam/lib/quickbeam/.Elixir.QuickBEAM.Native.zig
+/apps/duskmoon_quickbeam/test/support/test_addon.node
+
 # Generated Rust NIF output copied during local compiles.
 /apps/duskmoon_oxc/priv/native/
 /apps/duskmoon_oxc/target/

@@ -9,8 +9,15 @@ source = opts[:source]
 for row <- inventory["files"], row["action"] in ["move", "duplicate", "split"] do
   destination =
     case row["destination_path"] do
-      "biome.json" -> "docs/archive/biome.json"
-      path -> path
+      "biome.json" ->
+        "docs/archive/biome.json"
+
+      # Zigler rebuilds this historical generated wrapper from the retained source.
+      "apps/duskmoon_quickbeam/lib/quickbeam/.Elixir.QuickBEAM.Native.zig" ->
+        "apps/duskmoon_quickbeam/lib/quickbeam/quickbeam.zig"
+
+      path ->
+        path
     end
 
   path = Path.join(root, destination)
