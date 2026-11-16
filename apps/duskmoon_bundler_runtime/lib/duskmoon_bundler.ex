@@ -7,6 +7,9 @@ defmodule DuskmoonBundler do
   heavy build and development toolchain lives in the `:duskmoon_bundler` app.
   """
 
+  require Logger
+
+  alias DuskmoonBundler.Manifest
   alias DuskmoonBundler.Runtime.Config
   alias DuskmoonBundler.StaticPath
   alias DuskmoonBundler.URL
@@ -92,8 +95,21 @@ defmodule DuskmoonBundler do
 
   defp built_static_path(conn_or_socket_or_endpoint_or_uri, path, config) do
     case StaticPath.resolve(conn_or_socket_or_endpoint_or_uri, path, config) do
-      {:ok, resolved_path} -> resolved_path
-      {:error, _error} -> ensure_leading_slash(path)
+      {:ok, resolved_path} ->
+        resolved_path
+
+      # No build output yet, or an asset the bundler does not manage.
+      {:error, %Manifest.Error{reason: {:missing_manifest, _}}} ->
+        ensure_leading_slash(path)
+
+      {:error, %Manifest.Error{reason: {:missing_asset, _, _}}} ->
+        ensure_leading_slash(path)
+
+      # A damaged manifest must not break rendering, but serving unhashed
+      # paths silently would hide a broken deploy.
+      {:error, error} ->
+        Logger.error("[DuskmoonBundler] #{Exception.message(error)}; serving #{path} unhashed")
+        ensure_leading_slash(path)
     end
   end
 

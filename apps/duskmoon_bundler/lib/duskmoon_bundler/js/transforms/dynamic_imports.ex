@@ -53,8 +53,7 @@ defmodule DuskmoonBundler.JS.Transforms.DynamicImports do
        %DuskmoonBundler.JS.Transforms.DynamicImports.Replacement{
          start: ref.start,
          end: ref.end,
-         template:
-           String.slice(source, ref.template_start, ref.template_end - ref.template_start),
+         template: binary_part(source, ref.template_start, ref.template_end - ref.template_start),
          pattern: path_pattern,
          query: query
        }}

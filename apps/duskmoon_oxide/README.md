@@ -22,7 +22,8 @@ def deps do
 end
 ```
 
-Requires a Rust toolchain (`rustup` recommended). The NIF compiles automatically on `mix compile`.
+Precompiled NIFs are available for macOS (aarch64, x86_64), Linux (aarch64 and x86_64, glibc and musl), Windows (x86_64), and FreeBSD (x86_64).
+Building from source requires a Rust toolchain (`rustup` recommended).
 
 ## Usage
 

@@ -113,6 +113,42 @@ defmodule ReleasePlanningTest do
     end
   end
 
+  @tag :tmp_dir
+  test "http! never falls back to the authenticated asset route on a 4xx", %{tmp_dir: tmp} do
+    bin = Path.join(tmp, "bin")
+    File.mkdir_p!(bin)
+
+    File.write!(Path.join(bin, "curl"), "#!/bin/sh\nprintf 404\n")
+
+    File.write!(Path.join(bin, "gh"), ~S"""
+    #!/bin/sh
+    printf '%s\n' "$*" >> "$HTTP_TEST_ROOT/gh-calls"
+    """)
+
+    for command <- ["curl", "gh"], do: File.chmod!(Path.join(bin, command), 0o755)
+
+    {output, status} =
+      System.cmd(
+        "elixir",
+        [
+          "-r",
+          Path.join(__DIR__, "release_support.exs"),
+          "-e",
+          "System.put_env(\"PATH\", System.fetch_env!(\"HTTP_TEST_PATH\")); ReleaseSupport.http!(\"https://github.com/example/toolchain/releases/download/v10.0.3/asset.tar.gz\", hd(System.argv()), retry_base_ms: 1)",
+          Path.join(tmp, "out")
+        ],
+        stderr_to_stdout: true,
+        env: [
+          {"HTTP_TEST_PATH", bin <> ":" <> System.fetch_env!("PATH")},
+          {"HTTP_TEST_ROOT", tmp}
+        ]
+      )
+
+    assert status != 0
+    assert output =~ "unexpected status 404"
+    refute File.exists?(Path.join(tmp, "gh-calls"))
+  end
+
   test "retry reuses matching output and refuses replacement" do
     assert :create = ReleaseSupport.immutable_action(nil, "sha256:a")
     assert :reuse = ReleaseSupport.immutable_action("sha256:a", "sha256:a")
@@ -190,6 +226,31 @@ defmodule ReleaseRecoveryContractTest do
 
     duplicate = incomplete ++ [%{"name" => "native / 46", "conclusion" => "success"}]
     assert_raise RuntimeError, fn -> ReleaseSupport.recovery_run!(run(), duplicate, @sha) end
+  end
+
+  test "recovery accepts the eight-target matrix and rejects a failed artifact" do
+    targets =
+      ~w(aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu aarch64-unknown-linux-musl x86_64-unknown-linux-gnu x86_64-unknown-linux-musl x86_64-unknown-freebsd x86_64-pc-windows-gnu)
+
+    crates = ~w(oxc_ex_nif oxc_fmt_nif oxc_lint_nif oxide_ex_nif vize_ex_nif)
+
+    native =
+      for target <- targets,
+          crate <- crates ++ if(target == "x86_64-pc-windows-gnu", do: [], else: ["quickbeam"]) do
+        %{"name" => "native / #{target} / #{crate} / #{target}", "conclusion" => "success"}
+      end
+
+    gates = Enum.filter(jobs(), &(&1["name"] in ["validate", "stage"]))
+    assert :ok = ReleaseSupport.recovery_run!(run(), gates ++ native, @sha)
+    [first | rest] = native
+
+    assert_raise RuntimeError, fn ->
+      ReleaseSupport.recovery_run!(
+        run(),
+        gates ++ [Map.put(first, "conclusion", "failure") | rest],
+        @sha
+      )
+    end
   end
 
   test "recovery also accepts independently rerun target workflows" do

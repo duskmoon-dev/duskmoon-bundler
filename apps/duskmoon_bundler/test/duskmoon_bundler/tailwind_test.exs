@@ -48,6 +48,17 @@ defmodule DuskmoonBundler.TailwindTest do
       end
     end
 
+    test "returns minification errors instead of unminified CSS" do
+      assert {:error, [error | _]} =
+               DuskmoonBundler.Tailwind.build(
+                 sources: [%{base: @fixture_dir, pattern: "**/*.html"}],
+                 css: "@import \"tailwindcss\"; .a > { color: red }",
+                 minify: true
+               )
+
+      assert error =~ "CSS parse error"
+    end
+
     test "generates CSS from source files" do
       {:ok, css} =
         DuskmoonBundler.Tailwind.build(

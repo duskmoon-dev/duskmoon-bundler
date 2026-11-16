@@ -19,5 +19,6 @@ defmodule DuskmoonBundler.DevServer.Config do
             vendor_url_token: nil,
             module_types: %{},
             define: %{},
-            hmr_timeout: 60_000
+            hmr_timeout: 60_000,
+            allowed_origins: []
 end

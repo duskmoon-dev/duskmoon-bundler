@@ -6,6 +6,16 @@ defmodule Vize.CSS do
   strings, numbers, booleans, and `nil`. Use `parse_ast/2` to parse CSS,
   transform the returned AST with `prewalk/2` or `postwalk/2`, and then use
   `print_ast/2` to serialize it back to CSS.
+
+  ## Error contracts
+
+  `compile/2`, `bundle/2`, `parse_ast/2`, and `print_ast/2` return
+  `{:ok, result}` even for parser, file, and compiler failures. Check the
+  `result.errors` list before consuming the output; their bang variants raise
+  `RuntimeError` when this list is nonempty. `select/3`, `collect_urls/2`, and
+  `rewrite_urls/3` instead return `{:error, %Vize.Error{}}`, and their bang
+  variants raise `Vize.Error`. These existing contracts are retained for
+  compatibility.
   """
 
   @type css_result :: %{
@@ -22,6 +32,13 @@ defmodule Vize.CSS do
           ast: map() | nil,
           errors: [String.t()],
           warnings: [String.t()]
+        }
+
+  @type bundle_result :: %{
+          code: String.t(),
+          errors: [String.t()],
+          warnings: [String.t()],
+          exports: %{optional(String.t()) => String.t()} | nil
         }
 
   @type url_ref :: Vize.CSS.URL.t()
@@ -94,6 +111,9 @@ defmodule Vize.CSS do
   Reads the entry file and all imported files from disk, resolving `@import`
   rules recursively. The result is a single merged stylesheet with all imports
   inlined, wrapped in the appropriate `@media`, `@supports`, and `@layer` rules.
+  Relative asset URLs in imported files are rebased to the entry file's
+  directory. Query strings and fragments are preserved; absolute, remote,
+  data, and fragment-only URLs are left unchanged.
 
   ## Options
 
@@ -101,7 +121,7 @@ defmodule Vize.CSS do
     * `:css_modules` — enable CSS Modules scoping (default: `false`)
     * `:targets` — browser targets for autoprefixing
   """
-  @spec bundle(String.t(), keyword()) :: {:ok, css_result()}
+  @spec bundle(String.t(), keyword()) :: {:ok, bundle_result()}
   def bundle(entry_path, opts \\ []) do
     minify = Keyword.get(opts, :minify, false)
     css_modules = Keyword.get(opts, :css_modules, false)
@@ -121,7 +141,7 @@ defmodule Vize.CSS do
   end
 
   @doc "Like `bundle/2` but raises on errors."
-  @spec bundle!(String.t(), keyword()) :: css_result()
+  @spec bundle!(String.t(), keyword()) :: bundle_result()
   def bundle!(entry_path, opts \\ []) do
     case bundle(entry_path, opts) do
       {:ok, result} ->
@@ -169,6 +189,9 @@ defmodule Vize.CSS do
 
   Returns byte offsets for the URL value inside the original source, suitable for
   source patching without round-tripping through the serialized CSS AST.
+
+  A URL written with CSS escapes (for example `url(img\\ a.png)`) has no byte
+  range matching its unescaped value and is omitted from the result.
   """
   @spec collect_urls(String.t(), keyword()) :: {:ok, [url_ref()]} | {:error, Vize.Error.t()}
   def collect_urls(source, opts \\ []) do
@@ -213,7 +236,8 @@ defmodule Vize.CSS do
 
   The callback receives each URL string and returns either `:keep` or
   `{:rewrite, new_url}`. Rewrites are applied to the original source using byte
-  ranges reported by the native parser.
+  ranges reported by the native parser. URLs written with CSS escapes are not
+  passed to the callback and are left unchanged; see `collect_urls/2`.
   """
   @spec rewrite_urls(String.t(), keyword(), (String.t() -> :keep | {:rewrite, iodata()})) ::
           {:ok, String.t()} | {:error, Vize.Error.t()}
@@ -410,9 +434,13 @@ defmodule Vize.CSS do
     {chunks, offset} =
       patches
       |> Enum.uniq_by(fn %{start: start, end: end_offset} -> {start, end_offset} end)
-      |> Enum.sort_by(fn %{start: start} -> start end)
+      |> Enum.sort_by(fn %{start: start, end: end_offset} -> {start, end_offset} end)
       |> Enum.reduce({[], 0}, fn %{start: start, end: end_offset, change: replacement},
                                  {chunks, offset} ->
+        if start < offset or end_offset < start or end_offset > byte_size(source) do
+          raise ArgumentError, "invalid or overlapping CSS URL ranges"
+        end
+
         chunk = binary_part(source, offset, start - offset)
         {[replacement, chunk | chunks], end_offset}
       end)

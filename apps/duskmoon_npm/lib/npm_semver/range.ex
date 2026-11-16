@@ -135,12 +135,18 @@ defmodule NPMSemver.Range do
   # --- Token → comparator set builder ---
 
   defp build_sets(tokens, include_pre) do
-    sets =
-      tokens
-      |> split_on_or()
-      |> Enum.map(fn set_tokens -> build_comparator_set(set_tokens, include_pre) end)
-
-    {:ok, sets}
+    tokens
+    |> split_on_or()
+    |> Enum.reduce_while({:ok, []}, fn set_tokens, {:ok, sets} ->
+      case build_comparator_set(set_tokens, include_pre) do
+        {:ok, set} -> {:cont, {:ok, [set | sets]}}
+        :error -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, sets} -> {:ok, Enum.reverse(sets)}
+      :error -> :error
+    end
   end
 
   defp split_on_or(tokens) do
@@ -155,28 +161,19 @@ defmodule NPMSemver.Range do
     end)
   end
 
+  # Like node-semver, a hyphen is only valid as exactly `A - B`; anywhere else
+  # (`1.2.3-`, `>=1 - 2`, `1 - 2 - 3`) the range is invalid.
   defp build_comparator_set(tokens, include_pre) do
-    case find_hyphen(tokens) do
-      {:hyphen, before, after_} ->
-        from = extract_partial(before)
-        to = extract_partial(after_)
-        expand_hyphen(from, to, include_pre)
+    if Enum.any?(tokens, &match?({:hyphen_sep, _}, &1)) do
+      case tokens do
+        [{:partial, from}, {:hyphen_sep, _}, {:partial, to}] ->
+          {:ok, expand_hyphen(to_partial(from), to_partial(to), include_pre)}
 
-      :none ->
-        build_comparators(tokens, include_pre)
-    end
-  end
-
-  defp find_hyphen(tokens) do
-    case Enum.split_while(tokens, fn
-           {:hyphen_sep, _} -> false
-           _ -> true
-         end) do
-      {before, [{:hyphen_sep, _} | after_]} when before != [] and after_ != [] ->
-        {:hyphen, before, after_}
-
-      _ ->
-        :none
+        _ ->
+          :error
+      end
+    else
+      {:ok, build_comparators(tokens, include_pre)}
     end
   end
 
@@ -222,13 +219,6 @@ defmodule NPMSemver.Range do
 
   # --- Partial extraction ---
 
-  defp extract_partial(tokens) do
-    case tokens do
-      [{:partial, parts}] -> to_partial(parts)
-      _ -> {nil, nil, nil, nil}
-    end
-  end
-
   defp to_partial(parts) do
     {nums, extra} = Enum.split_while(parts, fn x -> is_integer(x) or x == :x end)
 
@@ -238,13 +228,12 @@ defmodule NPMSemver.Range do
         nil -> nil
       end
 
-    nums =
-      Enum.map(nums, fn
-        :x -> nil
-        n -> n
-      end)
+    # Like node-semver, everything after the first wildcard is ignored, so
+    # `1.x.3` is `1.x` and a wildcard partial carries no prerelease.
+    {known, wildcards} = Enum.split_while(nums, &is_integer/1)
+    pre = if wildcards == [], do: pre
 
-    case nums do
+    case known do
       [maj] -> {maj, nil, nil, pre}
       [maj, min] -> {maj, min, nil, pre}
       [maj, min, pat] -> {maj, min, pat, pre}

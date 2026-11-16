@@ -39,10 +39,22 @@ defmodule OXC.Lint.TypeAware do
               help: nil,
               fixes: [],
               suggestions: []
+
+    @type t :: %__MODULE__{
+            rule: String.t(),
+            message: String.t(),
+            severity: OXC.Lint.severity(),
+            file: String.t() | nil,
+            span: {non_neg_integer(), non_neg_integer()},
+            labels: [{non_neg_integer(), non_neg_integer()}],
+            help: String.t() | nil,
+            fixes: [map()],
+            suggestions: [map()]
+          }
   end
 
   @type severity :: OXC.Lint.severity()
-  @type diagnostic :: OXC.Lint.diagnostic()
+  @type diagnostic :: Diagnostic.t()
 
   @doc "Run tsgolint on a list of files."
   @spec run([String.t()], keyword()) :: {:ok, [diagnostic()]} | {:error, [String.t()]}
@@ -61,7 +73,7 @@ defmodule OXC.Lint.TypeAware do
   defp find_executable(opts) do
     executable =
       Keyword.get(opts, :tsgolint) ||
-        get_in(Application.get_env(:oxc, :tsgolint, []), [:executable]) ||
+        configured_executable() ||
         System.find_executable("tsgolint")
 
     cond do
@@ -71,12 +83,21 @@ defmodule OXC.Lint.TypeAware do
     end
   end
 
+  # `:oxc` is the application name used before the Duskmoon fork.
+  defp configured_executable do
+    Enum.find_value([:duskmoon_oxc, :oxc], fn app ->
+      get_in(Application.get_env(app, :tsgolint, []), [:executable])
+    end)
+  end
+
   defp run_tsgolint(executable, files, opts) do
-    payload_path = write_payload!(build_payload(files, opts))
-    stderr_path = tmp_path("oxc-tsgolint-stderr")
+    tmp_dir = make_tmp_dir!()
+    payload_path = Path.join(tmp_dir, "payload.json")
+    stderr_path = Path.join(tmp_dir, "stderr")
     args = ["headless" | headless_flags(opts)]
 
     try do
+      File.write!(payload_path, Jason.encode!(build_payload(files, opts)))
       command_args = ["sh", payload_path, stderr_path, executable | args]
 
       {output, status} =
@@ -94,21 +115,30 @@ defmodule OXC.Lint.TypeAware do
       stderr = read_file(stderr_path)
       handle_tsgolint_result(output, stderr, status, severity_by_rule(opts))
     after
-      File.rm(payload_path)
-      File.rm(stderr_path)
+      File.rm_rf(tmp_dir)
     end
   rescue
     exception -> {:error, [Exception.message(exception)]}
   end
 
-  defp write_payload!(payload) do
-    path = tmp_path("oxc-tsgolint-payload", ".json")
-    File.write!(path, Jason.encode!(payload))
-    path
-  end
+  # The payload can carry unsaved source text, so it lives in a directory only
+  # this user can enter. `File.mkdir/1` fails on an existing path instead of
+  # reusing one another local user prepared.
+  defp make_tmp_dir!(attempts \\ 3) do
+    suffix = Base.url_encode64(:rand.bytes(16), padding: false)
+    path = Path.join(System.tmp_dir!(), "oxc-tsgolint-#{suffix}")
 
-  defp tmp_path(prefix, extension \\ "") do
-    Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}#{extension}")
+    case File.mkdir(path) do
+      :ok ->
+        File.chmod!(path, 0o700)
+        path
+
+      {:error, :eexist} when attempts > 1 ->
+        make_tmp_dir!(attempts - 1)
+
+      {:error, reason} ->
+        raise File.Error, reason: reason, action: "make directory", path: path
+    end
   end
 
   defp read_file(path) do

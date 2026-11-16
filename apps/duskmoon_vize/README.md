@@ -26,7 +26,8 @@ def deps do
 end
 ```
 
-Requires a Rust toolchain (`rustup` recommended). The NIF compiles automatically on `mix compile`.
+Precompiled NIFs are available for macOS (aarch64, x86_64), Linux (aarch64 and x86_64, glibc and musl), Windows (x86_64), and FreeBSD (x86_64).
+Building from source requires a Rust toolchain (`rustup` recommended).
 
 ## Usage
 
@@ -179,6 +180,11 @@ croquis.template_expressions
 ```
 
 ### CSS Compilation
+
+The native wrapper uses the same pinned `vize_lightningcss` 0.702.0 fork as
+Vize's SFC compiler. Its source-map dependency uses `rkyv` 0.8.18, avoiding the
+vulnerable 0.7 dependency of the original LightningCSS package
+([RUSTSEC-2026-0235](https://rustsec.org/advisories/RUSTSEC-2026-0235.html)).
 
 Standalone CSS compilation via LightningCSS — parse, autoprefix, and minify CSS
 independently of SFC compilation:

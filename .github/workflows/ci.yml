@@ -21,6 +21,40 @@ jobs:
       - run: mix format --check-formatted
       - run: mix compile --warnings-as-errors
       - uses: ./.github/actions/hologram-checks
+  compile-compatibility:
+    name: compile / Elixir ${{ matrix.elixir }} / OTP 28
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        elixir: ['1.19', '1.20']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          elixir: ${{ matrix.elixir }}
+      - run: mix compile --warnings-as-errors
+  workflow-lint:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - run: '"$(go env GOPATH)/bin/actionlint" -color'
+  native-lint:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-toolchain
+      - run: elixir scripts/check-native-copies.exs
+      - run: elixir scripts/check-toolchain-pins.exs
+      - name: Clippy for every first-party Rust crate
+        run: |
+          for manifest in apps/duskmoon_{oxc,oxide,vize}/native/*/Cargo.toml; do
+            cargo clippy --manifest-path "$manifest" --locked -- -D warnings
+          done
   native-downloads:
     name: native-downloads / ${{ matrix.runner }}
     runs-on: ${{ matrix.runner }}

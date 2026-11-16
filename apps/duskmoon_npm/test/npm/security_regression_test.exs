@@ -87,6 +87,47 @@ defmodule NPM.SecurityRegressionTest do
 
       assert {:ok, %{"JSONStream" => _, "@scope/pkg" => _}} = Lockfile.read("package-lock.json")
     end
+
+    test "accepts the same legacy names in nested and workspace locations" do
+      nested = [
+        "node_modules/a/node_modules/JSONStream",
+        "node_modules/a/node_modules/@0no-co/graphql.web",
+        "node_modules/a/node_modules/@11ty/x",
+        "node_modules/JSONStream/node_modules/@0no-co/graphql.web",
+        "node_modules/@11ty/x/node_modules/JSONStream",
+        "apps/web/node_modules/JSONStream"
+      ]
+
+      write_package_lock!(
+        Map.new(nested, &{&1, entry("1.0.0")})
+        |> Map.merge(%{
+          "node_modules/a" => entry("1.0.0"),
+          "node_modules/JSONStream" => entry("1.3.5"),
+          "node_modules/@11ty/x" => entry("1.0.0")
+        })
+      )
+
+      assert {:ok, locations} = Lockfile.read_nested("package-lock.json")
+      assert Enum.sort(Map.keys(locations)) == Enum.sort(nested)
+
+      assert {:ok, "@0no-co/graphql.web"} =
+               Lockfile.nested_package_name("node_modules/a/node_modules/@0no-co/graphql.web")
+    end
+
+    for location <- [
+          "node_modules/a/node_modules/..",
+          "node_modules/a/node_modules/.bin",
+          "node_modules/a/node_modules/_x",
+          "node_modules/a/node_modules/@/x",
+          "node_modules/a/node_modules/@s/..",
+          "node_modules/a/node_modules/@s/.x",
+          "node_modules/a/node_modules/b\\c",
+          "node_modules/a/node_modules/@s"
+        ] do
+      test "still rejects unsafe nested name in #{location}" do
+        assert :error = Lockfile.nested_package_name(unquote(location))
+      end
+    end
   end
 
   describe "cache path validation" do

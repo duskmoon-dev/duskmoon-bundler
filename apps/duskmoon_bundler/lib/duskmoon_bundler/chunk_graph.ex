@@ -24,8 +24,9 @@ defmodule DuskmoonBundler.ChunkGraph do
           "ui" => ["assets/src/components"]
         }
 
-  Patterns match module paths: bare specifiers match package names in
-  `node_modules`, while path patterns match against the full module path.
+  Patterns match module paths: bare specifiers (`"vue"`, `"@scope/pkg"`,
+  `"lodash/fp"`) match packages in `node_modules` or a configured package
+  directory, while path patterns match against the full module path.
   """
 
   defmodule Chunk do
@@ -48,7 +49,7 @@ defmodule DuskmoonBundler.ChunkGraph do
           }
   end
 
-  defstruct chunks: %{}, module_to_chunk: %{}
+  defstruct chunks: %{}, module_to_chunk: %{}, unmatched_patterns: []
 
   @type chunk :: Chunk.t()
 
@@ -63,6 +64,11 @@ defmodule DuskmoonBundler.ChunkGraph do
 
     * `:manual_chunks` — map of chunk name to list of patterns,
       e.g. `%{"vendor" => ["vue", "vue-router"]}`
+    * `:package_dirs` — extra directories that contain packages (such as
+      `deps`), matched by bare manual chunk patterns like `node_modules`
+
+  Manual chunk patterns that match no module are returned in
+  `unmatched_patterns` as `{chunk_name, pattern}` tuples.
   """
   def build(entry_path, modules, dep_map, opts \\ []) do
     module_set = MapSet.new(modules, fn {path, _, _} -> path end)
@@ -90,14 +96,16 @@ defmodule DuskmoonBundler.ChunkGraph do
         {trimmed, shared_set}
       end
 
+    # The entry module always lives in the entry chunk; an async chunk that
+    # imports it links to that chunk instead of bundling a second copy.
     async_chunks =
-      if common_chunk do
-        Enum.map(async_chunks, fn {entry, id, mods} ->
-          {entry, id, MapSet.difference(mods, common_chunk)}
-        end)
-      else
-        async_chunks
-      end
+      Enum.map(async_chunks, fn {entry, id, mods} ->
+        mods = MapSet.delete(mods, entry_path)
+        {entry, id, if(common_chunk, do: MapSet.difference(mods, common_chunk), else: mods)}
+      end)
+
+    manual_chunks = Keyword.get(opts, :manual_chunks, %{})
+    package_dirs = opts |> Keyword.get(:package_dirs, []) |> Enum.reject(&is_nil/1)
 
     module_order = modules |> Enum.with_index() |> Map.new(fn {{path, _, _}, i} -> {path, i} end)
     order = fn set -> set |> MapSet.to_list() |> Enum.sort_by(&Map.get(module_order, &1, 0)) end
@@ -133,7 +141,7 @@ defmodule DuskmoonBundler.ChunkGraph do
             {ch, m2c}
 
           true ->
-            id = unique_id(id, ch)
+            id = unique_id(id, ch, manual_chunks)
             deps = if common_chunk, do: ["common"], else: []
 
             chunk = %Chunk{
@@ -147,10 +155,15 @@ defmodule DuskmoonBundler.ChunkGraph do
         end
       end)
 
-    manual_chunks = Keyword.get(opts, :manual_chunks, %{})
-
-    {chunks, module_to_chunk} =
-      apply_manual_chunks(chunks, module_to_chunk, manual_chunks, order, dynamic_entry_set)
+    {chunks, module_to_chunk, unmatched_patterns} =
+      apply_manual_chunks(
+        chunks,
+        module_to_chunk,
+        manual_chunks,
+        order,
+        dynamic_entry_set,
+        package_dirs
+      )
 
     module_to_chunk =
       Enum.reduce(Map.values(chunks), module_to_chunk, fn chunk, acc ->
@@ -159,7 +172,11 @@ defmodule DuskmoonBundler.ChunkGraph do
 
     chunks = put_chunk_links(chunks, dep_map, module_to_chunk)
 
-    %__MODULE__{chunks: chunks, module_to_chunk: module_to_chunk}
+    %__MODULE__{
+      chunks: chunks,
+      module_to_chunk: module_to_chunk,
+      unmatched_patterns: unmatched_patterns
+    }
   end
 
   defp common_member?(nil, _module), do: false
@@ -196,30 +213,44 @@ defmodule DuskmoonBundler.ChunkGraph do
     end)
   end
 
-  defp apply_manual_chunks(chunks, module_to_chunk, manual_chunks, _order, _dynamic_entry_set)
+  defp apply_manual_chunks(chunks, module_to_chunk, manual_chunks, _order, _dynamic, _dirs)
        when map_size(manual_chunks) == 0 do
-    {chunks, module_to_chunk}
+    {chunks, module_to_chunk, []}
   end
 
-  defp apply_manual_chunks(chunks, module_to_chunk, manual_chunks, order, dynamic_entry_set) do
+  defp apply_manual_chunks(
+         chunks,
+         module_to_chunk,
+         manual_chunks,
+         order,
+         dynamic_entry_set,
+         package_dirs
+       ) do
     all_modules =
       chunks
       |> Map.values()
       |> Enum.flat_map(& &1.modules)
+
+    unmatched_patterns =
+      for {chunk_name, patterns} <- manual_chunks,
+          pattern <- patterns,
+          not Enum.any?(all_modules, &matches_pattern?(&1, pattern, package_dirs)),
+          do: {chunk_name, pattern}
 
     assignments =
       Enum.reduce(all_modules, %{}, fn mod_path, acc ->
         if MapSet.member?(dynamic_entry_set, mod_path) do
           acc
         else
-          case find_manual_chunk(mod_path, manual_chunks) do
+          case find_manual_chunk(mod_path, manual_chunks, package_dirs) do
             nil -> acc
             chunk_name -> Map.update(acc, chunk_name, [mod_path], &[mod_path | &1])
           end
         end
       end)
 
-    Enum.reduce(assignments, {chunks, module_to_chunk}, fn {chunk_name, mod_paths}, {ch, m2c} ->
+    assignments
+    |> Enum.reduce({chunks, module_to_chunk}, fn {chunk_name, mod_paths}, {ch, m2c} ->
       mod_set = MapSet.new(mod_paths)
 
       ch =
@@ -246,6 +277,7 @@ defmodule DuskmoonBundler.ChunkGraph do
 
       {Map.put(ch, chunk_name, manual), m2c}
     end)
+    |> Tuple.insert_at(2, Enum.sort(unmatched_patterns))
   end
 
   defp discover_async_chunks(entry_modules, dep_map, module_set) do
@@ -328,30 +360,63 @@ defmodule DuskmoonBundler.ChunkGraph do
     end
   end
 
-  defp find_manual_chunk(mod_path, manual_chunks) do
+  defp find_manual_chunk(mod_path, manual_chunks, package_dirs) do
     Enum.find_value(manual_chunks, fn {chunk_name, patterns} ->
-      if Enum.any?(patterns, &matches_pattern?(mod_path, &1)) do
+      if Enum.any?(patterns, &matches_pattern?(mod_path, &1, package_dirs)) do
         chunk_name
       end
     end)
   end
 
-  defp matches_pattern?(mod_path, pattern) do
-    if path_pattern?(pattern) do
-      expanded = Path.expand(pattern)
-      String.starts_with?(mod_path, expanded <> "/") or mod_path == expanded
+  # `assets/src/components` and `lodash/fp` are indistinguishable by shape, so a
+  # pattern that is not explicitly a path is tried both as a path and a package.
+  defp matches_pattern?(mod_path, pattern, package_dirs) do
+    if explicit_path_pattern?(pattern) do
+      matches_path?(mod_path, pattern)
     else
-      String.contains?(mod_path, "/node_modules/#{pattern}/") or
-        String.ends_with?(mod_path, "/node_modules/#{pattern}")
+      matches_package?(mod_path, pattern, package_dirs) or
+        (String.contains?(pattern, "/") and matches_path?(mod_path, pattern))
     end
   end
 
-  defp path_pattern?(pattern) do
+  defp explicit_path_pattern?(pattern) do
     String.starts_with?(pattern, "/") or
       String.starts_with?(pattern, "./") or
-      String.starts_with?(pattern, "../") or
-      String.contains?(pattern, "/")
+      String.starts_with?(pattern, "../")
   end
+
+  defp matches_path?(mod_path, pattern) do
+    expanded = Path.expand(pattern)
+    String.starts_with?(mod_path, expanded <> "/") or mod_path == expanded
+  end
+
+  defp matches_package?(mod_path, pattern, package_dirs) do
+    mod_path
+    |> package_relative_paths(package_dirs)
+    |> Enum.any?(fn relative ->
+      relative == pattern or String.starts_with?(relative, pattern <> "/") or
+        (subpath_pattern?(pattern) and Path.rootname(relative) == pattern)
+    end)
+  end
+
+  defp package_relative_paths(mod_path, package_dirs) do
+    node_modules =
+      case String.split(mod_path, "/node_modules/") do
+        [_outside] -> []
+        parts -> [List.last(parts)]
+      end
+
+    in_package_dirs =
+      for dir <- package_dirs,
+          relative = Path.relative_to(mod_path, dir),
+          relative != mod_path,
+          do: relative
+
+    node_modules ++ in_package_dirs
+  end
+
+  defp subpath_pattern?("@" <> scoped), do: length(String.split(scoped, "/")) > 2
+  defp subpath_pattern?(pattern), do: String.contains?(pattern, "/")
 
   defp reachable_static(start, dep_map, module_set) do
     do_reachable([start], dep_map, module_set, MapSet.new())
@@ -372,9 +437,9 @@ defmodule DuskmoonBundler.ChunkGraph do
     end
   end
 
-  defp unique_id(id, chunks) do
-    if Map.has_key?(chunks, id) do
-      unique_id(id <> "_", chunks)
+  defp unique_id(id, chunks, manual_chunks) do
+    if Map.has_key?(chunks, id) or Map.has_key?(manual_chunks, id) do
+      unique_id(id <> "_", chunks, manual_chunks)
     else
       id
     end

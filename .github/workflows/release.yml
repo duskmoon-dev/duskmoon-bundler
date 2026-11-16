@@ -29,7 +29,6 @@ jobs:
     with:
       version: ${{ inputs.version }}
       source_sha: ${{ inputs.source_sha }}
-    secrets: inherit
   validate:
     if: ${{ !inputs.verify_published }}
     runs-on: ubuntu-26.04
@@ -76,64 +75,56 @@ jobs:
           path: ${{ runner.temp }}/reused-native-assets/*.tar.gz
           if-no-files-found: error
           overwrite: true
-  native-aarch64-apple-darwin:
+  native:
+    name: native / ${{ matrix.target }}
     needs: validate
     if: needs.validate.outputs.reuse_native != 'true'
-    uses: ./.github/workflows/native-aarch64-apple-darwin.yml
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-26
+            use_cross: false
+            quickbeam_target: 'aarch64-macos-none'
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-26.04-arm
+            use_cross: false
+            quickbeam_target: 'aarch64-linux-gnu'
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-26.04
+            use_cross: true
+            quickbeam_target: 'aarch64-linux-musl'
+          - target: x86_64-apple-darwin
+            runner: macos-26-intel
+            use_cross: false
+            quickbeam_target: 'x86_64-macos-none'
+          - target: x86_64-pc-windows-gnu
+            runner: windows-2025
+            use_cross: false
+            quickbeam_target: ''
+          - target: x86_64-unknown-freebsd
+            runner: ubuntu-26.04
+            use_cross: true
+            quickbeam_target: 'x86_64-freebsd-none'
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-26.04
+            use_cross: false
+            quickbeam_target: 'x86_64-linux-gnu'
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-26.04
+            use_cross: true
+            quickbeam_target: 'x86_64-linux-musl'
+    uses: ./.github/workflows/native-prebuild.yml
     with:
       version: ${{ inputs.version }}
       source_sha: ${{ inputs.source_sha }}
-  native-x86_64-apple-darwin:
-    needs: validate
-    if: needs.validate.outputs.reuse_native != 'true'
-    uses: ./.github/workflows/native-x86_64-apple-darwin.yml
-    with:
-      version: ${{ inputs.version }}
-      source_sha: ${{ inputs.source_sha }}
-  native-aarch64-unknown-linux-gnu:
-    needs: validate
-    if: needs.validate.outputs.reuse_native != 'true'
-    uses: ./.github/workflows/native-aarch64-unknown-linux-gnu.yml
-    with:
-      version: ${{ inputs.version }}
-      source_sha: ${{ inputs.source_sha }}
-  native-aarch64-unknown-linux-musl:
-    needs: validate
-    if: needs.validate.outputs.reuse_native != 'true'
-    uses: ./.github/workflows/native-aarch64-unknown-linux-musl.yml
-    with:
-      version: ${{ inputs.version }}
-      source_sha: ${{ inputs.source_sha }}
-  native-x86_64-unknown-linux-gnu:
-    needs: validate
-    if: needs.validate.outputs.reuse_native != 'true'
-    uses: ./.github/workflows/native-x86_64-unknown-linux-gnu.yml
-    with:
-      version: ${{ inputs.version }}
-      source_sha: ${{ inputs.source_sha }}
-  native-x86_64-unknown-linux-musl:
-    needs: validate
-    if: needs.validate.outputs.reuse_native != 'true'
-    uses: ./.github/workflows/native-x86_64-unknown-linux-musl.yml
-    with:
-      version: ${{ inputs.version }}
-      source_sha: ${{ inputs.source_sha }}
-  native-x86_64-unknown-freebsd:
-    needs: validate
-    if: needs.validate.outputs.reuse_native != 'true'
-    uses: ./.github/workflows/native-x86_64-unknown-freebsd.yml
-    with:
-      version: ${{ inputs.version }}
-      source_sha: ${{ inputs.source_sha }}
-  native-x86_64-pc-windows-gnu:
-    needs: validate
-    if: needs.validate.outputs.reuse_native != 'true'
-    uses: ./.github/workflows/native-x86_64-pc-windows-gnu.yml
-    with:
-      version: ${{ inputs.version }}
-      source_sha: ${{ inputs.source_sha }}
+      target: ${{ matrix.target }}
+      runner: ${{ matrix.runner }}
+      use_cross: ${{ matrix.use_cross }}
+      quickbeam_target: ${{ matrix.quickbeam_target }}
   stage:
-    needs: [validate, native-aarch64-apple-darwin, native-x86_64-apple-darwin, native-aarch64-unknown-linux-gnu, native-aarch64-unknown-linux-musl, native-x86_64-unknown-linux-gnu, native-x86_64-unknown-linux-musl, native-x86_64-unknown-freebsd, native-x86_64-pc-windows-gnu]
+    needs: [validate, native]
     if: ${{ always() && needs.validate.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (needs.validate.outputs.reuse_native == 'true' || !contains(needs.*.result, 'skipped')) }}
     runs-on: ubuntu-26.04
     steps:
@@ -168,6 +159,8 @@ jobs:
     runs-on: ubuntu-26.04
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     env:
       DUSKMOON_NATIVE_MODE: precompiled
       MIX_ENV: prod
@@ -188,6 +181,21 @@ jobs:
         with:
           name: exact-publish-packages
           path: ${{ runner.temp }}/packages
+      - name: Sign the native artifacts, exact Hex tarballs and release manifest
+        id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/native-assets/*.tar.gz
+            ${{ runner.temp }}/packages/**/*.tar
+            ${{ runner.temp }}/packages/release-provenance.json
+      - name: Retain the signed provenance bundle
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: release-attestations
+          path: ${{ steps.attest.outputs.bundle-path }}
+          if-no-files-found: error
+          overwrite: true
       - name: Make immutable native artifacts publicly downloadable first
         env:
           VERSION: ${{ inputs.version }}

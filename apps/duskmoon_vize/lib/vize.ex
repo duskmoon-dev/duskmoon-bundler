@@ -24,6 +24,25 @@ defmodule Vize do
       iex> [template] = ir.templates
       iex> template =~ "<div>"
       true
+
+  ## Error contracts
+
+  The existing entry points retain their return shapes for compatibility:
+
+  | Entry points | Error result | Bang exception |
+  | --- | --- | --- |
+  | `parse_sfc/1`, `compile_sfc/2`, `generate_dts/2` | `{:error, message}` with a string | `RuntimeError` |
+  | `compile_template/2`, `compile_ssr/1`, `vapor_ir/1`, `vapor_split/1` | `{:error, messages}` with a list of strings | `RuntimeError` |
+  | `analyze_sfc/2`, `compile_vapor/2` | `{:error, %Vize.Error{}}` | `Vize.Error` |
+
+  A successful tuple may also contain diagnostics: inspect `result.errors` and
+  `result.warnings` for SFC compilation, and `result.diagnostics` for template
+  and Vapor results. `lint/2` returns `{:ok, diagnostics}`; diagnostics are its
+  output rather than a failed operation. See `Vize.CSS` for CSS result shapes.
+
+  Callers needing one exception type can convert legacy errors with
+  `Vize.Error.new/2`. Changing every existing return shape and bang exception
+  requires a major version.
   """
 
   @type macro_artifact :: %{
@@ -371,11 +390,12 @@ defmodule Vize do
   @doc """
   Compile a Vue template into a statics/slots split ready for LiveView `%Rendered{}`.
 
-  Returns `{:ok, split}` where `split` has:
-  - `"statics"` — list of static HTML strings (interleaved between dynamic slots)
-  - `"slots"` — ordered list of slot descriptors, each with `:kind` and values/sub-IR
+  Returns `{:ok, split}` where `split` is an atom-keyed map with:
+  - `:statics` — list of static HTML strings (interleaved between dynamic slots)
+  - `:slots` — ordered list of slot descriptors, each with `:kind` and values/sub-IR
   - `:templates` — raw template strings (for sub-block rendering)
   - `:element_template_map` — element ID → template index mapping
+  - `:diagnostics` — recoverable parser notices
 
   The statics + slots can be directly assembled into a `%Phoenix.LiveView.Rendered{}`
   struct by evaluating each slot against assigns.
@@ -385,6 +405,9 @@ defmodule Vize do
     Vize.Native.vapor_split_nif(source)
   end
 
+  @doc """
+  Like `vapor_split/1` but raises on errors.
+  """
   @spec vapor_split!(String.t()) :: map()
   def vapor_split!(source) do
     case vapor_split(source) do

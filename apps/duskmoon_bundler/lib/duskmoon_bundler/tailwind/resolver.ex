@@ -65,7 +65,7 @@ defmodule DuskmoonBundler.Tailwind.Resolver do
       (node_modules_dirs_for(base) ++ List.wrap(resolve_dirs) ++ [runtime_node_modules])
       |> Enum.reject(&is_nil/1)
       |> Enum.uniq()
-      |> Enum.find_value(fn node_modules ->
+      |> Enum.reduce_while(nil, fn node_modules, nil ->
         package_dir = Path.join(node_modules, package_name)
 
         conditions = package_conditions(kind)
@@ -78,8 +78,9 @@ defmodule DuskmoonBundler.Tailwind.Resolver do
           end
 
         case result do
-          {:ok, path} -> {:ok, path}
-          _ -> nil
+          {:ok, path} -> {:halt, {:ok, path}}
+          :exports_denied -> {:halt, nil}
+          _ -> {:cont, nil}
         end
       end)
 
@@ -101,7 +102,9 @@ defmodule DuskmoonBundler.Tailwind.Resolver do
         ok
 
       :error ->
-        try_resolve(Path.join(package_dir, "index"), extensions, index_files)
+        if package_exports?(package_dir),
+          do: :exports_denied,
+          else: try_resolve(Path.join(package_dir, "index"), extensions, index_files)
     end
   end
 
@@ -115,8 +118,20 @@ defmodule DuskmoonBundler.Tailwind.Resolver do
         ok
 
       :error ->
-        subpath_bare = String.trim_leading(subpath, "./")
-        try_resolve(Path.join(package_dir, subpath_bare), extensions, index_files)
+        if package_exports?(package_dir) do
+          :exports_denied
+        else
+          subpath_bare = String.trim_leading(subpath, "./")
+          try_resolve(Path.join(package_dir, subpath_bare), extensions, index_files)
+        end
+    end
+  end
+
+  defp package_exports?(package_dir) do
+    with {:ok, package} <- NPM.JSON.read_file(Path.join(package_dir, "package.json")) do
+      not is_nil(NPM.Resolution.Exports.parse(package))
+    else
+      _ -> false
     end
   end
 

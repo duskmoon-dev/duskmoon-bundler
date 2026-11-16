@@ -1,5 +1,12 @@
 # Changelog
 
+## 10.1.10 - 2026-11-16
+
+- Resolve overlapping wildcard exports by Node's prefix and suffix specificity,
+  independent of declaration order, with exact-match priority (#26).
+- Preserve null export exclusions and prevent filesystem fallbacks from
+  exposing blocked package subpaths.
+
 ## 10.1.5 - 2026-11-09
 
 - Prune unreachable root and workspace lock records, including flat, nested
@@ -62,12 +69,44 @@
 
 ### Changed
 
-- Use `http_fetch` for registry metadata, tarballs, publishing, npm commands, and OSV checks, preserving caller-owned retries and registry redirect configuration.
-- Support the coordinated `http_fetch` 0.20.x family, preserving upstream response decoding, raw tarball bytes, registry retries, and publish upload bodies.
-- Require Elixir 1.18 or later.
+- Add explicit project `.npmrc` environment expansion through
+  `NPM_EX_EXPAND_PROJECT_NPMRC_ENV` or `:expand_project_npmrc_env`, defaulting
+  to off. A project `.npmrc` cannot enable the option itself; user-level
+  configuration continues to expand `${VAR}` references.
+- Reject registry lock entries without integrity during frozen installs and
+  `mix npm.ci`; ordinary installs retain legacy entries with a warning.
+- Use one file selection for package inspection, `mix npm.pack` and
+  `mix npm.publish`, including directory allowlists, ignore files, required
+  entry points and credential exclusions. Reject unsupported bundled dependencies.
+- Upload npm tarballs with version metadata and matching integrity; honor
+  scoped registry tokens and publish settings, reject private packages, and
+  propagate upload failures. Dry runs list packed files without registry access.
 
 ### Fixed
 
+- Resolve overlapping package exports by Node-compatible pattern specificity,
+  preserving exact matches and explicit null exclusions, including component
+  registration imports reported in #26.
+- Request publication timestamps for enabled package/version age warnings.
+- Retain platform constraints in lock entries and check them offline instead of
+  re-fetching optional package metadata on each install.
+- Execute compound `mix npm.run` scripts through a shell and quote additional
+  arguments to preserve their literal values.
+- Honor `.npmrc` scoped registries, isolate packument caches by registry and
+  avoid sending another registry's credentials to scoped packages.
+- Authenticate registry tarballs, preserve credentials only on same-origin
+  redirects, and enforce download and unpacked-size bounds, including raw tar
+  archives, GNU sparse logical sizes and extended sparse maps, before extraction.
+- Return extraction errors for malformed PAX numeric metadata instead of raising.
+- Publish cache entries atomically and retain existing complete entries when a
+  download fails. Keep nested package linking and executable bin permissions
+  isolated from the shared cache, including symlink installs with `0644` bins.
+- Reject unsafe workspace and local-link package names before changing install
+  paths, and resolve package bin paths from their package directory.
+- Parse wildcard semver components without arithmetic crashes and reject
+  malformed hyphen ranges instead of silently broadening them.
+- Parse `.npmrc` quoted values and semicolon comments, preserve safe cached
+  packuments, and allow legacy installable package names in nested lock records.
 - Isolate dependency resolution caches and options so concurrent installations cannot lose their cache when another caller exits or clears it. Preserve nested dependency linking after resolution.
 - `mix npm.update` now re-resolves matching lock entries instead of reusing stale versions that still satisfy manifest ranges.
 - Validate and restore workspace-local package-lock resolutions during frozen installs, keeping distinct root/workspace versions and nested transitive dependencies without modifying the lockfile.

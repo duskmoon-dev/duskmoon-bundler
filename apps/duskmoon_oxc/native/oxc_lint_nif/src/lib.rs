@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use oxc_allocator::Allocator;
+use oxc_diagnostics::Severity;
 use oxc_linter::{
     AllowWarnDeny, ConfigStore, ConfigStoreBuilder, ExternalPluginStore, FixKind, LintFilter,
     LintFilterKind, LintOptions, LintPlugins, Linter, ModuleRecord,
@@ -17,7 +18,6 @@ mod atoms {
         error,
         warn,
         deny,
-        allow,
     }
 }
 
@@ -55,11 +55,11 @@ fn parse_plugins(plugin_strs: &[String]) -> LintPlugins {
     plugins
 }
 
-fn severity_atom(severity: AllowWarnDeny) -> rustler::Atom {
+// The linter stamps each diagnostic with the severity configured for its rule.
+fn severity_atom(severity: Severity) -> rustler::Atom {
     match severity {
-        AllowWarnDeny::Allow => atoms::allow(),
-        AllowWarnDeny::Warn => atoms::warn(),
-        AllowWarnDeny::Deny => atoms::deny(),
+        Severity::Error => atoms::deny(),
+        Severity::Warning | Severity::Advice => atoms::warn(),
     }
 }
 
@@ -72,12 +72,10 @@ fn parse_severity(s: &str) -> AllowWarnDeny {
     }
 }
 
-struct LintConfig {
-    config_store: ConfigStore,
-    rule_severity_map: std::collections::HashMap<String, AllowWarnDeny>,
-}
-
-fn build_lint_config(plugins: &[String], rules: &[(String, String)]) -> Result<LintConfig, String> {
+fn build_lint_config(
+    plugins: &[String],
+    rules: &[(String, String)],
+) -> Result<ConfigStore, String> {
     let lint_plugins = if plugins.is_empty() {
         LintPlugins::default()
     } else {
@@ -100,26 +98,11 @@ fn build_lint_config(plugins: &[String], rules: &[(String, String)]) -> Result<L
         .build(&mut external_plugin_store)
         .map_err(|e| format!("Failed to build linter config: {e}"))?;
 
-    let rule_severity_map = config
-        .rules()
-        .iter()
-        .map(|(rule, severity)| (format_rule_enum_name(rule), *severity))
-        .collect();
-
-    Ok(LintConfig {
-        config_store: ConfigStore::new(config, Default::default(), external_plugin_store),
-        rule_severity_map,
-    })
-}
-
-fn format_rule_enum_name(rule: &oxc_linter::rules::RuleEnum) -> String {
-    let name = rule.name();
-    let plugin = rule.plugin_name();
-    if plugin == "eslint" {
-        format!("eslint({name})")
-    } else {
-        format!("{plugin}({name})")
-    }
+    Ok(ConfigStore::new(
+        config,
+        Default::default(),
+        external_plugin_store,
+    ))
 }
 
 fn format_rule_name(code: &oxc_diagnostics::OxcCode) -> String {
@@ -194,7 +177,7 @@ fn lint<'a>(
             return Err(error_msgs);
         }
 
-        let lint_config = match build_lint_config(&plugins, &rules) {
+        let config_store = match build_lint_config(&plugins, &rules) {
             Ok(v) => v,
             Err(e) => return Err(vec![e]),
         };
@@ -206,7 +189,7 @@ fn lint<'a>(
                 fix: fix_kind,
                 ..LintOptions::default()
             },
-            lint_config.config_store,
+            config_store,
             None,
         );
 
@@ -219,27 +202,18 @@ fn lint<'a>(
 
         let diagnostics: Vec<Diagnostic> = messages
             .iter()
-            .map(|msg| {
-                let full_rule = format_rule_name(&msg.error.code);
-                let severity = lint_config
-                    .rule_severity_map
-                    .get(&full_rule)
-                    .copied()
-                    .unwrap_or(AllowWarnDeny::Warn);
-
-                Diagnostic {
-                    rule: full_rule,
-                    message: msg.error.message.to_string(),
-                    severity: severity_atom(severity),
-                    span: (msg.span.start, msg.span.end),
-                    labels: msg
-                        .error
-                        .labels
-                        .iter()
-                        .map(|label| (label.offset() as u32, (label.offset() + label.len()) as u32))
-                        .collect(),
-                    help: msg.error.help.as_ref().map(|h| h.to_string()),
-                }
+            .map(|msg| Diagnostic {
+                rule: format_rule_name(&msg.error.code),
+                message: msg.error.message.to_string(),
+                severity: severity_atom(msg.error.severity),
+                span: (msg.span.start, msg.span.end),
+                labels: msg
+                    .error
+                    .labels
+                    .iter()
+                    .map(|label| (label.offset(), label.offset() + label.len()))
+                    .collect(),
+                help: msg.error.help.as_ref().map(|h| h.to_string()),
             })
             .collect();
 

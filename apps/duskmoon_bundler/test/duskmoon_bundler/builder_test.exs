@@ -483,6 +483,43 @@ defmodule DuskmoonBundler.BuilderTest do
       assert Enum.any?(worker_files, &(File.read!(&1) =~ "worker-b"))
     end
 
+    test "same-specifier workers in one bundle keep their own worker files" do
+      File.mkdir_p!(Path.join(@fixture_dir, "src/a"))
+      File.mkdir_p!(Path.join(@fixture_dir, "src/b"))
+
+      File.write!(Path.join(@fixture_dir, "src/a/worker.ts"), "self.postMessage('worker-a')")
+      File.write!(Path.join(@fixture_dir, "src/b/worker.ts"), "self.postMessage('worker-b')")
+
+      for dir <- ["a", "b"] do
+        File.write!(Path.join(@fixture_dir, "src/#{dir}/mod.ts"), """
+        export const #{dir} = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
+        """)
+      end
+
+      File.write!(Path.join(@fixture_dir, "src/worker_same_bundle.ts"), """
+      import { a } from './a/mod'
+      import { b } from './b/mod'
+      console.log(a, b)
+      """)
+
+      {:ok, result} =
+        DuskmoonBundler.Builder.build(
+          entry: Path.join(@fixture_dir, "src/worker_same_bundle.ts"),
+          outdir: @outdir,
+          name: "worker-same-bundle",
+          hash: false,
+          minify: false,
+          sourcemap: false
+        )
+
+      worker_refs =
+        ~r/worker-[a-f0-9]{8}\.js/ |> Regex.scan(File.read!(result.js.path)) |> List.flatten()
+
+      assert length(worker_refs) == 2
+      assert length(Enum.uniq(worker_refs)) == 2
+      assert Enum.all?(worker_refs, &File.regular?(Path.join(@outdir, &1)))
+    end
+
     test "builds worker entry as a standalone bundle" do
       File.write!(Path.join(@fixture_dir, "src/worker.ts"), "self.postMessage('ready')")
 
@@ -600,6 +637,124 @@ defmodule DuskmoonBundler.BuilderTest do
         )
     end
 
+    test "returns an error for a bare import that cannot be resolved" do
+      File.write!(Path.join(@fixture_dir, "src/missing_pkg.ts"), """
+      import thing from 'duskmoon-definitely-not-installed'
+      console.log(thing)
+      """)
+
+      assert {:error, {:not_found, "duskmoon-definitely-not-installed"}} =
+               DuskmoonBundler.Builder.build(
+                 entry: Path.join(@fixture_dir, "src/missing_pkg.ts"),
+                 outdir: @outdir,
+                 minify: false,
+                 sourcemap: false
+               )
+    end
+
+    test "bundles compiler-generated OXC helpers without an installed runtime package" do
+      entry = Path.join(@fixture_dir, "src/private_fields.ts")
+
+      File.write!(entry, """
+      class Example {
+        static #base = 40
+        #increment = 2
+        read(): number { return Example.#base + this.#increment }
+      }
+      console.log(new Example().read())
+      """)
+
+      assert {:ok, result} =
+               DuskmoonBundler.Builder.build(
+                 entry: entry,
+                 outdir: @outdir,
+                 public_dir: false,
+                 target: :es2021,
+                 minify: false,
+                 sourcemap: false,
+                 code_splitting: false
+               )
+
+      node = System.find_executable("node") || flunk("node executable not found")
+      assert {"42\n", 0} = System.cmd(node, [result.js.path], stderr_to_stdout: true)
+    end
+
+    test "explicit OXC runtime imports still require an installed package" do
+      entry = Path.join(@fixture_dir, "src/explicit_runtime.ts")
+
+      for specifier <- [
+            "@oxc-project/runtime/helpers/assertClassBrand",
+            "@oxc-project/runtime/helpers/missingHelper",
+            "@oxc-project/runtime/missing"
+          ] do
+        File.write!(entry, """
+        import helper from #{Jason.encode!(specifier)}
+        class Example {
+          static #value = 42
+          static read(): number { return this.#value }
+        }
+        console.log(helper, Example.read())
+        """)
+
+        assert {:error, {:not_found, ^specifier}} =
+                 DuskmoonBundler.Builder.build(
+                   entry: entry,
+                   outdir: @outdir,
+                   public_dir: false,
+                   target: :es2021,
+                   minify: false,
+                   sourcemap: false
+                 )
+      end
+    end
+
+    test "node builtins and externals are still skipped by resolution" do
+      File.write!(Path.join(@fixture_dir, "src/skipped_pkg.ts"), """
+      import { ref } from 'vue'
+      import fs from 'node:fs'
+      console.log(ref, fs)
+      """)
+
+      assert {:ok, _result} =
+               DuskmoonBundler.Builder.build(
+                 entry: Path.join(@fixture_dir, "src/skipped_pkg.ts"),
+                 outdir: @outdir,
+                 external: ["vue"],
+                 minify: false,
+                 sourcemap: false
+               )
+    end
+
+    test "HTML entry without local scripts or styles returns an error" do
+      html = Path.join(@fixture_dir, "empty.html")
+      File.write!(html, ~s(<html><script src="https://cdn.example.com/lib.js"></script></html>))
+
+      assert {:error, {:no_entries, ^html}} =
+               DuskmoonBundler.Builder.build(entry: html, outdir: @outdir)
+    end
+
+    test "missing HTML entry returns an error" do
+      html = Path.join(@fixture_dir, "missing.html")
+
+      assert {:error, {:file_read_error, ^html, :enoent}} =
+               DuskmoonBundler.Builder.build(entry: html, outdir: @outdir)
+    end
+
+    test "HTML entry with a root-absolute script builds from the HTML directory" do
+      html = Path.join(@fixture_dir, "index.html")
+      File.write!(html, ~s(<script type="module" src="/src/app.ts"></script>))
+
+      assert {:ok, result} =
+               DuskmoonBundler.Builder.build(
+                 entry: html,
+                 outdir: @outdir,
+                 minify: false,
+                 sourcemap: false
+               )
+
+      assert File.read!(result.js.path) =~ "Hello"
+    end
+
     test "external imports become global access in IIFE" do
       File.write!(Path.join(@fixture_dir, "src/vue_app.ts"), """
       import { ref, computed } from 'vue'
@@ -617,7 +772,7 @@ defmodule DuskmoonBundler.BuilderTest do
         )
 
       js = File.read!(result.js.path)
-      assert js =~ "const { ref, computed } = Vue;"
+      assert js =~ "const { ref, computed } = globalThis.Vue;"
       assert js =~ "ref(0)"
       refute js =~ ~s(from 'vue')
     end
@@ -638,7 +793,202 @@ defmodule DuskmoonBundler.BuilderTest do
         )
 
       js = File.read!(result.js.path)
-      assert js =~ "const { ref } = MyVue;"
+      assert js =~ "const { ref } = globalThis.MyVue;"
+    end
+
+    test "external subpath imports are rewritten to global access" do
+      File.write!(Path.join(@fixture_dir, "src/ext_subpath.ts"), """
+      import { createRoot } from 'react-dom/client'
+      createRoot(document.body)
+      """)
+
+      {:ok, result} =
+        DuskmoonBundler.Builder.build(
+          entry: Path.join(@fixture_dir, "src/ext_subpath.ts"),
+          outdir: @outdir,
+          external: ["react-dom"],
+          minify: false,
+          sourcemap: false
+        )
+
+      js = File.read!(result.js.path)
+      assert js =~ "const { createRoot } = globalThis.ReactDomClient;"
+      refute js =~ "react-dom/client"
+    end
+
+    test "external default import does not reference its own binding" do
+      File.write!(Path.join(@fixture_dir, "src/ext_default.ts"), """
+      import React from 'react'
+      console.log(React.version)
+      """)
+
+      {:ok, result} =
+        DuskmoonBundler.Builder.build(
+          entry: Path.join(@fixture_dir, "src/ext_default.ts"),
+          outdir: @outdir,
+          external: ["react"],
+          minify: false,
+          sourcemap: false
+        )
+
+      js = File.read!(result.js.path)
+      refute js =~ "React.default;"
+      assert js =~ "globalThis.React"
+      assert {:ok, _ast} = OXC.parse(js, "out.js")
+    end
+
+    test "externals are declared once per chunk with code splitting" do
+      File.write!(Path.join(@fixture_dir, "src/ext_lazy.ts"), """
+      import { computed } from 'vue'
+      export const double = computed(() => 2)
+      """)
+
+      File.write!(Path.join(@fixture_dir, "src/ext_split.ts"), """
+      import { ref } from 'vue'
+      export const count = ref(0)
+      import('./ext_lazy').then((m) => console.log(m.double))
+      """)
+
+      {:ok, result} =
+        DuskmoonBundler.Builder.build(
+          entry: Path.join(@fixture_dir, "src/ext_split.ts"),
+          outdir: @outdir,
+          name: "ext-split",
+          external: ["vue"],
+          hash: false,
+          minify: false,
+          sourcemap: false
+        )
+
+      assert length(result.chunks) == 2
+
+      for %{path: path} <- result.chunks do
+        js = File.read!(path)
+        assert {:ok, _ast} = OXC.parse(js, "chunk.js")
+        assert length(Regex.scan(~r/const \{ (ref|computed) \} = /, js)) == 1
+        refute js =~ ~r/from ['"]vue['"]/
+      end
+    end
+
+    test "cyclic chunks reference files that were actually written" do
+      File.write!(Path.join(@fixture_dir, "src/cycle_router.ts"), """
+      export const routes = ['page']
+      export const load = () => import('./cycle_page')
+      load().then((m) => console.log(m.page))
+      """)
+
+      File.write!(Path.join(@fixture_dir, "src/cycle_page.ts"), """
+      import { routes } from './cycle_router'
+      export const page = routes.join(',')
+      """)
+
+      {:ok, result} =
+        DuskmoonBundler.Builder.build(
+          entry: Path.join(@fixture_dir, "src/cycle_router.ts"),
+          outdir: @outdir,
+          name: "cycle",
+          minify: false,
+          sourcemap: false
+        )
+
+      assert length(result.chunks) == 2
+      assert_chunk_references_exist(result.chunks)
+
+      page = Enum.find(result.chunks, &(&1.type == :async))
+      page_js = File.read!(page.path)
+      refute page_js =~ "const routes ="
+      assert page_js =~ "from './#{Path.basename(result.js.path)}'"
+      assert File.read!(result.js.path) =~ "import('./#{Path.basename(page.path)}')"
+    end
+
+    test "deep dynamic import chains reference files that were actually written" do
+      depth = 8
+
+      for i <- 0..depth do
+        body =
+          if i == depth,
+            do: "export const value = #{i}",
+            else: "export const next#{i} = () => import('./chain_#{i + 1}')"
+
+        File.write!(Path.join(@fixture_dir, "src/chain_#{i}.ts"), body <> "\n")
+      end
+
+      {:ok, result} =
+        DuskmoonBundler.Builder.build(
+          entry: Path.join(@fixture_dir, "src/chain_0.ts"),
+          outdir: @outdir,
+          name: "chain",
+          minify: false,
+          sourcemap: false
+        )
+
+      assert length(result.chunks) == depth + 1
+      assert_chunk_references_exist(result.chunks)
+    end
+
+    test "rejects manual chunk names reserved for automatic chunks" do
+      for reserved <- ["entry", "common"] do
+        assert {:error, {:reserved_chunk_name, ^reserved}} =
+                 DuskmoonBundler.Builder.build(
+                   entry: Path.join(@fixture_dir, "src/app.ts"),
+                   outdir: @outdir,
+                   chunks: %{reserved => [Path.join(@fixture_dir, "src/utils.ts")]},
+                   minify: false,
+                   sourcemap: false
+                 )
+      end
+    end
+
+    test "warns when a manual chunk pattern matches no module" do
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:ok, _result} =
+                   DuskmoonBundler.Builder.build(
+                     entry: Path.join(@fixture_dir, "src/app.ts"),
+                     outdir: @outdir,
+                     chunks: %{"vendor" => ["@scope/not-used"]},
+                     minify: false,
+                     sourcemap: false
+                   )
+        end)
+
+      assert log =~ ~s(manual chunk "vendor" pattern "@scope/not-used" matched no modules)
+      assert length(String.split(log, "matched no modules")) == 2
+    end
+
+    test "manual chunks match packages resolved from resolve_dirs" do
+      File.mkdir_p!(Path.join(@fixture_dir, "deps/fake_dep/priv/static"))
+
+      File.write!(
+        Path.join(@fixture_dir, "deps/fake_dep/package.json"),
+        ~s({"name":"fake_dep","main":"priv/static/fake_dep.js"})
+      )
+
+      File.write!(
+        Path.join(@fixture_dir, "deps/fake_dep/priv/static/fake_dep.js"),
+        "export const dep = 'from-deps';\n"
+      )
+
+      File.write!(Path.join(@fixture_dir, "src/deps_app.ts"), """
+      import { dep } from 'fake_dep'
+      console.log(dep)
+      """)
+
+      {:ok, result} =
+        DuskmoonBundler.Builder.build(
+          entry: Path.join(@fixture_dir, "src/deps_app.ts"),
+          outdir: @outdir,
+          name: "deps-app",
+          hash: false,
+          resolve_dirs: [Path.join(@fixture_dir, "deps")],
+          chunks: %{"vendor" => ["fake_dep"]},
+          minify: false,
+          sourcemap: false
+        )
+
+      vendor = Enum.find(result.chunks, &(&1.chunk_id == "vendor"))
+      assert vendor
+      assert File.read!(vendor.path) =~ "from-deps"
     end
 
     test "manual chunks split modules into separate files" do
@@ -1443,7 +1793,8 @@ defmodule DuskmoonBundler.BuilderTest do
           outdir: @outdir,
           minify: false,
           sourcemap: false,
-          node_modules: Path.expand("../node_modules", __DIR__)
+          node_modules: Path.expand("../node_modules", __DIR__),
+          external: ["vue"]
         )
 
       assert File.read!(result.js.path) =~ "One.vue"
@@ -1607,7 +1958,8 @@ defmodule DuskmoonBundler.BuilderTest do
           outdir: @outdir,
           minify: false,
           sourcemap: false,
-          node_modules: Path.expand("../node_modules", __DIR__)
+          node_modules: Path.expand("../node_modules", __DIR__),
+          external: ["vue"]
         )
 
       js = File.read!(result.js.path)
@@ -1649,7 +2001,8 @@ defmodule DuskmoonBundler.BuilderTest do
           minify: false,
           sourcemap: false,
           aliases: %{"@components" => Path.join(@fixture_dir, "src/components")},
-          node_modules: Path.join(@fixture_dir, "node_modules")
+          node_modules: Path.join(@fixture_dir, "node_modules"),
+          external: ["vue"]
         )
 
       js = File.read!(result.js.path)
@@ -2241,6 +2594,14 @@ defmodule DuskmoonBundler.BuilderTest do
 
       js = File.read!(result.js.path)
       assert js =~ "ts-resolved"
+    end
+  end
+
+  defp assert_chunk_references_exist(chunks) do
+    for %{path: path} <- chunks,
+        [_, reference] <- Regex.scan(~r/["'`]\.\/([^"'`]+\.js)["'`]/, File.read!(path)) do
+      assert File.regular?(Path.join(Path.dirname(path), reference)),
+             "#{Path.basename(path)} references missing chunk #{reference}"
     end
   end
 

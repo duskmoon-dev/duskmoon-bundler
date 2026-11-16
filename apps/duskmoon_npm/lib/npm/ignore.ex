@@ -29,21 +29,36 @@ defmodule NPM.Ignore do
     |> String.split("\n")
     |> Enum.map(&String.trim/1)
     |> Enum.reject(&comment_or_blank?(&1))
-    |> Enum.uniq()
   end
 
   @doc """
   Checks if a file path is ignored by the given patterns.
   """
-  @spec ignored?(String.t(), [String.t()]) :: boolean()
-  def ignored?(path, patterns) do
+  @spec ignored?(String.t(), [String.t()], boolean()) :: boolean()
+  def ignored?(path, patterns, initially_ignored \\ false) do
     basename = Path.basename(path)
 
     cond do
-      always_ignored?(basename) -> true
-      never_ignored?(basename) -> false
-      true -> Enum.any?(patterns, &pattern_matches?(path, &1))
+      always_ignored?(basename) ->
+        true
+
+      never_ignored?(basename) ->
+        false
+
+      true ->
+        apply_rules(path, patterns, initially_ignored)
     end
+  end
+
+  @doc false
+  def apply_rules(path, patterns, initially_ignored \\ false, directory? \\ false) do
+    Enum.reduce(patterns, initially_ignored, fn
+      "!" <> pattern, ignored ->
+        if matches?(path, pattern, false, directory?), do: false, else: ignored
+
+      pattern, ignored ->
+        if matches?(path, pattern, false, directory?), do: true, else: ignored
+    end)
   end
 
   @doc """
@@ -68,10 +83,7 @@ defmodule NPM.Ignore do
     npmignore = Path.join(package_dir, ".npmignore")
     gitignore = Path.join(package_dir, ".gitignore")
 
-    case read(npmignore) do
-      [] -> read(gitignore)
-      patterns -> patterns
-    end
+    if File.regular?(npmignore), do: read(npmignore), else: read(gitignore)
   end
 
   defp always_ignored?(name), do: name in @always_ignored
@@ -85,19 +97,57 @@ defmodule NPM.Ignore do
     line == "" or String.starts_with?(line, "#")
   end
 
-  defp pattern_matches?(path, pattern) do
-    cond do
-      String.ends_with?(pattern, "/") ->
-        dir_pattern = String.trim_trailing(pattern, "/")
-        String.starts_with?(path, dir_pattern <> "/") or path == dir_pattern
+  @doc false
+  def matches?(path, pattern, anchored? \\ false, directory? \\ false) do
+    anchored? =
+      anchored? or String.starts_with?(pattern, "/") or
+        String.contains?(String.trim_trailing(pattern, "/"), "/")
 
-      String.contains?(pattern, "/") ->
-        path == pattern or String.starts_with?(path, pattern <> "/")
+    directory_pattern? = String.ends_with?(pattern, "/")
 
-      true ->
-        Path.basename(path) == pattern or
-          path == pattern or
-          String.ends_with?(path, "/" <> pattern)
+    pattern =
+      pattern
+      |> String.replace_prefix("./", "")
+      |> String.trim_leading("/")
+      |> String.trim_trailing("/")
+
+    prefix = if anchored?, do: "^", else: "(?:^|/)"
+    suffix = if directory_pattern? and not directory?, do: "/.*$", else: "(?:/.*)?$"
+    expression = prefix <> glob_regex(pattern) <> suffix
+
+    case Regex.compile(expression) do
+      {:ok, regex} -> Regex.match?(regex, path)
+      {:error, _invalid_pattern} -> false
     end
+  end
+
+  defp glob_regex("**/" <> rest), do: "(?:.*/)?" <> glob_regex(rest)
+  defp glob_regex("**" <> rest), do: ".*" <> glob_regex(rest)
+  defp glob_regex("*" <> rest), do: "[^/]*" <> glob_regex(rest)
+  defp glob_regex("?" <> rest), do: "[^/]" <> glob_regex(rest)
+
+  defp glob_regex("\\" <> rest) do
+    case String.next_grapheme(rest) do
+      nil -> Regex.escape("\\")
+      {char, tail} -> Regex.escape(char) <> glob_regex(tail)
+    end
+  end
+
+  defp glob_regex("[" <> rest) do
+    case String.split(rest, "]", parts: 2) do
+      [class, tail] when class != "" ->
+        class = String.replace_prefix(class, "!", "^")
+        "[" <> class <> "]" <> glob_regex(tail)
+
+      _ ->
+        "\\[" <> glob_regex(rest)
+    end
+  end
+
+  defp glob_regex(""), do: ""
+
+  defp glob_regex(pattern) do
+    {char, rest} = String.next_grapheme(pattern)
+    Regex.escape(char) <> glob_regex(rest)
   end
 end

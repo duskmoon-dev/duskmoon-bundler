@@ -27,4 +27,12 @@ defmodule DuskmoonBundler.JS.Transforms.DynamicImportsTest do
 
     assert DuskmoonBundler.JS.Transforms.DynamicImports.transform(source, "app.ts") == source
   end
+
+  test "slices the template by byte offsets when non-ASCII text precedes the import" do
+    source = "// 中文注释 🚀\nconst mod = await import(`./pages/${name}.ts`)"
+
+    result = DuskmoonBundler.JS.Transforms.DynamicImports.transform(source, "app.ts")
+
+    assert result =~ "__duskmoon_bundler_dynamic_import_0(`./pages/${name}.ts`)"
+  end
 end

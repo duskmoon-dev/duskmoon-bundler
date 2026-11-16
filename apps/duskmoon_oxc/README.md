@@ -30,7 +30,7 @@ def deps do
 end
 ```
 
-Precompiled NIFs are available for macOS (aarch64, x86_64) and Linux (aarch64, x86_64, musl).
+Precompiled NIFs are available for macOS (aarch64, x86_64), Linux (aarch64 and x86_64, glibc and musl), Windows (x86_64), and FreeBSD (x86_64).
 Building from source requires a Rust toolchain (`rustup` recommended).
 
 ### Precompiled NIF Checksum Recovery

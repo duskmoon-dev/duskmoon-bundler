@@ -315,8 +315,14 @@ defmodule NPM.Resolution.PackageResolver do
   end
 
   defp resolve_from_pkg(pkg, package_dir, subpath, conditions, extensions) do
-    with :error <- resolve_via_exports(pkg, package_dir, subpath, conditions) do
-      resolve_without_exports(pkg, package_dir, subpath, conditions, extensions)
+    case Exports.parse(pkg) do
+      nil ->
+        resolve_without_exports(pkg, package_dir, subpath, conditions, extensions)
+
+      export_map ->
+        with {:ok, target} <- Exports.resolve(export_map, subpath, conditions) do
+          ensure_file(package_dir, target)
+        end
     end
   end
 
@@ -330,19 +336,6 @@ defmodule NPM.Resolution.PackageResolver do
     package_dir
     |> expand_target(subpath)
     |> try_resolve(extensions: extensions)
-  end
-
-  defp resolve_via_exports(pkg, package_dir, subpath, conditions) do
-    case Exports.parse(pkg) do
-      nil ->
-        :error
-
-      export_map ->
-        case Exports.resolve(export_map, subpath, conditions) do
-          {:ok, target} -> ensure_file(package_dir, target)
-          :error -> :error
-        end
-    end
   end
 
   defp resolve_via_fields(pkg, package_dir, conditions, extensions) do

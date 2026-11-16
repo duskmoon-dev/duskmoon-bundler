@@ -82,7 +82,7 @@ defmodule DuskmoonBundler.StaticPath do
       locations,
       {:error, missing_asset_error(key, Enum.map(locations, &elem(&1, 0)))},
       fn {manifest_path, manifest_prefix}, fallback ->
-        with {:ok, entries} <- Manifest.read(manifest_path),
+        with {:ok, entries} <- read_manifest(manifest_path),
              entry when not is_nil(entry) <- Map.get(entries, key) do
           {:halt,
            {:ok,
@@ -99,6 +99,33 @@ defmodule DuskmoonBundler.StaticPath do
         end
       end
     )
+  end
+
+  # Cache parsing, not freshness: same-second writes and atomic replacements can
+  # keep both the mtime and size unchanged. Compare the exact bytes we parse.
+  defp read_manifest(path) do
+    case File.read(path) do
+      {:ok, content} ->
+        read_cached_manifest(path, content)
+
+      {:error, _} ->
+        Manifest.read(path)
+    end
+  end
+
+  defp read_cached_manifest(path, content) do
+    key = {__MODULE__, :manifest, path}
+
+    case :persistent_term.get(key, nil) do
+      {^content, entries} ->
+        {:ok, entries}
+
+      _ ->
+        with {:ok, entries} = ok <- Manifest.parse(content, path) do
+          :persistent_term.put(key, {content, entries})
+          ok
+        end
+    end
   end
 
   defp manifest_locations(root_outdir, prefix) do

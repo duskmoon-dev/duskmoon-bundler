@@ -91,6 +91,12 @@ defmodule NPM.Cache do
   `integrity`; otherwise it is re-downloaded and verified.
   Returns `{:ok, cache_path}`, `{:ok, :missing_optional}` when an
   optional package fails to fetch, or `{:error, reason}`.
+
+  ## Options
+
+    * `:optional?` - a failed fetch yields `{:ok, :missing_optional}`.
+    * `:unpacked_size` - the registry-declared `dist.unpackedSize`; a value over
+      `NPM.Config.max_unpacked_bytes/0` is rejected before downloading.
   """
   @spec ensure(String.t(), String.t(), String.t(), String.t(), keyword()) ::
           {:ok, String.t()} | {:ok, :missing_optional} | {:error, term()}
@@ -105,30 +111,92 @@ defmodule NPM.Cache do
   defp ensure_locked(name, version, tarball_url, integrity, opts) do
     dest = package_dir(name, version)
 
-    if cached?(name, version, integrity) do
-      {:ok, dest}
-    else
-      try do
-        RegistryPolicy.validate_url!(tarball_url)
-        File.rm_rf(dest)
+    cond do
+      cached?(name, version, integrity) ->
+        {:ok, dest}
 
-        case fetch_and_extract(
-               candidate_tarball_urls(name, version, tarball_url, integrity),
-               integrity,
-               dest
-             ) do
-          {:ok, _count} ->
-            write_complete_marker!(dest, integrity)
-            {:ok, dest}
+      oversized?(opts[:unpacked_size]) ->
+        {:error, {:unpacked_too_large, name, version, opts[:unpacked_size]}}
 
-          {:error, reason} ->
-            handle_fetch_error({:fetch_failed, name, version, reason}, dest, opts)
-        end
-      rescue
-        error in RegistryPolicy.Error ->
-          handle_fetch_error(error, dest, opts)
-      end
+      true ->
+        fetch_locked(name, version, tarball_url, integrity, dest, opts)
     end
+  end
+
+  # `dist.unpackedSize` is registry-declared, so this is only an early exit;
+  # `NPM.Tarball.extract/2` enforces the limit on the real data.
+  defp oversized?(size), do: is_integer(size) and size > NPM.Config.max_unpacked_bytes()
+
+  # The package is extracted and marked complete in a temporary directory next
+  # to `dest` and then renamed into place, so `dest` is never observed half
+  # written, including by other OS processes sharing the cache (the lock only
+  # covers this VM).
+  defp fetch_locked(name, version, tarball_url, integrity, dest, opts) do
+    registry = NPM.Config.registry_for(name)
+    tmp = temp_dir(dest)
+
+    try do
+      RegistryPolicy.validate_url!(tarball_url)
+      File.mkdir_p!(Path.dirname(dest))
+
+      case fetch_and_extract(
+             candidate_tarball_urls(name, version, tarball_url, integrity),
+             integrity,
+             tmp,
+             registry
+           ) do
+        {:ok, _count} ->
+          write_complete_marker!(tmp, integrity)
+          promote(tmp, dest, name, version, integrity)
+
+        {:error, reason} ->
+          handle_fetch_error({:fetch_failed, name, version, reason}, opts)
+      end
+    rescue
+      error in RegistryPolicy.Error ->
+        handle_fetch_error(error, opts)
+    after
+      File.rm_rf(tmp)
+    end
+  end
+
+  defp temp_dir(dest) do
+    suffix = "#{System.pid()}-#{System.unique_integer([:positive])}"
+    Path.join(Path.dirname(dest), ".tmp-#{Path.basename(dest)}-#{suffix}")
+  end
+
+  defp promote(tmp, dest, name, version, integrity) do
+    cond do
+      File.rename(tmp, dest) == :ok ->
+        {:ok, dest}
+
+      # Another process completed the same entry first; keep theirs.
+      cached?(name, version, integrity) ->
+        {:ok, dest}
+
+      true ->
+        replace_stale(tmp, dest, name, version, integrity)
+    end
+  end
+
+  # `dest` holds an interrupted extraction or an entry verified against a
+  # different integrity. Move it aside rather than deleting it in place.
+  defp replace_stale(tmp, dest, name, version, integrity) do
+    stale = tmp <> "-stale"
+
+    result =
+      with :ok <- File.rename(dest, stale),
+           :ok <- File.rename(tmp, dest) do
+        {:ok, dest}
+      else
+        {:error, reason} ->
+          if cached?(name, version, integrity),
+            do: {:ok, dest},
+            else: {:error, {:cache_write_failed, name, version, reason}}
+      end
+
+    File.rm_rf(stale)
+    result
   end
 
   @doc false
@@ -137,12 +205,12 @@ defmodule NPM.Cache do
     candidate_tarball_urls(name, version, tarball_url, integrity)
   end
 
-  defp fetch_and_extract([], _integrity, _dest), do: {:error, :no_tarball_url}
+  defp fetch_and_extract([], _integrity, _dest, _registry), do: {:error, :no_tarball_url}
 
-  defp fetch_and_extract([tarball_url | fallback_urls], integrity, dest) do
+  defp fetch_and_extract([tarball_url | fallback_urls], integrity, dest, registry) do
     RegistryPolicy.validate_url!(tarball_url)
 
-    case NPM.Tarball.fetch_and_extract(tarball_url, integrity, dest) do
+    case NPM.Tarball.fetch_and_extract(tarball_url, integrity, dest, registry: registry) do
       {:ok, _count} = ok ->
         ok
 
@@ -153,7 +221,7 @@ defmodule NPM.Cache do
           "tarball fetch failed for #{tarball_url}, trying fallback #{hd(fallback_urls)}: #{inspect(reason)}"
         )
 
-        fetch_and_extract(fallback_urls, integrity, dest)
+        fetch_and_extract(fallback_urls, integrity, dest, registry)
 
       {:error, reason} ->
         {:error, reason}
@@ -166,23 +234,26 @@ defmodule NPM.Cache do
   end
 
   defp candidate_tarball_urls(name, version, tarball_url, _integrity) do
-    original_origin = RegistryPolicy.origin(tarball_url)
+    if NPM.Config.scope_registry(name) do
+      # A package bound to a scope registry is never requested from another one.
+      [tarball_url]
+    else
+      original_origin = RegistryPolicy.origin(tarball_url)
 
-    NPM.Config.allowed_registries()
-    |> Enum.map(fn registry ->
-      if RegistryPolicy.origin(registry) == original_origin do
-        tarball_url
-      else
-        NPM.Registry.URL.tarball_url(name, version, registry)
-      end
-    end)
-    |> Enum.reject(&(&1 in [nil, ""]))
-    |> Enum.uniq()
+      NPM.Config.allowed_registries()
+      |> Enum.map(fn registry ->
+        if RegistryPolicy.origin(registry) == original_origin do
+          tarball_url
+        else
+          NPM.Registry.URL.tarball_url(name, version, registry)
+        end
+      end)
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.uniq()
+    end
   end
 
-  defp handle_fetch_error(reason, dest, opts) do
-    File.rm_rf(dest)
-
+  defp handle_fetch_error(reason, opts) do
     if Keyword.get(opts, :optional?, false) do
       {:ok, :missing_optional}
     else

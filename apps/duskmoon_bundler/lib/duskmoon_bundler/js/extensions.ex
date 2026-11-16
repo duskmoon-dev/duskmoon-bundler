@@ -18,7 +18,7 @@ defmodule DuskmoonBundler.JS.Extensions do
   def scannable(plugins \\ []), do: plugin_exts(plugins, :scan) ++ @js
   def resolvable(plugins \\ []), do: ["" | @js ++ @cjs ++ plugin_exts(plugins, :resolve) ++ @json]
   def resolvable_index, do: Enum.map(@js ++ @cjs, &("/index" <> &1))
-  def watchable_js(plugins \\ []), do: plugin_exts(plugins, :watch) ++ @js ++ @css
+  def watchable_js(plugins \\ []), do: plugin_exts(plugins, :watch) ++ @js ++ @css ++ @json
   def template, do: @template
   def css, do: @css ++ ~w(.scss .sass .less .styl)
 

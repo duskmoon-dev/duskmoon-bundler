@@ -56,7 +56,8 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImports do
     case OXC.parse(source, filename) do
       {:ok, ast} ->
         calls = collect_glob_calls(ast)
-        if calls == [], do: source, else: apply_transforms(source, calls, base_dir)
+        self = Path.expand(filename, base_dir)
+        if calls == [], do: source, else: apply_transforms(source, calls, base_dir, self)
 
       {:error, _} ->
         source
@@ -171,15 +172,15 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImports do
   defp normalize_query("?" <> query), do: query
   defp normalize_query(query), do: query
 
-  defp apply_transforms(source, calls, base_dir) do
+  defp apply_transforms(source, calls, base_dir, self) do
     {eager_calls, lazy_calls} = Enum.split_with(calls, & &1.eager)
 
-    eager_preamble =
-      eager_calls
-      |> Enum.with_index()
-      |> Enum.map(fn {call, i} ->
-        files = resolve_globs(call.patterns, base_dir, call.base)
-        {preamble_lines(files, i * 100, call), eager_expansion(files, i * 100, call)}
+    {eager_preamble, _offset} =
+      Enum.map_reduce(eager_calls, 0, fn call, offset ->
+        files = resolve_globs(call.patterns, base_dir, call.base, self)
+
+        {{preamble_lines(files, offset, call), eager_expansion(files, offset, call)},
+         offset + length(files)}
       end)
 
     preamble =
@@ -194,7 +195,7 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImports do
 
     lazy_patches =
       Enum.map(lazy_calls, fn call ->
-        files = resolve_globs(call.patterns, base_dir, call.base)
+        files = resolve_globs(call.patterns, base_dir, call.base, self)
         Patch.new(call.start, call.end, lazy_expansion(files, call))
       end)
 
@@ -207,29 +208,30 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImports do
     end
   end
 
-  defp resolve_globs(patterns, base_dir, base) do
+  defp resolve_globs(patterns, base_dir, base, self) do
     {negated, positive} = Enum.split_with(patterns, &String.starts_with?(&1, "!"))
 
     excluded =
       negated
-      |> Enum.flat_map(fn "!" <> pattern -> wildcard(pattern, base_dir, base) end)
+      |> Enum.flat_map(fn "!" <> pattern -> wildcard(pattern, base_dir, base, self) end)
       |> Enum.map(& &1.specifier)
       |> MapSet.new()
 
     positive
-    |> Enum.flat_map(&wildcard(&1, base_dir, base))
+    |> Enum.flat_map(&wildcard(&1, base_dir, base, self))
     |> Enum.reject(&MapSet.member?(excluded, &1.specifier))
     |> Enum.uniq_by(& &1.specifier)
     |> Enum.sort_by(& &1.key)
   end
 
-  defp wildcard(pattern, base_dir, base) do
+  defp wildcard(pattern, base_dir, base, self) do
     key_base_dir = key_base_dir(base, base_dir)
 
     base_dir
     |> Path.join(pattern)
     |> Path.expand()
     |> Path.wildcard()
+    |> Enum.filter(&(&1 != self and File.regular?(&1)))
     |> Enum.map(fn path ->
       %DuskmoonBundler.JS.Transforms.GlobImports.File{
         specifier: relative_specifier(path, base_dir),

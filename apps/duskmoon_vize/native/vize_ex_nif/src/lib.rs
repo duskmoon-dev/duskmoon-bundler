@@ -14,8 +14,8 @@ use vize_atelier_sfc::compile_script::typescript::transform_typescript_to_js;
 use vize_atelier_sfc::croquis::{analyze_sfc_descriptor, SfcCroquisOptions};
 use vize_atelier_sfc::script::analyze_script_setup_to_summary;
 use vize_atelier_sfc::{
-    bundle_css, compile_css, compile_sfc, parse_css_ast, parse_sfc, print_css_ast,
-    CssCompileOptions, CssTargets, SfcCompileOptions, SfcParseOptions,
+    compile_css, compile_sfc, parse_css_ast, parse_sfc, print_css_ast, CssCompileOptions,
+    CssTargets, SfcCompileOptions, SfcParseOptions,
 };
 use vize_atelier_ssr::compile_ssr;
 use vize_atelier_vapor::{
@@ -26,6 +26,7 @@ use vize_carton::Allocator;
 
 #[macro_use]
 mod macros;
+mod css_bundle;
 mod html_inject;
 mod ir_encoding;
 mod stack;
@@ -1027,8 +1028,7 @@ fn vapor_ir_nif_impl<'a>(env: Env<'a>, source: &str) -> NifResult<Term<'a>> {
         .iter()
         .map(|k| ir.element_template_map[k])
         .collect();
-    let element_template_map: Vec<(usize, usize)> =
-        etm_keys.into_iter().zip(etm_vals.into_iter()).collect();
+    let element_template_map: Vec<(usize, usize)> = etm_keys.into_iter().zip(etm_vals).collect();
 
     let map = Term::map_from_arrays(
         env,
@@ -1277,19 +1277,16 @@ fn select_css_nif_impl<'a>(
             continue;
         };
 
+        // The parser reports the unescaped URL. When the source spells it
+        // with escapes there is no byte range to report, so the URL is skipped
+        // rather than failing every other URL in the stylesheet.
         let Some((start, end)) = find_url_range(
             source,
             dependency.loc.start.line,
             dependency.loc.start.column,
             &dependency.url,
         ) else {
-            return Ok(error_term(
-                env,
-                vec![format!(
-                    "Could not locate CSS URL range for {}",
-                    dependency.url
-                )],
-            ));
+            continue;
         };
 
         events.push(CssUrlEvent {
@@ -1551,7 +1548,7 @@ fn bundle_css_nif_impl<'a>(
         ..Default::default()
     };
 
-    let result = bundle_css(entry_path, &options);
+    let result = css_bundle::bundle(entry_path, &options);
 
     Ok(ok_term(env, EncodedBundleCssResult { result: &result }))
 }

@@ -126,6 +126,190 @@ defmodule DuskmoonBundlerTest do
            ) == "/assets/js/logo-deadbeef.svg"
   end
 
+  describe "broken production manifests" do
+    import ExUnit.CaptureLog
+
+    test "static_path logs and falls back when the manifest is not valid JSON" do
+      outdir = tmp_dir("manifest-invalid-json")
+      File.mkdir_p!(outdir)
+      manifest = Path.join(outdir, "manifest.json")
+      File.write!(manifest, "{")
+
+      log =
+        capture_log(fn ->
+          assert DuskmoonBundler.static_path(ProdEndpoint, "/assets/js/app.js",
+                   outdir: outdir,
+                   prefix: "/assets"
+                 ) == "/assets/js/app.js"
+        end)
+
+      assert log =~ "[error]"
+      assert log =~ "not valid JSON"
+      assert log =~ manifest
+    end
+
+    test "static_path logs and falls back when the manifest version is unsupported" do
+      outdir = tmp_dir("manifest-unsupported-version")
+      File.mkdir_p!(outdir)
+
+      File.write!(
+        Path.join(outdir, "manifest.json"),
+        JSON.encode!(%{"manifest_version" => 99, "entries" => %{}})
+      )
+
+      log =
+        capture_log(fn ->
+          assert DuskmoonBundler.static_path(ProdEndpoint, "/assets/js/app.js",
+                   outdir: outdir,
+                   prefix: "/assets"
+                 ) == "/assets/js/app.js"
+        end)
+
+      assert log =~ "unsupported manifest_version 99"
+    end
+
+    test "static_path stays silent for a missing manifest or a missing asset" do
+      missing = tmp_dir("manifest-silent-missing")
+      outdir = tmp_dir("manifest-silent-asset")
+      File.mkdir_p!(outdir)
+      write_manifest(outdir, %{"app.js" => %{"file" => "app-deadbeef.js"}})
+
+      log =
+        capture_log(fn ->
+          assert DuskmoonBundler.static_path(ProdEndpoint, "/assets/js/app.js",
+                   outdir: missing,
+                   prefix: "/assets"
+                 ) == "/assets/js/app.js"
+
+          assert DuskmoonBundler.static_path(ProdEndpoint, "/assets/js/unknown-silent.js",
+                   outdir: outdir,
+                   prefix: "/assets"
+                 ) == "/assets/js/unknown-silent.js"
+        end)
+
+      refute log =~ "manifest-silent"
+      refute log =~ "unknown-silent"
+    end
+  end
+
+  describe "manifest caching" do
+    test "static_path reuses the parsed manifest while the file is unchanged" do
+      outdir = tmp_dir("manifest-cache")
+      File.mkdir_p!(outdir)
+      write_manifest(outdir, %{"app.js" => %{"file" => "app-deadbeef.js"}})
+      opts = [outdir: outdir, prefix: "/assets"]
+
+      assert DuskmoonBundler.static_path(ProdEndpoint, "/assets/js/app.js", opts) ==
+               "/assets/app-deadbeef.js"
+
+      manifest = Path.join(outdir, "manifest.json")
+
+      assert {content, %{"app.js" => %{"file" => "app-deadbeef.js"}}} =
+               :persistent_term.get({DuskmoonBundler.StaticPath, :manifest, manifest}, nil)
+
+      assert content == File.read!(manifest)
+
+      assert DuskmoonBundler.static_path(ProdEndpoint, "/assets/js/app.js", opts) ==
+               "/assets/app-deadbeef.js"
+    end
+
+    test "static_path picks up a rebuilt manifest" do
+      outdir = tmp_dir("manifest-rebuilt")
+      File.mkdir_p!(outdir)
+      manifest = Path.join(outdir, "manifest.json")
+      opts = [outdir: outdir, prefix: "/assets"]
+
+      write_manifest(outdir, %{"app.js" => %{"file" => "app-deadbeef.js"}})
+      File.touch!(manifest, {{2030, 1, 1}, {0, 0, 0}})
+
+      assert DuskmoonBundler.static_path(ProdEndpoint, "/assets/js/app.js", opts) ==
+               "/assets/app-deadbeef.js"
+
+      # Same size, newer mtime.
+      write_manifest(outdir, %{"app.js" => %{"file" => "app-cafebabe.js"}})
+      File.touch!(manifest, {{2030, 1, 1}, {0, 0, 1}})
+
+      assert DuskmoonBundler.static_path(ProdEndpoint, "/assets/js/app.js", opts) ==
+               "/assets/app-cafebabe.js"
+
+      # Same mtime, different size.
+      write_manifest(outdir, %{"app.js" => %{"file" => "app-0123456789.js"}})
+      File.touch!(manifest, {{2030, 1, 1}, {0, 0, 1}})
+
+      assert DuskmoonBundler.static_path(ProdEndpoint, "/assets/js/app.js", opts) ==
+               "/assets/app-0123456789.js"
+    end
+
+    test "static_path does not cache an unreadable manifest" do
+      outdir = tmp_dir("manifest-recovered")
+      File.mkdir_p!(outdir)
+      manifest = Path.join(outdir, "manifest.json")
+      opts = [outdir: outdir, prefix: "/assets"]
+      content = DuskmoonBundler.Manifest.wrap(%{"app.js" => %{"file" => "app-deadbeef.js"}})
+      encoded = JSON.encode!(content)
+
+      File.write!(manifest, String.duplicate("{", byte_size(encoded)))
+      File.touch!(manifest, {{2030, 1, 1}, {0, 0, 0}})
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert DuskmoonBundler.static_path(ProdEndpoint, "/assets/js/app.js", opts) ==
+                 "/assets/js/app.js"
+      end)
+
+      File.write!(manifest, encoded)
+      File.touch!(manifest, {{2030, 1, 1}, {0, 0, 0}})
+
+      assert DuskmoonBundler.static_path(ProdEndpoint, "/assets/js/app.js", opts) ==
+               "/assets/app-deadbeef.js"
+    end
+
+    test "static_path detects same-size changes within the same timestamp" do
+      outdir = tmp_dir("manifest-same-timestamp")
+      File.mkdir_p!(outdir)
+      manifest = Path.join(outdir, "manifest.json")
+      opts = [outdir: outdir, prefix: "/assets"]
+      timestamp = {{2030, 1, 1}, {0, 0, 0}}
+
+      for {file, replace?} <- [
+            {"app-deadbeef.js", false},
+            {"app-cafebabe.js", false},
+            {"app-feedface.js", true}
+          ] do
+        content = DuskmoonBundler.Manifest.wrap(%{"app.js" => %{"file" => file}})
+        target = if replace?, do: manifest <> ".new", else: manifest
+        File.write!(target, JSON.encode!(content))
+        File.touch!(target, timestamp)
+        if replace?, do: File.rename!(target, manifest)
+
+        assert DuskmoonBundler.static_path(ProdEndpoint, "/assets/js/app.js", opts) ==
+                 "/assets/" <> file
+      end
+    end
+
+    test "a same-size corrupt replacement does not reuse cached valid entries" do
+      outdir = tmp_dir("manifest-corrupt-replacement")
+      File.mkdir_p!(outdir)
+      manifest = Path.join(outdir, "manifest.json")
+      opts = [outdir: outdir, prefix: "/assets"]
+      write_manifest(outdir, %{"app.js" => %{"file" => "app-deadbeef.js"}})
+      %{mtime: mtime, size: size} = File.stat!(manifest)
+
+      assert DuskmoonBundler.static_path(ProdEndpoint, "/assets/js/app.js", opts) ==
+               "/assets/app-deadbeef.js"
+
+      File.write!(manifest, String.duplicate("{", size))
+      File.touch!(manifest, mtime)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert DuskmoonBundler.static_path(ProdEndpoint, "/assets/js/app.js", opts) ==
+                   "/assets/js/app.js"
+        end)
+
+      assert log =~ "not valid JSON"
+    end
+  end
+
   defp write_manifest(outdir, entries) do
     Path.join(outdir, "manifest.json")
     |> File.write!(DuskmoonBundler.Manifest.wrap(entries) |> JSON.encode!())

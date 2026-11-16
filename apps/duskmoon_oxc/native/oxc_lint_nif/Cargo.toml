@@ -2,6 +2,7 @@
 name = "oxc_lint_nif"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.99"
 
 [lib]
 name = "oxc_lint_nif"
@@ -18,3 +19,10 @@ oxc_parser = { git = "https://github.com/oxc-project/oxc", tag = "crates_v0.157.
 oxc_semantic = { git = "https://github.com/oxc-project/oxc", tag = "crates_v0.157.0", features = ["cfg", "linter"] }
 oxc_span = { git = "https://github.com/oxc-project/oxc", tag = "crates_v0.157.0" }
 serde_json = "1"
+
+# NIF panic boundaries require unwinding. Keep the existing release optimization defaults.
+[profile.release]
+opt-level = 3
+lto = false
+codegen-units = 16
+panic = "unwind"

@@ -1,6 +1,10 @@
 defmodule NPM.PeerReachabilityTest do
   use ExUnit.Case, async: false
 
+  # Frozen installs require every lock entry to record an integrity, so the
+  # fixtures carry one and the cache marker records the same value.
+  @fixture_integrity "sha512-Zml4dHVyZQ=="
+
   import ExUnit.CaptureIO
 
   @react "@fixture-peer/react"
@@ -116,7 +120,7 @@ defmodule NPM.PeerReachabilityTest do
   defp entry(name, version, opts \\ []) do
     %{
       version: version,
-      integrity: "",
+      integrity: @fixture_integrity,
       tarball: "https://registry.npmjs.org/#{name}/-/#{Path.basename(name)}-#{version}.tgz",
       dependencies: Keyword.get(opts, :dependencies, %{}),
       optional_dependencies: %{},
@@ -129,7 +133,7 @@ defmodule NPM.PeerReachabilityTest do
     cache_path = NPM.Cache.package_dir(name, version)
     File.mkdir_p!(cache_path)
     write_json!(Path.join(cache_path, "package.json"), %{"name" => name, "version" => version})
-    File.write!(Path.join(cache_path, ".npm-ex-cache-complete"), "1\n")
+    File.write!(Path.join(cache_path, ".npm-ex-cache-complete"), "1\n#{@fixture_integrity}\n")
   end
 
   defp write_json!(path, data), do: File.write!(path, NPM.JSON.encode_pretty(data))

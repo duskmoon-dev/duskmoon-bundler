@@ -1,144 +1,218 @@
 defmodule NPM.Pack do
   @moduledoc """
-  Creates npm-compatible tarballs from local projects.
-
-  Implements the `npm pack` functionality — reads `files` from package.json,
-  applies default exclusions, and generates a publishable tarball.
+  Selects package files and creates npm tarballs for both `npm.pack` and
+  `npm.publish`. Directory allowlists are recursive; ignore files are applied
+  at their own directory, with `.npmignore` taking precedence over `.gitignore`.
+  Symlinks are omitted. Bundled dependencies are not yet supported and are
+  rejected rather than silently producing an incomplete package.
   """
 
-  @always_include ~w(package.json README.md README LICENSE LICENCE CHANGELOG)
-  @always_exclude ~w(.git .svn .hg node_modules .npm .DS_Store)
+  @always_exclude ~w(.git .svn .hg CVS .npm .DS_Store .npmrc .npmignore .gitignore npm-debug.log)
+  @root_exclude ~w(node_modules package-lock.json npm.lock bun.lockb yarn.lock pnpm-lock.yaml)
 
-  @doc """
-  Lists files that would be included in the tarball.
-  """
+  @doc "List the files included in a package tarball, relative to the project directory."
   @spec list_files(String.t()) :: {:ok, [String.t()]} | {:error, term()}
   def list_files(project_dir) do
-    pkg_path = Path.join(project_dir, "package.json")
+    with {:ok, data} <- NPM.JSON.read_file(Path.join(project_dir, "package.json")),
+         :ok <- supported_package(data),
+         {:ok, files} <- walk_files(project_dir, "") do
+      patterns = Map.get(data, "files")
+      allowlisted? = is_list(patterns)
+      required = required_files(data)
+      ignores = ignore_rules(project_dir, files, allowlisted?)
 
-    case File.read(pkg_path) do
-      {:ok, content} ->
-        data = NPM.JSON.decode!(content)
-        files = resolve_files(data, project_dir)
-        {:ok, Enum.sort(files)}
+      selected =
+        files
+        |> Enum.filter(fn file ->
+          always_included?(file) or file in required or
+            ((not allowlisted? or allowed_file?(file, patterns)) and
+               not ignored_file?(file, ignores))
+        end)
+        |> Enum.sort()
 
-      {:error, reason} ->
-        {:error, reason}
+      {:ok, selected}
     end
   end
 
-  @doc """
-  Generates the tarball filename from package.json data.
-  """
+  @doc "Build an npm tarball in a temporary location and return its bytes and selected files."
+  @spec tarball(String.t()) :: {:ok, map()} | {:error, term()}
+  def tarball(project_dir) do
+    with {:ok, data} <- NPM.JSON.read_file(Path.join(project_dir, "package.json")),
+         :ok <- validate_identity(data),
+         {:ok, files} <- list_files(project_dir) do
+      temporary =
+        Path.join(
+          System.tmp_dir!(),
+          "npm-pack-#{Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)}.tgz"
+        )
+
+      entries =
+        Enum.map(files, fn file ->
+          {String.to_charlist("package/" <> file),
+           String.to_charlist(Path.join(project_dir, file))}
+        end)
+
+      try do
+        with :ok <- :erl_tar.create(String.to_charlist(temporary), entries, [:compressed]),
+             {:ok, tarball} <- File.read(temporary) do
+          {:ok, %{filename: tarball_name(data), tarball: tarball, files: files, data: data}}
+        end
+      after
+        File.rm(temporary)
+      end
+    end
+  end
+
+  @doc "Generate the conventional tarball filename from package metadata."
   @spec tarball_name(map()) :: String.t()
   def tarball_name(%{"name" => name, "version" => version}) do
-    safe_name = String.replace(name, "/", "-") |> String.trim_leading("@")
+    safe_name = name |> String.replace("/", "-") |> String.replace_prefix("@", "")
     "#{safe_name}-#{version}.tgz"
   end
 
-  def tarball_name(%{"name" => name}), do: String.replace(name, "/", "-") <> "-0.0.0.tgz"
+  def tarball_name(%{"name" => name}), do: tarball_name(%{"name" => name, "version" => "0.0.0"})
 
-  @doc """
-  Checks if a file should be excluded from the tarball.
-  """
+  @doc "Check default exclusions for any path component."
   @spec excluded?(String.t()) :: boolean()
   def excluded?(path) do
-    basename = Path.basename(path)
-    dirname = path |> Path.split() |> hd()
+    parts = Path.split(path)
 
-    basename in @always_exclude or dirname in @always_exclude or
-      String.starts_with?(basename, ".")
+    hd(parts) in @root_exclude or
+      Enum.any?(parts, fn component ->
+        component in @always_exclude or String.starts_with?(component, "._")
+      end)
   end
 
-  @doc """
-  Checks if a file should always be included regardless of `files` field.
-  """
+  @doc "Check files that are always included at the package root."
   @spec always_included?(String.t()) :: boolean()
   def always_included?(path) do
-    basename = Path.basename(path)
-    name_no_ext = Path.rootname(basename)
-    name_upper = String.upcase(name_no_ext)
-
-    Enum.any?(@always_include, fn pattern ->
-      String.upcase(pattern) == name_upper or String.upcase(basename) == String.upcase(pattern)
-    end)
+    Path.dirname(path) == "." and
+      (path == "package.json" or Regex.match?(~r/^(readme|licen[cs]e|changelog)(\..*)?$/i, path))
   end
 
-  @doc """
-  Returns the default files list when no `files` field is specified.
-  """
+  @doc "List files using default selection and ignore rules."
   @spec default_files(String.t()) :: [String.t()]
   def default_files(project_dir) do
-    case File.ls(project_dir) do
-      {:ok, entries} ->
-        entries
-        |> Enum.reject(&excluded?/1)
-        |> Enum.flat_map(&expand_if_dir(project_dir, &1))
-        |> Enum.sort()
-
-      _ ->
-        []
+    case list_files(project_dir) do
+      {:ok, files} -> files
+      {:error, _reason} -> []
     end
   end
 
-  defp resolve_files(%{"files" => patterns} = data, project_dir) when is_list(patterns) do
-    explicit =
-      patterns
-      |> Enum.flat_map(&match_pattern(project_dir, &1))
-      |> Enum.reject(&excluded?/1)
+  defp validate_identity(%{"name" => name, "version" => version})
+       when is_binary(name) and is_binary(version) do
+    if NPM.Scope.installable_name?(name) and match?({:ok, _}, Version.parse(version)),
+      do: :ok,
+      else: {:error, :invalid_package_identity}
+  end
 
-    always =
-      case File.ls(project_dir) do
-        {:ok, entries} -> Enum.filter(entries, &always_included?/1)
+  defp validate_identity(_data), do: {:error, :invalid_package_identity}
+
+  defp supported_package(data) when is_map(data) do
+    bundled = Map.get(data, "bundledDependencies", Map.get(data, "bundleDependencies", []))
+    files = Map.get(data, "files")
+
+    cond do
+      bundled not in [nil, false, []] -> {:error, :bundled_dependencies_not_supported}
+      is_nil(files) -> :ok
+      is_list(files) and Enum.all?(files, &is_binary/1) -> :ok
+      true -> {:error, :invalid_files_field}
+    end
+  end
+
+  defp supported_package(_data), do: {:error, :invalid_package_manifest}
+
+  defp walk_files(base, relative) do
+    with {:ok, entries} <- File.ls(Path.join(base, relative)) do
+      Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, files} ->
+        path = if relative == "", do: entry, else: Path.join(relative, entry)
+
+        case File.lstat(Path.join(base, path)) do
+          {:ok, _stat}
+          when entry in @always_exclude or (relative == "" and entry in @root_exclude) ->
+            {:cont, {:ok, files}}
+
+          {:ok, %File.Stat{type: :directory}} ->
+            case walk_files(base, path) do
+              {:ok, nested} -> {:cont, {:ok, nested ++ files}}
+              {:error, _reason} = error -> {:halt, error}
+            end
+
+          {:ok, %File.Stat{type: :regular}} ->
+            {:cont, {:ok, if(excluded?(path), do: files, else: [path | files])}}
+
+          {:ok, _symlink_or_special_file} ->
+            {:cont, {:ok, files}}
+
+          {:error, _reason} = error ->
+            {:halt, error}
+        end
+      end)
+    end
+  end
+
+  defp required_files(data) do
+    bin =
+      case data["bin"] do
+        path when is_binary(path) -> [path]
+        paths when is_map(paths) -> Map.values(paths)
         _ -> []
       end
 
-    main_file = main_entry(data)
-    main_files = if main_file, do: [main_file], else: []
+    [data["main"] | bin]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.replace_prefix(&1, "./", ""))
+  end
 
-    (always ++ main_files ++ explicit)
+  defp allowed_file?(file, patterns) do
+    Enum.reduce(patterns, false, fn
+      "!" <> pattern, allowed ->
+        allowed and not NPM.Ignore.matches?(file, pattern, true)
+
+      pattern, allowed when is_binary(pattern) ->
+        allowed or NPM.Ignore.matches?(file, pattern, true)
+
+      _invalid, allowed ->
+        allowed
+    end)
+  end
+
+  defp ignore_rules(project_dir, files, allowlisted?) do
+    files
+    |> Enum.flat_map(fn file -> ancestor_dirs(Path.dirname(file)) end)
     |> Enum.uniq()
-    |> Enum.filter(&File.exists?(Path.join(project_dir, &1)))
+    |> Enum.reject(&(&1 == "." and allowlisted?))
+    |> Enum.map(fn directory ->
+      {directory, NPM.Ignore.effective_patterns(Path.join(project_dir, directory))}
+    end)
+    |> Enum.sort_by(fn {directory, _} -> length(Path.split(directory)) end)
   end
 
-  defp resolve_files(_data, project_dir), do: default_files(project_dir)
+  defp ancestor_dirs("."), do: ["."]
+  defp ancestor_dirs(directory), do: [directory | ancestor_dirs(Path.dirname(directory))]
 
-  defp main_entry(%{"main" => main}) when is_binary(main), do: main
-  defp main_entry(_), do: nil
+  defp ignored_file?(file, rules) do
+    Enum.reduce_while(rules, false, fn {directory, patterns}, ignored ->
+      if directory == "." or String.starts_with?(file, directory <> "/") do
+        relative = if directory == ".", do: file, else: Path.relative_to(file, directory)
 
-  defp match_pattern(base, pattern) do
-    full = Path.join(base, pattern)
+        excluded_parent? =
+          relative
+          |> Path.dirname()
+          |> ancestor_dirs()
+          |> Enum.reject(&(&1 == "."))
+          |> Enum.any?(&NPM.Ignore.apply_rules(&1, patterns, false, true))
 
-    if File.dir?(full) do
-      expand_if_dir(base, pattern)
-    else
-      case Path.wildcard(full) do
-        [] -> []
-        matches -> Enum.map(matches, &Path.relative_to(&1, base))
+        if excluded_parent? do
+          # Ignore rules inside an excluded directory cannot re-include its
+          # contents. Required root metadata is handled before ignore rules.
+          {:halt, true}
+        else
+          {:cont, NPM.Ignore.apply_rules(relative, patterns, ignored)}
+        end
+      else
+        {:cont, ignored}
       end
-    end
-  end
-
-  defp expand_if_dir(base, entry) do
-    full = Path.join(base, entry)
-
-    if File.dir?(full) do
-      walk_files(full)
-      |> Enum.map(&Path.relative_to(&1, base))
-    else
-      [entry]
-    end
-  end
-
-  defp walk_files(dir) do
-    case File.ls(dir) do
-      {:ok, entries} -> Enum.flat_map(entries, &expand_path(dir, &1))
-      _ -> []
-    end
-  end
-
-  defp expand_path(dir, entry) do
-    path = Path.join(dir, entry)
-    if File.dir?(path), do: walk_files(path), else: [path]
+    end)
   end
 end

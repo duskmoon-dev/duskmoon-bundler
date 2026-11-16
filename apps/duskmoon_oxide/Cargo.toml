@@ -2,3 +2,10 @@
 resolver = "2"
 
 members = ["native/oxide_ex_nif"]
+
+# NIF panic boundaries require unwinding. Keep the existing release optimization defaults.
+[profile.release]
+opt-level = 3
+lto = false
+codegen-units = 16
+panic = "unwind"

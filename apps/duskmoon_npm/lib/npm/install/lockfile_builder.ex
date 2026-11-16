@@ -14,6 +14,8 @@ defmodule NPM.Install.LockfileBuilder do
       {name,
        %{
          version: version_str,
+         os: Map.get(info, :os, []),
+         cpu: Map.get(info, :cpu, []),
          integrity: info.dist.integrity,
          tarball: info.dist.tarball,
          dependencies: info.dependencies,

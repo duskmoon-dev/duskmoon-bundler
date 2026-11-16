@@ -127,13 +127,23 @@ scope of imported benchmark reports.
 
 ## CI and releases
 
-The root [CI workflow](../../.github/workflows/ci.yml) checks Elixir formatting,
-warnings-as-errors compilation and native OXC formatting/linting. The separate
-[test workflow](../../.github/workflows/test.yml) runs the full umbrella/Elixir
-suite, Hologram Mocha under Bun and generic JavaScript tests. A manual test run
-also accepts an immutable UI SHA for candidate integration. The shared
-[release workflow](../../.github/workflows/release.yml) requires successful checks
-for the exact source/UI SHAs, builds NIFs through eight target workflows, and
-publishes Hologram after its toolchain dependencies without rerunning tests.
-Published-package tests run afterward in `test.yml` and gate UI adoption.
+The root [CI workflow](../../.github/workflows/ci.yml) checks formatting,
+warnings-as-errors compilation, native OXC tooling, Rust Clippy and workflow
+syntax. The separate [test workflow](../../.github/workflows/test.yml) runs the
+umbrella Elixir suite (`test/elixir` for this app), Hologram Mocha under Bun and
+the workspace JavaScript tests. Source compilation also runs on Elixir 1.19 and
+1.20 with OTP 28; the primary test baseline is Elixir 1.18 / OTP 28.
+
+The preserved `test/features`, `test/cluster`, `test/cowboy`, `test/ecosystem`
+and `test/umbrella` projects are upstream integration fixtures, **not CI or
+release gates**. They require separate Mix projects, asset installs and, for
+browser/cluster tests, their own runtime setup. A root `mix test` does not run
+these five suites. Changes to their integrations should run the affected
+fixture explicitly and report its result separately.
+
+The [release workflow](../../.github/workflows/release.yml) requires successful
+CI and source tests for the exact toolchain SHA. Its eight-target native matrix
+retains 47 artifacts, signs the artifacts and exact Hex package bytes, and
+publishes Hologram after its toolchain dependencies. Published registry/native
+consumer verification is independent of optional downstream UI compatibility.
 See the [release runbook](../../docs/releasing.md).

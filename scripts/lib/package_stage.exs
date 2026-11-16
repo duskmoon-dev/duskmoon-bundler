@@ -12,6 +12,9 @@ defmodule DuskmoonToolchain.PackageStage do
       {:@, meta, [{:version, attr_meta, [_]}]} ->
         {:@, meta, [{:version, attr_meta, [version]}]}
 
+      {:files, files} ->
+        {:files, quote(do: Enum.uniq(unquote(files) ++ ["CHANGELOG.md"]))}
+
       {app, opts} = node when is_atom(app) and is_list(opts) ->
         if app in @apps and Keyword.get(opts, :in_umbrella) do
           {:{}, [], [app, "== #{version}", Keyword.delete(opts, :in_umbrella)]}
@@ -114,6 +117,18 @@ defmodule DuskmoonToolchain.PackageStage do
     mixfile = Path.join(target, "mix.exs")
     File.write!(mixfile, normalize_manifest(File.read!(mixfile), version))
     validate_manifest!(mixfile)
+
+    # Publish the cohort's actual release history without rewriting upstream or
+    # app-specific changelogs in the developer checkout.
+    changelog = Path.join(target, "CHANGELOG.md")
+    source_changelog = Path.join(source, "CHANGELOG.md")
+    history = if File.regular?(source_changelog), do: File.read!(source_changelog), else: ""
+    cohort_history = File.read!(Path.join(root, "CHANGELOG.md"))
+
+    File.write!(
+      changelog,
+      cohort_history <> "\n---\n\n# Package-specific history\n\n" <> history
+    )
 
     dependencies =
       config[:deps]

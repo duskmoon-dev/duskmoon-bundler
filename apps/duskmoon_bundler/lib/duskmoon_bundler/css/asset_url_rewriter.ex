@@ -131,20 +131,19 @@ defmodule DuskmoonBundler.CSS.AssetURLRewriter do
   end
 
   defp rewrite_urls(css, opts, state, fun) do
-    {:ok, agent} = Agent.start_link(fn -> state end)
+    with {:ok, urls} <- Vize.CSS.collect_urls(css, opts) do
+      {patches, state} =
+        Enum.map_reduce(urls, state, fn %Vize.CSS.URL{url: url, range: range}, state ->
+          case fun.(url, state) do
+            {{:rewrite, replacement}, state} ->
+              {%{start: range.start, end: range.end, change: replacement}, state}
 
-    try do
-      case Vize.CSS.rewrite_urls(css, opts, fn url ->
-             Agent.get_and_update(agent, fn state ->
-               {action, state} = fun.(url, state)
-               {action, state}
-             end)
-           end) do
-        {:ok, css} -> {:ok, css, Agent.get(agent, & &1)}
-        {:error, reason} -> {:error, reason}
-      end
-    after
-      Agent.stop(agent)
+            {:keep, state} ->
+              {nil, state}
+          end
+        end)
+
+      {:ok, OXC.patch_string(css, Enum.reject(patches, &is_nil/1)), state}
     end
   end
 end

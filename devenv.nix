@@ -12,7 +12,7 @@ in {
   env.ZIG_EXECUTABLE_PATH = "${zig}/bin/zig";
   packages = with pkgs-stable; [ git tailwindcss_4 clang pkg-config ]
     # Vize and QuickBEAM require newer Rust and Zig than the stable baseline.
-    ++ [ pkgs-rust.cargo pkgs-rust.rustc zig ]
+    ++ [ pkgs-rust.cargo pkgs-rust.rustc pkgs-rust.clippy pkgs-rust.rustfmt zig ]
     ++ lib.optionals stdenv.isLinux [ inotify-tools ];
   languages.elixir.enable = true;
   languages.elixir.package = pkgs-stable.beam28Packages.elixir;

@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 use rolldown::{
@@ -15,8 +14,7 @@ use rolldown_common::{
     StrOrBytes,
 };
 use rustc_hash::FxHashMap;
-use rustler::{Binary, Encoder, Env, Error, ListIterator, NifMap, NifResult, SerdeTerm, Term};
-use serde::Serialize;
+use rustler::{Encoder, Env, NifMap, NifResult, SerdeTerm, Term};
 use serde_json::Value;
 use tempfile::TempDir;
 use tokio::runtime::Builder as RuntimeBuilder;
@@ -24,6 +22,7 @@ use tokio::runtime::Builder as RuntimeBuilder;
 use crate::atoms;
 use crate::error::error_to_term;
 use crate::options::{BundleEntry, BundleOptions};
+use crate::parse::source_from_term;
 
 // Rolldown and OXC recursively traverse generated expression trees. Run the
 // complete bundle operation away from the comparatively small dirty NIF stack.
@@ -31,7 +30,7 @@ use crate::options::{BundleEntry, BundleOptions};
 // upfront on supported platforms, including Windows.
 const BUNDLE_STACK_SIZE: usize = 64 * 1024 * 1024;
 
-#[derive(Serialize)]
+#[derive(NifMap)]
 struct CodeWithSourcemap {
     code: String,
     sourcemap: String,
@@ -40,7 +39,12 @@ struct CodeWithSourcemap {
 #[derive(NifMap)]
 struct BundleRunResult {
     outputs: Vec<BundleRunOutput>,
-    warnings: Vec<String>,
+    warnings: Vec<BundleWarning>,
+}
+
+#[derive(NifMap)]
+struct BundleWarning {
+    message: String,
 }
 
 #[derive(NifMap)]
@@ -96,28 +100,23 @@ fn normalize_virtual_path(path: &str) -> Result<PathBuf, String> {
     Ok(result)
 }
 
-fn write_iodata(term: Term<'_>, writer: &mut impl Write) -> NifResult<()> {
-    if term.is_binary() {
-        let binary = Binary::from_term(term)?;
-        writer.write_all(&binary).map_err(|_| Error::BadArg)?;
-    } else if term.is_empty_list() {
-    } else if term.is_list() {
-        let iter: ListIterator = term.decode()?;
-        for item in iter {
-            write_iodata(item, writer)?;
-        }
-    } else {
-        writer
-            .write_all(&[term.decode::<u8>()?])
-            .map_err(|_| Error::BadArg)?;
-    }
+type SourceFile<'a> = (String, &'a [u8]);
 
-    Ok(())
+// Terms belong to the calling process env, so iodata is flattened on the
+// scheduler thread before the bundle worker starts.
+fn decode_sources<'a>(files: Vec<(String, Term<'a>)>) -> Result<Vec<SourceFile<'a>>, Vec<String>> {
+    files
+        .into_iter()
+        .map(|(filename, source)| match source_from_term(source) {
+            Ok(binary) => Ok((filename, binary.as_slice())),
+            Err(_) => Err(vec![format!("Invalid iodata for {filename:?}")]),
+        })
+        .collect()
 }
 
-fn write_virtual_project<'a>(
+fn write_virtual_project(
     tempdir: &TempDir,
-    files: &[(String, Term<'a>)],
+    files: &[SourceFile<'_>],
 ) -> Result<Vec<String>, Vec<String>> {
     let mut written = BTreeSet::new();
 
@@ -143,13 +142,8 @@ fn write_virtual_project<'a>(
             }
         }
 
-        let mut file = match fs::File::create(&full_path) {
-            Ok(file) => file,
-            Err(error) => return Err(vec![format!("Failed to write {filename:?}: {error}")]),
-        };
-
-        if write_iodata(*source, &mut file).is_err() {
-            return Err(vec![format!("Invalid iodata for {filename:?}")]);
+        if let Err(error) = fs::write(&full_path, source) {
+            return Err(vec![format!("Failed to write {filename:?}: {error}")]);
         }
     }
 
@@ -254,21 +248,6 @@ fn relativize_sourcemap_sources(sourcemap_json: String, cwd: &Path) -> Result<St
         .map_err(|error| vec![format!("Failed to serialize Rolldown source map: {error}")])
 }
 
-fn inject_preamble(code: &str, preamble: &str) -> String {
-    if let Some(pos) = code.find("(function") {
-        if let Some(brace_offset) = code[pos..].find('{') {
-            let insert_at = pos + brace_offset + 1;
-            let mut result = String::with_capacity(code.len() + preamble.len() + 2);
-            result.push_str(&code[..insert_at]);
-            result.push('\n');
-            result.push_str(preamble);
-            result.push_str(&code[insert_at..]);
-            return result;
-        }
-    }
-    format!("{preamble}\n{code}")
-}
-
 fn build_bundle_options(
     cwd: &Path,
     input: Vec<InputItem>,
@@ -312,6 +291,13 @@ fn build_bundle_options(
         footer: opts
             .footer
             .clone()
+            .map(|s| AddonOutputOption::String(Some(s))),
+        // Rolldown renders the intro inside the format wrapper and accounts
+        // for it in the source map.
+        intro: opts
+            .preamble
+            .clone()
+            .filter(|preamble| !preamble.is_empty())
             .map(|s| AddonOutputOption::String(Some(s))),
         define: (!opts.define.is_empty()).then(|| {
             opts.define
@@ -367,8 +353,8 @@ fn explicit_external_specifiers(opts: &BundleOptions) -> Vec<String> {
     opts.external.clone()
 }
 
-fn bundle_virtual_project<'a>(
-    files: Vec<(String, Term<'a>)>,
+fn bundle_virtual_project(
+    files: Vec<SourceFile<'_>>,
     opts: &BundleOptions,
 ) -> Result<(String, Option<String>), Vec<String>> {
     if files.is_empty() {
@@ -476,13 +462,7 @@ fn run_rolldown_single(
         })
         .ok_or_else(|| vec!["Rolldown did not produce a JavaScript bundle".to_string()])?;
 
-    let mut code = chunk.code.clone();
-
-    if let Some(preamble) = &opts.preamble {
-        if !preamble.is_empty() {
-            code = inject_preamble(&code, preamble);
-        }
-    }
+    let code = chunk.code.clone();
 
     let sourcemap = if opts.sourcemap {
         chunk
@@ -498,11 +478,7 @@ fn run_rolldown_single(
     Ok((code, sourcemap))
 }
 
-fn bundle_run_project<'a>(opts: &BundleOptions<'a>) -> Result<BundleRunResult, Vec<String>> {
-    if opts.entries.is_empty() {
-        return Err(vec!["bundle run requires at least one entry".to_string()]);
-    }
-
+fn bundle_run_sources<'a>(opts: &BundleOptions<'a>) -> Vec<(String, Term<'a>)> {
     let mut source_files: Vec<(String, Term<'a>)> = opts
         .entries
         .iter()
@@ -513,6 +489,16 @@ fn bundle_run_project<'a>(opts: &BundleOptions<'a>) -> Result<BundleRunResult, V
             .iter()
             .map(|file| (file.path.clone(), file.source)),
     );
+    source_files
+}
+
+fn bundle_run_project(
+    opts: &BundleOptions<'_>,
+    source_files: Vec<SourceFile<'_>>,
+) -> Result<BundleRunResult, Vec<String>> {
+    if opts.entries.is_empty() {
+        return Err(vec!["bundle run requires at least one entry".to_string()]);
+    }
 
     let tempdir;
     let cwd = if source_files.is_empty() {
@@ -582,16 +568,21 @@ fn run_rolldown_outputs(
 
     let _ = runtime.block_on(bundler.close());
 
+    let warnings = output
+        .warnings
+        .iter()
+        .map(|warning| BundleWarning {
+            message: warning.to_string(),
+        })
+        .collect();
+
     let outputs = output
         .assets
         .into_iter()
         .map(|asset| output_to_term_data(cwd, opts, asset))
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(BundleRunResult {
-        outputs,
-        warnings: Vec::new(),
-    })
+    Ok(BundleRunResult { outputs, warnings })
 }
 
 fn output_to_term_data(
@@ -676,7 +667,10 @@ fn output_path(opts: &BundleOptions<'_>, filename: &str) -> Option<String> {
 pub fn bundle_run<'a>(env: Env<'a>, opts_term: Term<'a>) -> NifResult<Term<'a>> {
     let opts = BundleOptions::from_term(opts_term);
 
-    match run_bundle_operation(|| bundle_run_project(&opts)) {
+    let result = decode_sources(bundle_run_sources(&opts))
+        .and_then(|sources| run_bundle_operation(|| bundle_run_project(&opts, sources)));
+
+    match result {
         Ok(result) => Ok((atoms::ok(), result).encode(env)),
         Err(errors) => error_to_term(env, &errors),
     }
@@ -690,12 +684,13 @@ pub fn bundle<'a>(
 ) -> NifResult<Term<'a>> {
     let opts = BundleOptions::from_term(opts_term);
 
-    match run_bundle_operation(|| bundle_virtual_project(files, &opts)) {
-        Ok((code, Some(sourcemap))) => Ok((
-            atoms::ok(),
-            SerdeTerm(CodeWithSourcemap { code, sourcemap }),
-        )
-            .encode(env)),
+    let result = decode_sources(files)
+        .and_then(|files| run_bundle_operation(|| bundle_virtual_project(files, &opts)));
+
+    match result {
+        Ok((code, Some(sourcemap))) => {
+            Ok((atoms::ok(), CodeWithSourcemap { code, sourcemap }).encode(env))
+        }
         Ok((code, None)) => Ok((atoms::ok(), SerdeTerm(code)).encode(env)),
         Err(errors) => error_to_term(env, &errors),
     }
@@ -706,11 +701,9 @@ pub fn bundle_entry<'a>(env: Env<'a>, entry: String, opts_term: Term<'a>) -> Nif
     let opts = BundleOptions::from_term(opts_term);
 
     match run_bundle_operation(|| bundle_filesystem_entry(entry, &opts)) {
-        Ok((code, Some(sourcemap))) => Ok((
-            atoms::ok(),
-            SerdeTerm(CodeWithSourcemap { code, sourcemap }),
-        )
-            .encode(env)),
+        Ok((code, Some(sourcemap))) => {
+            Ok((atoms::ok(), CodeWithSourcemap { code, sourcemap }).encode(env))
+        }
         Ok((code, None)) => Ok((atoms::ok(), SerdeTerm(code)).encode(env)),
         Err(errors) => error_to_term(env, &errors),
     }

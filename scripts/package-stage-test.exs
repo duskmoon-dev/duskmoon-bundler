@@ -44,6 +44,15 @@ defmodule PackageStageTest do
     for {app, source} <- before do
       assert File.read!(Path.join([root, "apps", to_string(app), "mix.exs"])) == source
       assert File.exists?(Path.join([output, to_string(app), "mix.exs"]))
+
+      staged_history = File.read!(Path.join([output, to_string(app), "CHANGELOG.md"]))
+      assert String.starts_with?(staged_history, File.read!(Path.join(root, "CHANGELOG.md")))
+
+      source_history = Path.join([root, "apps", to_string(app), "CHANGELOG.md"])
+
+      if File.regular?(source_history) do
+        assert String.ends_with?(staged_history, File.read!(source_history))
+      end
     end
 
     assert File.exists?(Path.join([output, "duskmoon_quickbeam", "priv/c_src/quickjs.c"]))

@@ -4,7 +4,10 @@ defmodule NPM.Install.Linker do
 
   Supports multiple linking strategies:
   - `:copy` (default) — full file copy
-  - `:symlink` — symlinks from `node_modules/pkg` to cache
+  - `:symlink` — symlinks from `node_modules/pkg` to cache. Nested packages
+    and packages that contain nested packages or expose bin commands are still
+    copied, so executable permissions can be set without writing through a
+    symlink into the shared cache.
 
   Uses a hoisted layout where packages are placed as high in the tree
   as possible, only nesting when version conflicts occur.
@@ -43,15 +46,15 @@ defmodule NPM.Install.Linker do
   def link_local_packages(local_links, _node_modules_dir) when map_size(local_links) == 0, do: :ok
 
   def link_local_packages(local_links, node_modules_dir) do
-    File.mkdir_p!(node_modules_dir)
-
-    with :ok <-
+    with :ok <- validate_local_link_names(local_links),
+         :ok <- File.mkdir_p(node_modules_dir),
+         :ok <-
            local_links
            |> Enum.sort_by(&elem(&1, 0))
            |> run_concurrently(fn {name, source} ->
              source = Path.expand(source)
              target = Path.join(node_modules_dir, name)
-             link_local_package(source, target)
+             link_local_package(source, target, node_modules_dir)
            end) do
       link_bins(node_modules_dir, Enum.map(local_links, fn {name, _path} -> {name, "local"} end))
     end
@@ -95,12 +98,14 @@ defmodule NPM.Install.Linker do
         strategy \\ default_strategy(),
         flat_skipped \\ MapSet.new()
       ) do
+    if strategy == :symlink, do: materialize_nested_parents(nested_lockfile, nm_dir)
+
     result =
       nested_lockfile
       |> Enum.group_by(fn {location, _entry} -> location_depth(location) end)
       |> Enum.sort_by(&elem(&1, 0))
       |> Enum.reduce_while({:ok, MapSet.new()}, fn {_depth, entries}, {:ok, skipped_locations} ->
-        case link_nested_depth(entries, nm_dir, strategy, flat_skipped, skipped_locations) do
+        case link_nested_depth(entries, nm_dir, flat_skipped, skipped_locations) do
           {:ok, new_skipped} -> {:cont, {:ok, new_skipped}}
           {:error, reason} -> {:halt, {:error, reason}}
         end
@@ -112,11 +117,11 @@ defmodule NPM.Install.Linker do
     end
   end
 
-  defp link_nested_depth(entries, nm_dir, strategy, flat_skipped, skipped_locations) do
+  defp link_nested_depth(entries, nm_dir, flat_skipped, skipped_locations) do
     entries
     |> Task.async_stream(
       fn {location, entry} ->
-        link_nested_entry(location, entry, nm_dir, strategy, flat_skipped, skipped_locations)
+        link_nested_entry(location, entry, nm_dir, flat_skipped, skipped_locations)
       end,
       max_concurrency: @link_concurrency,
       ordered: false,
@@ -137,13 +142,13 @@ defmodule NPM.Install.Linker do
     end)
   end
 
-  defp link_nested_entry(location, entry, nm_dir, strategy, flat_skipped, skipped_locations) do
+  defp link_nested_entry(location, entry, nm_dir, flat_skipped, skipped_locations) do
     with {:ok, name} <- NPM.Lockfile.nested_package_name(location) do
       cond do
         nested_under_skipped?(location, flat_skipped, skipped_locations) ->
           {:ok, {:skip, location}}
 
-        Map.get(entry, :optional, false) and not platform_compatible?(name, entry.version) ->
+        Map.get(entry, :optional, false) and not platform_compatible?(name, entry) ->
           {:ok, {:skip, location}}
 
         true ->
@@ -156,7 +161,7 @@ defmodule NPM.Install.Linker do
             {:ok, _cache_result} ->
               cache_path = NPM.Cache.package_dir(name, entry.version)
               target = nested_target(nm_dir, location)
-              :ok = link_package(cache_path, target, strategy)
+              :ok = link_package(cache_path, target, :copy)
               {:ok, :linked}
 
             {:error, reason} ->
@@ -167,6 +172,33 @@ defmodule NPM.Install.Linker do
       :error -> {:error, {:invalid_nested_package_location, location}}
     end
   end
+
+  # A nested package lives inside its parent's directory. With the symlink
+  # strategy that directory would be the shared cache entry, so nested packages
+  # are always copied and a symlinked parent is first replaced by its own copy.
+  defp materialize_nested_parents(nested_lockfile, nm_dir) do
+    nested_lockfile
+    |> Map.keys()
+    |> Enum.flat_map(&top_level_parent/1)
+    |> Enum.uniq()
+    |> Enum.each(fn parent ->
+      target = Path.join(nm_dir, parent)
+
+      case File.read_link(target) do
+        {:ok, source} -> copy_package(Path.expand(source, Path.dirname(target)), target)
+        {:error, _not_a_symlink} -> :ok
+      end
+    end)
+  end
+
+  defp top_level_parent("node_modules/" <> rest) do
+    case String.split(rest, "/node_modules/", parts: 2) do
+      [parent, _nested] -> if NPM.Scope.installable_name?(parent), do: [parent], else: []
+      [_top_level] -> []
+    end
+  end
+
+  defp top_level_parent(_workspace_location), do: []
 
   defp populate_cache(lockfile, platform_skipped) do
     platform_skipped = platform_skipped || skipped_packages(lockfile)
@@ -246,17 +278,34 @@ defmodule NPM.Install.Linker do
     :ok
   end
 
-  defp link_local_package(source, target) do
-    if Path.expand(source) != Path.expand(target) do
-      File.mkdir_p!(Path.dirname(target))
-      File.rm_rf!(target)
+  defp validate_local_link_names(local_links) do
+    case Enum.find(local_links, fn {name, _source} -> not NPM.Scope.installable_name?(name) end) do
+      nil -> :ok
+      {name, source} -> {:error, {:invalid_package_name, name, source}}
+    end
+  end
 
-      case File.ln_s(source, target) do
-        :ok -> :ok
-        {:error, _reason} -> copy_package(source, target)
-      end
-    else
-      :ok
+  defp link_local_package(source, target, node_modules_dir) do
+    root = Path.expand(node_modules_dir)
+    expanded_target = Path.expand(target)
+
+    cond do
+      # Second layer behind name validation: the target is removed and
+      # re-created, so it must stay inside node_modules.
+      not String.starts_with?(expanded_target, root <> "/") ->
+        {:error, {:local_link_outside_node_modules, target}}
+
+      Path.expand(source) == expanded_target ->
+        :ok
+
+      true ->
+        File.mkdir_p!(Path.dirname(target))
+        File.rm_rf!(target)
+
+        case File.ln_s(source, target) do
+          :ok -> :ok
+          {:error, _reason} -> copy_package(source, target)
+        end
     end
   end
 
@@ -362,9 +411,19 @@ defmodule NPM.Install.Linker do
         data = NPM.JSON.decode!(content)
         pkg_dir = Path.join(node_modules_dir, name)
 
-        data
-        |> parse_bin_field(pkg_dir)
-        |> Enum.flat_map(&safe_bin_entry(&1, name, pkg_dir))
+        bins =
+          data
+          |> parse_bin_field(pkg_dir)
+          |> Enum.flat_map(&safe_bin_entry(&1, name, pkg_dir))
+
+        # Bins must be executable even when their archive mode is 0644. Make
+        # the package private to this project before changing any file modes.
+        if bins != [] and cache_symlink?(pkg_dir) do
+          source = File.read_link!(pkg_dir) |> Path.expand(Path.dirname(pkg_dir))
+          copy_package(source, pkg_dir)
+        end
+
+        bins
 
       {:error, _} ->
         []
@@ -433,6 +492,15 @@ defmodule NPM.Install.Linker do
   end
 
   defp symlink?(path), do: match?({:ok, %File.Stat{type: :symlink}}, File.lstat(path))
+
+  defp cache_symlink?(pkg_dir) do
+    with {:ok, target} <- File.read_link(pkg_dir) do
+      cache_root = Path.expand(NPM.Cache.dir()) <> "/"
+      String.starts_with?(Path.expand(target, Path.dirname(pkg_dir)), cache_root)
+    else
+      _ -> false
+    end
+  end
 
   defp warn_unsafe_bin(name, command, target) do
     Mix.shell().error(
@@ -515,7 +583,7 @@ defmodule NPM.Install.Linker do
 
     lockfile
     |> Enum.filter(fn {name, _} -> MapSet.member?(optional_names, name) end)
-    |> Enum.reject(fn {name, entry} -> platform_compatible?(name, entry.version) end)
+    |> Enum.reject(fn {name, entry} -> platform_compatible?(name, entry) end)
     |> MapSet.new(fn {name, _} -> name end)
   end
 
@@ -549,7 +617,13 @@ defmodule NPM.Install.Linker do
     end
   end
 
-  defp platform_compatible?(name, version) do
+  defp platform_compatible?(_name, %{os: os, cpu: cpu}) do
+    NPM.Platform.os_compatible?(os) and NPM.Platform.cpu_compatible?(cpu)
+  end
+
+  # Legacy locks did not retain platform metadata. Fetch it only for those
+  # records; locks written by this client can be checked entirely offline.
+  defp platform_compatible?(name, %{version: version}) do
     with {:ok, packument} <- NPM.Registry.get_packument(name),
          %{} = info <- Map.get(packument.versions, version) do
       NPM.Platform.os_compatible?(info.os) and NPM.Platform.cpu_compatible?(info.cpu)
@@ -594,7 +668,9 @@ defmodule NPM.Install.Linker do
     with {:ok, packument} <- NPM.Registry.get_packument(pkg),
          %{} = info <- Map.get(packument.versions, version),
          {:ok, cache_result} <-
-           NPM.Cache.ensure(pkg, version, info.dist.tarball, info.dist.integrity) do
+           NPM.Cache.ensure(pkg, version, info.dist.tarball, info.dist.integrity,
+             unpacked_size: Map.get(info.dist, :unpacked_size)
+           ) do
       if cache_result != :missing_optional do
         cache_path = NPM.Cache.package_dir(pkg, version)
         target = Path.join([nm_dir, parent, "node_modules", pkg])

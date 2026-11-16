@@ -64,7 +64,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
-          toolchain: stable
+          toolchain: '1.99.0'
           target: ${{ inputs.target }}
 
       - name: Build Rust NIF
@@ -82,7 +82,8 @@ jobs:
           target: ${{ inputs.target }}
           nif-version: '2.15'
           use-cross: ${{ inputs.use_cross }}
-          cross-version: from-source
+          cross-version: v0.2.5
+          cargo-args: --locked
           project-dir: ${{ matrix.crate.project-dir }}
 
       - name: Verify musl shared library
@@ -140,7 +141,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
-          toolchain: stable
+          toolchain: '1.99.0'
 
       - name: Install Elixir dependencies
         run: mix deps.get --check-locked
@@ -150,33 +151,38 @@ jobs:
         env:
           QUICKBEAM_BUILD: '1'
           DUSKMOON_BUILD_NATIVE_FROM_SOURCE: '1'
+          QUICKBEAM_TARGET: ${{ inputs.quickbeam_target }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           # Keep same-host GNU Linux builds from inheriting the runner's CPU
           # features. Cross-target builds must let Zigler perform host sema
           # before it applies the requested target to the final artifact.
-          case "${{ inputs.quickbeam_target }}" in
+          case "${QUICKBEAM_TARGET}" in
             x86_64-linux-gnu) export TARGET_ARCH=x86_64 ;;
             aarch64-linux-gnu) export TARGET_ARCH=aarch64 ;;
           esac
-          if [[ "${{ inputs.quickbeam_target }}" == *-linux-gnu ]]; then
+          if [[ "${QUICKBEAM_TARGET}" == *-linux-gnu ]]; then
             export TARGET_OS=linux
             export TARGET_ABI=gnu
           fi
 
           mix zigler_precompiled.build lib/quickbeam/native.ex \
-            --target ${{ inputs.quickbeam_target }} \
-            --version ${{ inputs.version }} \
+            --target "${QUICKBEAM_TARGET}" \
+            --version "${RELEASE_VERSION}" \
             --out ../../artifacts
 
       - name: Verify portable x86_64 instruction baseline
         if: startsWith(inputs.quickbeam_target, 'x86_64-linux-')
+        env:
+          QUICKBEAM_TARGET: ${{ inputs.quickbeam_target }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
 
           inspect_dir="$(mktemp -d)"
           trap 'rm -rf "${inspect_dir}"' EXIT
 
-          tar xzf artifacts/Elixir.QuickBEAM.Native-v${{ inputs.version }}-${{ inputs.quickbeam_target }}.so.tar.gz \
+          tar xzf "artifacts/Elixir.QuickBEAM.Native-v${RELEASE_VERSION}-${QUICKBEAM_TARGET}.so.tar.gz" \
             -C "${inspect_dir}"
           native_libraries=("${inspect_dir}"/Elixir.QuickBEAM.Native*.so)
           if [[ "${#native_libraries[@]}" -ne 1 || ! -f "${native_libraries[0]}" ]]; then

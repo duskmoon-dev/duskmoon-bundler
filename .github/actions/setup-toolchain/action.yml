@@ -1,6 +1,9 @@
 name: Set up source toolchain
 description: Shared CI/test tools, locked dependencies and native compilation cache
 inputs:
+  elixir:
+    description: Elixir version
+    default: '1.18'
   otp:
     description: Erlang/OTP version
     default: '28'
@@ -9,11 +12,11 @@ runs:
   steps:
     - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
       with:
-        elixir-version: '1.18'
+        elixir-version: ${{ inputs.elixir }}
         otp-version: ${{ inputs.otp }}
     - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       with:
-        toolchain: stable
+        toolchain: '1.99.0'
     - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
       with:
         tool_versions: |
@@ -31,7 +34,7 @@ runs:
     - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: deps
-        key: ${{ github.repository }}-${{ runner.os }}-${{ runner.arch }}-glibc-source-elixir1.18-otp${{ inputs.otp }}-rust-stable-zig0.17.1-${{ hashFiles('mix.lock', '**/Cargo.lock') }}
+        key: ${{ github.repository }}-${{ runner.os }}-${{ runner.arch }}-glibc-source-elixir${{ inputs.elixir }}-otp${{ inputs.otp }}-rust1.99.0-zig0.17.1-${{ hashFiles('mix.lock', '**/Cargo.lock') }}
     - name: Fingerprint native build toolchain
       id: native-toolchain
       shell: bash

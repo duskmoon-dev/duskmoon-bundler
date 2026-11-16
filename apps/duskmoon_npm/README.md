@@ -133,6 +133,13 @@ npm_ex is intentionally conservative around install-time code execution:
 - transitive git, URL, GitHub shorthand, and `file:` dependencies are blocked by default
 - direct exotic dependencies require an explicit `exotic_deps` allowlist entry
 - registry origins and redirects are policy checked
+- scoped registry metadata caches are isolated, and registry credentials are
+  sent only to matching registry origins; redirects to other allowed origins
+  do not receive the original token
+- downloads are limited to 512 MiB and unpacked archives to 2 GiB by default,
+  including sparse files' logical sizes; both limits are configurable
+- frozen installs and `mix npm.ci` reject registry lock entries without
+  integrity hashes; ordinary installs retain legacy entries with a warning
 - newly created packages and freshly published versions can warn during install
 
 This blocks common install-time credential stealers that rely on postinstall hooks reading files like `.env` and exfiltrating secrets during dependency installation.
@@ -169,6 +176,8 @@ Common environment variables:
 - `NPM_EX_CACHE_DIR`, `NPM_INSTALL_DIR`
 - `NPM_EX_BLOCK_EXOTIC_SUBDEPS`, `NPM_EX_EXOTIC_DEPS`
 - `NPM_EX_ALLOWED_REGISTRIES`, `NPM_EX_ALLOW_REGISTRY_REDIRECTS`
+- `NPM_EX_MAX_TARBALL_BYTES`, `NPM_EX_MAX_UNPACKED_BYTES`
+- `NPM_EX_EXPAND_PROJECT_NPMRC_ENV` (default: off)
 - `NPM_EX_PACKAGE_AGE_WARNING_DAYS`, `NPM_EX_VERSION_AGE_WARNING_DAYS`
 - `NPM_EX_COMPROMISED_DB_PATH`, `NPM_EX_COMPROMISED_POLICY`
 
@@ -183,11 +192,74 @@ config :duskmoon_npm,
   exotic_deps: [],
   allowed_registries: ["https://registry.npmjs.org"],
   allow_registry_redirects: false,
+  max_tarball_bytes: 512 * 1024 * 1024,
+  max_unpacked_bytes: 2 * 1024 * 1024 * 1024,
+  expand_project_npmrc_env: false,
   package_age_warning_days: 7,
   version_age_warning_days: 3,
   compromised_db_path: Path.expand("~/.npm_ex/security/compromised_packages.json"),
   compromised_policy: :error
 ```
+
+### Private registries and environment variables
+
+Project `.npmrc` values override user-level `~/.npmrc` values. Scoped entries
+such as `@corp:registry=https://npm.corp.example/` select that registry for
+`@corp/*` packages and add it to the default origin allowlist. An explicitly
+configured allowlist still takes precedence. Changing registry policy can
+require an ordinary install to refresh lockfile policy before the next frozen
+install.
+
+`${VAR}` references always expand in `~/.npmrc`. Project `.npmrc` references
+stay literal by default because a cloned repository could otherwise send
+environment secrets to a registry it controls. For a trusted project, explicitly
+enable expansion through the environment or application configuration:
+
+```sh
+NPM_EX_EXPAND_PROJECT_NPMRC_ENV=true mix npm.ci
+```
+
+```elixir
+config :duskmoon_npm, :expand_project_npmrc_env, true
+```
+
+This permits project entries such as
+`//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}`. The environment setting
+overrides application configuration, including an explicit `false`; setting
+this option inside the project `.npmrc` has no effect. Undefined variables
+remain literal. Only enable this for projects trusted with the environment
+available to the installer.
+
+### Scripts, binary links, and publication
+
+`mix npm.run` executes compound shell commands and passes additional arguments
+as literal arguments. Registry packages use copies by default. With
+`NPM_EX_LINK_STRATEGY=symlink`, packages that expose bin commands or contain
+nested dependencies are copied into the project so executable permissions and
+nested installs never modify the shared cache.
+
+`mix npm.pack` and `mix npm.publish` use one file-selection implementation:
+recursive `files` allowlists, root README/license files, `main` and `bin` entries,
+and directory-local `.npmignore` (or `.gitignore` when absent). Symlinks,
+registry credentials and VCS metadata are excluded. An invalid `files` field
+fails explicitly. `exports` targets must be included by the allowlist; declaring
+an export does not force that file into the tarball.
+
+`mix npm.publish --dry-run` lists the packed files without contacting a registry.
+`mix npm.publish` uploads the tarball with version metadata and matching SHA-512
+integrity, honoring scoped registry tokens and `publishConfig` defaults. Private
+packages are rejected and redirects are never followed. Lifecycle scripts are
+not executed automatically; run required preparation/build scripts explicitly.
+Bundled dependencies are currently unsupported and cause an explicit error.
+
+Age warnings request full packuments, including publication timestamps, on
+cache misses when either age threshold is enabled. Setting both thresholds to
+zero uses abbreviated metadata. Enabling warnings upgrades abbreviated or
+legacy cached metadata once without waiting for its TTL. Successful full
+responses remain cached even when a private registry omits timestamps.
+New lock entries retain `os`/`cpu` restrictions,
+so repeated installs can check platform compatibility without registry access;
+legacy entries without that metadata retain their registry fallback.
 
 ## API organization
 

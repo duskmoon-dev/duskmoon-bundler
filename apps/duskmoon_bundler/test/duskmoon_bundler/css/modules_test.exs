@@ -56,6 +56,28 @@ defmodule DuskmoonBundler.CSS.ModulesTest do
     end
   end
 
+  describe "compile/2 errors" do
+    test "returns the CSS errors instead of a partial module" do
+      assert {:error, [error | _]} =
+               DuskmoonBundler.CSS.Modules.compile(
+                 ".a { color: red; } }}} .b {",
+                 "broken.module.css"
+               )
+
+      assert error =~ "CSS parse error"
+    end
+
+    test "pipeline propagates CSS Module errors" do
+      assert {:error, [error | _]} =
+               DuskmoonBundler.Pipeline.compile(
+                 "broken.module.css",
+                 ".a { color: red; } }}} .b {"
+               )
+
+      assert error =~ "CSS parse error"
+    end
+  end
+
   defp extract_mapping(js) do
     ast = OXC.parse!(js, "module.css.js")
 

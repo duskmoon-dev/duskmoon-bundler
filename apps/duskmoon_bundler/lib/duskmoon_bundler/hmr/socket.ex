@@ -7,8 +7,17 @@ defmodule DuskmoonBundler.HMR.Socket do
   """
   @behaviour WebSock
   require Logger
+  alias DuskmoonBundler.HMR.CompileErrors
 
   @impl true
+  def init(%{error_scope: scope}) do
+    Registry.register(DuskmoonBundler.HMR.Registry, :clients, nil)
+    CompileErrors.subscribe(scope)
+    # Subscribe first: errors arriving during replay are queued as well.
+    CompileErrors.replay(scope)
+    {:ok, %{error_scope: scope}}
+  end
+
   def init(_args) do
     Registry.register(DuskmoonBundler.HMR.Registry, :clients, nil)
     {:ok, %{}}
@@ -39,6 +48,13 @@ defmodule DuskmoonBundler.HMR.Socket do
   end
 
   @impl true
+  def handle_info({:duskmoon_bundler_compile_error, key, version}, %{error_scope: scope} = state) do
+    case CompileErrors.get(scope, key, version) do
+      nil -> {:ok, state}
+      payload -> push(%DuskmoonBundler.HMR.Message{type: :error, payload: payload}, state)
+    end
+  end
+
   def handle_info({:duskmoon_bundler_hmr, type, payload}, state) do
     push(%DuskmoonBundler.HMR.Message{type: type, payload: payload}, state)
   end

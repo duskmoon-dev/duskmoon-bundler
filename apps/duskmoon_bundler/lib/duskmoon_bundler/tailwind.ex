@@ -146,24 +146,22 @@ defmodule DuskmoonBundler.Tailwind do
     resolve_dirs =
       opts |> Keyword.get(:resolve_dirs, state.default_resolve_dirs) |> normalize_resolve_dirs()
 
-    case compile_css(state, css_input, sources, css_base, resolve_dirs) do
-      {:ok, css, scanner, scanner_sources} ->
-        css = maybe_minify(css, minify)
-
-        {:reply, {:ok, css},
-         %{
-           state
-           | scanner: scanner,
-             scanner_sources: scanner_sources,
-             sources: sources,
-             css_input: css_input,
-             css_base: css_base,
-             resolve_dirs: resolve_dirs,
-             last_css: css
-         }}
-
-      {:error, _} = error ->
-        {:reply, error, state}
+    with {:ok, css, scanner, scanner_sources} <-
+           compile_css(state, css_input, sources, css_base, resolve_dirs),
+         {:ok, css} <- maybe_minify(css, minify) do
+      {:reply, {:ok, css},
+       %{
+         state
+         | scanner: scanner,
+           scanner_sources: scanner_sources,
+           sources: sources,
+           css_input: css_input,
+           css_base: css_base,
+           resolve_dirs: resolve_dirs,
+           last_css: css
+       }}
+    else
+      {:error, _} = error -> {:reply, error, state}
     end
   end
 
@@ -188,23 +186,21 @@ defmodule DuskmoonBundler.Tailwind do
     if Oxide.scan_files(state.scanner, changed) == [] and not Keyword.get(opts, :force, false) do
       {:reply, :unchanged, state}
     else
-      case compile_css(state, css_input, state.sources, css_base, resolve_dirs) do
-        {:ok, css, scanner, scanner_sources} ->
-          css = maybe_minify(css, minify)
-
-          {:reply, {:ok, css},
-           %{
-             state
-             | scanner: scanner,
-               scanner_sources: scanner_sources,
-               css_input: css_input,
-               css_base: css_base,
-               resolve_dirs: resolve_dirs,
-               last_css: css
-           }}
-
-        {:error, _} = error ->
-          {:reply, error, state}
+      with {:ok, css, scanner, scanner_sources} <-
+             compile_css(state, css_input, state.sources, css_base, resolve_dirs),
+           {:ok, css} <- maybe_minify(css, minify) do
+        {:reply, {:ok, css},
+         %{
+           state
+           | scanner: scanner,
+             scanner_sources: scanner_sources,
+             css_input: css_input,
+             css_base: css_base,
+             resolve_dirs: resolve_dirs,
+             last_css: css
+         }}
+      else
+        {:error, _} = error -> {:reply, error, state}
       end
     end
   end
@@ -249,11 +245,13 @@ defmodule DuskmoonBundler.Tailwind do
     end
   end
 
-  defp maybe_minify(css, false), do: css
+  defp maybe_minify(css, false), do: {:ok, css}
 
   defp maybe_minify(css, true) do
-    {:ok, %{code: minified}} = Vize.CSS.compile(css, minify: true)
-    minified
+    case Vize.CSS.compile(css, minify: true) do
+      {:ok, %{errors: [_ | _] = errors}} -> {:error, errors}
+      {:ok, %{code: minified}} -> {:ok, minified}
+    end
   end
 
   defp normalize_resolve_dirs(resolve_dirs) do

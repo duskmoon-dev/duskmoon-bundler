@@ -96,7 +96,8 @@ defmodule NPM do
     with_root_dir(fn ->
       if opts[:frozen] do
         with {:ok, dependencies, local_links} <- NPM.Workspace.frozen_dependencies(opts),
-             :ok <- NPM.Lockfile.sync_package_metadata(frozen: true) do
+             :ok <- NPM.Lockfile.sync_package_metadata(frozen: true),
+             :ok <- frozen_integrity_recorded() do
           if Enum.all?(dependencies, fn {_location, deps} -> deps == [] end) do
             do_install(%{}, local_links: local_links, frozen: true)
           else
@@ -312,6 +313,35 @@ defmodule NPM do
     end
   end
 
+  # A frozen install must be reproducible, so every locked package needs an
+  # integrity to verify against, whether it is downloaded or already cached.
+  defp frozen_integrity_recorded do
+    with {:ok, flat} <- NPM.Lockfile.read(),
+         {:ok, nested} <- NPM.Lockfile.read_nested() do
+      nested_entries =
+        Enum.map(nested, fn {location, entry} ->
+          {:ok, name} = NPM.Lockfile.nested_package_name(location)
+          {name, entry}
+        end)
+
+      (Enum.sort_by(flat, &elem(&1, 0)) ++ Enum.sort_by(nested_entries, &elem(&1, 0)))
+      |> Enum.find(fn {_name, entry} -> entry.integrity in [nil, ""] end)
+      |> case do
+        nil ->
+          :ok
+
+        {name, entry} ->
+          Mix.shell().error(
+            "package-lock.json has no integrity for #{name}@#{entry.version}; " <>
+              "a frozen install cannot verify it.\n" <>
+              "Run `mix npm.install` to refresh the lockfile."
+          )
+
+          {:error, {:missing_integrity, name, entry.version}}
+      end
+    end
+  end
+
   defp frozen_dependencies_satisfied?(locations, dependencies) do
     Enum.all?(dependencies, fn {location, deps} ->
       Enum.all?(deps, fn {name, range} ->
@@ -410,8 +440,10 @@ defmodule NPM do
 
     policy_ok? = lockfile_policy_current?()
     policy_reasons = lockfile_policy_mismatch_reasons()
-    cache_ok? = matches? and cache_covers_lockfile?(old_lockfile)
-    nm_intact? = matches? and node_modules_intact?(old_lockfile, local_links)
+    # Platform checks read packuments, so they run once and are passed down.
+    skipped = if matches?, do: Linker.skipped_packages(old_lockfile)
+    cache_ok? = matches? and cache_covers_lockfile?(old_lockfile, skipped)
+    nm_intact? = matches? and node_modules_intact?(old_lockfile, local_links, skipped)
 
     cond do
       Keyword.get(opts, :force_resolve, false) or Keyword.get(opts, :unlock, []) != [] ->
@@ -423,13 +455,13 @@ defmodule NPM do
 
       matches? and policy_ok? ->
         Mix.shell().info("Installing from current package-lock.json.")
-        link_from_lockfile(old_lockfile, local_links)
+        link_from_lockfile(old_lockfile, local_links, :read, skipped)
 
       matches? and cache_ok? ->
         warn_policy_mismatch(policy_reasons)
         Mix.shell().info("Installing from cached packages without re-resolving.")
 
-        with :ok <- link_from_lockfile(old_lockfile, local_links) do
+        with :ok <- link_from_lockfile(old_lockfile, local_links, :read, skipped) do
           _ = NPM.Lockfile.refresh_policy()
           :ok
         end
@@ -460,9 +492,7 @@ defmodule NPM do
     end)
   end
 
-  defp cache_covers_lockfile?(lockfile) do
-    skipped = Linker.skipped_packages(lockfile)
-
+  defp cache_covers_lockfile?(lockfile, skipped) do
     Enum.all?(lockfile, fn {name, entry} ->
       MapSet.member?(skipped, name) or NPM.Cache.cached?(name, entry.version)
     end)
@@ -472,8 +502,7 @@ defmodule NPM do
     Enum.each(deps, fn {name, spec} -> ExoticDeps.validate_direct!(name, spec) end)
   end
 
-  defp node_modules_intact?(lockfile, local_links) do
-    skipped = Linker.skipped_packages(lockfile)
+  defp node_modules_intact?(lockfile, local_links, skipped) do
     linkable_lockfile = linkable_lockfile(lockfile, skipped)
     strategy = Linker.strategy()
 
@@ -695,16 +724,16 @@ defmodule NPM do
     {:error, :resolution_failed}
   end
 
-  defp link_from_lockfile(lockfile, local_links, nested_lockfile \\ :read)
+  defp link_from_lockfile(lockfile, local_links, nested_lockfile, skipped \\ nil)
 
-  defp link_from_lockfile(lockfile, local_links, :read) do
+  defp link_from_lockfile(lockfile, local_links, :read, skipped) do
     with {:ok, nested_lockfile} <- NPM.Lockfile.read_nested() do
-      link_from_lockfile(lockfile, local_links, nested_lockfile)
+      link_from_lockfile(lockfile, local_links, nested_lockfile, skipped)
     end
   end
 
-  defp link_from_lockfile(lockfile, local_links, nested_lockfile) do
-    skipped = Linker.skipped_packages(lockfile)
+  defp link_from_lockfile(lockfile, local_links, nested_lockfile, skipped) do
+    skipped = skipped || Linker.skipped_packages(lockfile)
     linkable_lockfile = linkable_lockfile(lockfile, skipped)
     total = length(linkable_lockfile)
 
@@ -890,6 +919,8 @@ defmodule NPM do
             {:ok,
              %{
                version: version,
+               os: Map.get(info, :os, []),
+               cpu: Map.get(info, :cpu, []),
                integrity: info.dist.integrity,
                tarball: info.dist.tarball,
                dependencies: info.dependencies,

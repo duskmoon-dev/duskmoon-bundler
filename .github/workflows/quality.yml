@@ -1,0 +1,60 @@
+name: Toolchain Quality Audits
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'
+permissions:
+  contents: read
+concurrency:
+  group: toolchain-quality-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  DUSKMOON_NATIVE_MODE: source
+jobs:
+  quality:
+    name: quality / ${{ matrix.check }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [credo, dialyzer, hex-audit, cargo-audit]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-toolchain
+      - name: Cache Dialyzer PLTs
+        if: matrix.check == 'dialyzer'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            _build/dev/*.plt*
+            priv/plts
+            ~/.mix/*.plt*
+          key: dialyzer-${{ runner.os }}-elixir1.18-otp28-${{ hashFiles('mix.lock', '**/mix.exs') }}
+      - name: Install pinned Cargo audit
+        if: matrix.check == 'cargo-audit'
+        run: cargo install cargo-audit --version 0.23.0 --locked
+      - name: Run the audit and retain every diagnostic
+        env:
+          QUALITY_CHECK: ${{ matrix.check }}
+        run: |
+          set -euo pipefail
+          case "$QUALITY_CHECK" in
+            credo) mix credo --strict 2>&1 | tee quality.log ;;
+            dialyzer) mix dialyzer 2>&1 | tee quality.log ;;
+            hex-audit) mix hex.audit 2>&1 | tee quality.log ;;
+            cargo-audit)
+              status=0
+              while IFS= read -r lock; do
+                cargo audit --file "$lock" 2>&1 | tee -a quality.log || status=1
+              done < <(git ls-files 'apps/**/Cargo.lock')
+              exit "$status"
+              ;;
+          esac
+      - name: Upload audit results even when checks fail
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: quality-${{ matrix.check }}
+          path: quality.log
+          if-no-files-found: ignore

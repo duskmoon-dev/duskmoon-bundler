@@ -37,11 +37,21 @@ defmodule Mix.Tasks.Npm.Link do
     data = NPM.JSON.decode!(content)
     name = Map.get(data, "name")
 
-    unless name do
-      Mix.shell().error("No name field in #{pkg_json}")
-      return({:error, :no_name})
-    end
+    cond do
+      is_nil(name) ->
+        Mix.shell().error("No name field in #{pkg_json}")
+        {:error, :no_name}
 
+      not NPM.Scope.installable_name?(name) ->
+        Mix.shell().error("Invalid package name #{inspect(name)} in #{pkg_json}")
+        {:error, {:invalid_package_name, name, pkg_json}}
+
+      true ->
+        link_package(name, abs_dir, opts)
+    end
+  end
+
+  defp link_package(name, abs_dir, opts) do
     target = Path.join("node_modules", name)
     File.mkdir_p!("node_modules")
 

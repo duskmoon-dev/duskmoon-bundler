@@ -1,4 +1,6 @@
 defmodule Vize.Native do
+  @moduledoc false
+
   native_version = Mix.Project.config()[:version]
 
   build_from_source =

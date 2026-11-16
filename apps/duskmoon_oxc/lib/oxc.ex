@@ -120,11 +120,17 @@ defmodule OXC do
     * `:jsx_factory` — function for classic JSX (default: `"React.createElement"`)
     * `:jsx_fragment` — fragment for classic JSX (default: `"React.Fragment"`)
     * `:import_source` — JSX import source (e.g. `"vue"`, `"preact"`)
-    * `:target` — downlevel target (e.g. `"es2019"`, `"chrome80"`)
+    * `:target` — downlevel target (e.g. `"es2019"`, `"chrome80"`). An
+      unsupported target returns `{:error, errors}`.
     * `:define` — scope-aware replacements for global expressions, for example
       `%{"process.env.NODE_ENV" => ~s("development")}`. Local bindings are preserved.
+      Values are JavaScript expression strings; atoms such as `true` are
+      stringified.
     * `:sourcemap` — generate a source map (default: `false`). When `true`,
       returns `%{code: String.t(), sourcemap: String.t()}` instead of a plain string.
+
+  Raises `ArgumentError` for an unknown `:jsx` runtime, a `:define` that is not
+  a map of expression strings, or a `:target` that is not a string or atom.
 
   ## Examples
 
@@ -411,13 +417,17 @@ defmodule OXC do
     * `:entry` — entry module filename when bundling virtual `files`, for example
       `"main.ts"`
     * `:cwd` — project directory for filesystem entries and package resolution
-    * `:format` — output format: `:iife` (default), `:esm`, or `:cjs`
+    * `:format` — output format: `:iife` (default), `:esm`, or `:cjs`. Any
+      other value raises `ArgumentError`.
     * `:minify` — minify the output (default: `false`)
     * `:treeshake` — enable tree-shaking to remove unused exports (default: `false`)
     * `:banner` — string to prepend before the IIFE (e.g. `"/* v1.0 */"`)
     * `:footer` — string to append after the IIFE
-    * `:preamble` — code to inject at the top of the IIFE function body,
-      before any bundled modules (e.g. `"const { ref } = Vue;"`)
+    * `:preamble` — code to inject before any bundled modules (e.g.
+      `"const { ref } = Vue;"`): inside the wrapper function for `:iife`, at
+      the top of the output for `:esm` and `:cjs`. It is passed to Rolldown as
+      the output `intro`, so source maps account for it and declarations the
+      bundle never uses can be removed like any other dead code.
     * `:external` — list of specifiers to treat as external and preserve
       as imports in the output (e.g. `["react", "scheduler"]`)
     * `:exports` — output export mode: `:auto`, `:default`, `:named`, or `:none`
@@ -493,12 +503,12 @@ defmodule OXC do
 
   defp normalize_transform_options(opts) do
     %{
-      jsx: normalize_jsx_runtime(Keyword.get(opts, :jsx, :automatic)),
+      jsx: OXC.Options.jsx!(Keyword.get(opts, :jsx, :automatic)),
       jsx_factory: Keyword.get(opts, :jsx_factory, ""),
       jsx_fragment: Keyword.get(opts, :jsx_fragment, ""),
       import_source: Keyword.get(opts, :import_source, ""),
-      target: Keyword.get(opts, :target, ""),
-      define: Keyword.get(opts, :define, %{}),
+      target: OXC.Options.target!(Keyword.get(opts, :target, "")),
+      define: OXC.Options.define!(Keyword.get(opts, :define, %{})),
       sourcemap: Keyword.get(opts, :sourcemap, false)
     }
   end
@@ -511,14 +521,14 @@ defmodule OXC do
     %{
       entry: Keyword.get(opts, :entry, ""),
       cwd: Keyword.get(opts, :cwd, ""),
-      format: opts |> Keyword.get(:format, :iife) |> Atom.to_string(),
+      format: OXC.Options.format!(Keyword.get(opts, :format, :iife)),
       exports: opts |> Keyword.get(:exports, :auto) |> Atom.to_string(),
       minify: Keyword.get(opts, :minify, false),
       treeshake: Keyword.get(opts, :treeshake, false),
       banner: Keyword.get(opts, :banner),
       footer: Keyword.get(opts, :footer),
       preamble: Keyword.get(opts, :preamble),
-      define: Keyword.get(opts, :define, %{}),
+      define: OXC.Options.define!(Keyword.get(opts, :define, %{})),
       module_types: normalize_module_types(Keyword.get(opts, :module_types, %{})),
       external: Keyword.get(opts, :external, []),
       preserve_entry_signatures:
@@ -528,11 +538,11 @@ defmodule OXC do
       modules: Keyword.get(opts, :modules, []),
       sourcemap: Keyword.get(opts, :sourcemap, false),
       drop_console: Keyword.get(opts, :drop_console, false),
-      jsx: normalize_jsx_runtime(Keyword.get(opts, :jsx, :automatic)),
+      jsx: OXC.Options.jsx!(Keyword.get(opts, :jsx, :automatic)),
       jsx_factory: Keyword.get(opts, :jsx_factory, ""),
       jsx_fragment: Keyword.get(opts, :jsx_fragment, ""),
       import_source: Keyword.get(opts, :import_source, ""),
-      target: Keyword.get(opts, :target, "")
+      target: OXC.Options.target!(Keyword.get(opts, :target, ""))
     }
   end
 
@@ -545,10 +555,6 @@ defmodule OXC do
   defp normalize_module_types(types) when is_map(types) do
     Map.new(types, fn {ext, loader} -> {to_string(ext), to_string(loader)} end)
   end
-
-  defp normalize_jsx_runtime(runtime) when is_atom(runtime), do: Atom.to_string(runtime)
-  defp normalize_jsx_runtime(runtime) when is_binary(runtime), do: runtime
-  defp normalize_jsx_runtime(_runtime), do: "automatic"
 
   defp normalize_native_result(result) when is_map(result), do: atomize_term_keys(result)
   defp normalize_native_result(result), do: result
@@ -1056,11 +1062,15 @@ defmodule OXC do
   Apply patches to source code, like `Sourceror.patch_string/2`.
 
   Each patch is a map with `:start` (byte offset), `:end` (byte offset),
-  and `:change` (replacement iodata). Patches are applied in reverse
-  offset order so that earlier patches don't shift later offsets.
+  and `:change` (replacement iodata). Patches may be given in any order;
+  offsets always refer to the original source.
 
   When multiple patches target the same `{start, end}` range, only the
   first one is applied and duplicates are silently dropped.
+
+  An insertion (`start == end`) may share its offset with the start of a
+  replacement; the inserted text is placed before the replacement. Any other
+  overlapping patches raise `ArgumentError`.
 
   Use with `postwalk/3` to collect patches from the AST, then apply
   them to the original source string.
@@ -1081,10 +1091,20 @@ defmodule OXC do
     {chunks, offset} =
       patches
       |> Enum.uniq_by(fn %{start: s, end: e} -> {s, e} end)
-      |> Enum.sort_by(fn %{start: s} -> s end)
+      |> Enum.sort_by(fn %{start: s, end: e} -> {s, e} end)
       |> Enum.reduce({[], 0}, fn %{start: s, end: e, change: replacement}, {chunks, offset} ->
-        chunk = binary_part(source, offset, s - offset)
-        {[replacement, chunk | chunks], e}
+        cond do
+          e < s ->
+            raise ArgumentError, "patch #{s}..#{e} ends before it starts"
+
+          s < offset ->
+            raise ArgumentError,
+                  "patch #{s}..#{e} overlaps a previous patch ending at byte #{offset}"
+
+          true ->
+            chunk = binary_part(source, offset, s - offset)
+            {[replacement, chunk | chunks], e}
+        end
       end)
 
     tail = binary_part(source, offset, byte_size(source) - offset)

@@ -9,15 +9,21 @@ defmodule DuskmoonBundler.HMR.Boundary do
   reload.
   """
 
+  @default_filename "hmr-boundary.js"
+
   @doc """
   Check if a module's source code contains `import.meta.hot.accept()`.
   """
   @spec self_accepting?(String.t()) :: boolean()
-  def self_accepting?(source) do
-    case OXC.parse(source, "hmr-boundary.js") do
-      {:ok, ast} -> ast_self_accepting?(ast)
-      {:error, _} -> false
-    end
+  def self_accepting?(source), do: self_accepting?(source, @default_filename)
+
+  @doc """
+  Like `self_accepting?/1`, but parses `source` as the language implied by
+  `path` (for example TypeScript for `.ts`).
+  """
+  @spec self_accepting?(String.t(), String.t()) :: boolean()
+  def self_accepting?(source, path) do
+    source |> script_asts(path) |> Enum.any?(&ast_self_accepting?/1)
   end
 
   @doc """
@@ -54,7 +60,7 @@ defmodule DuskmoonBundler.HMR.Boundary do
     source = read_source.(changed_path)
 
     cond do
-      source && self_accepting?(source) ->
+      source && self_accepting?(source, changed_path) ->
         {:ok, [changed_path]}
 
       graph_result = find_graph_boundaries(changed_path, read_source) ->
@@ -69,6 +75,34 @@ defmodule DuskmoonBundler.HMR.Boundary do
         }
 
         propagate_all([changed_path], walker, MapSet.new([changed_path]))
+    end
+  end
+
+  # Only script extensions select a parser dialect; anything else keeps the
+  # plain JavaScript default.
+  defp parse_filename(path) do
+    if Path.extname(path) in DuskmoonBundler.JS.Extensions.bundleable(),
+      do: Path.basename(path),
+      else: @default_filename
+  end
+
+  # Component templates are not JavaScript. Reuse the plugins' script
+  # extraction so template text cannot masquerade as an HMR boundary.
+  # Trying the raw source first also supports already-compiled components.
+  defp script_asts(source, path) do
+    case OXC.parse(source, parse_filename(path)) do
+      {:ok, ast} ->
+        [ast]
+
+      {:error, _} ->
+        []
+        |> DuskmoonBundler.PluginRunner.embedded_modules(path, source, [])
+        |> Enum.flat_map(fn {extension, script} ->
+          case OXC.parse(script, "hmr-boundary" <> extension) do
+            {:ok, ast} -> [ast]
+            {:error, _} -> []
+          end
+        end)
     end
   end
 
@@ -107,15 +141,12 @@ defmodule DuskmoonBundler.HMR.Boundary do
 
   defp dependency_accepting?(source, importer_path, changed_path) do
     source
-    |> dependency_accept_specifiers()
+    |> dependency_accept_specifiers(importer_path)
     |> Enum.any?(&specifier_matches_changed?(&1, importer_path, changed_path))
   end
 
-  defp dependency_accept_specifiers(source) do
-    case OXC.parse(source, "hmr-boundary.js") do
-      {:ok, ast} -> ast_dependency_accept_specifiers(ast)
-      {:error, _} -> []
-    end
+  defp dependency_accept_specifiers(source, path) do
+    source |> script_asts(path) |> Enum.flat_map(&ast_dependency_accept_specifiers/1)
   end
 
   defp ast_dependency_accept_specifiers(ast) do
@@ -186,7 +217,7 @@ defmodule DuskmoonBundler.HMR.Boundary do
   defp source_accepts_update?(nil, _path, _changed_path), do: false
 
   defp source_accepts_update?(source, path, changed_path) do
-    self_accepting?(source) or dependency_accepting?(source, path, changed_path)
+    self_accepting?(source, path) or dependency_accepting?(source, path, changed_path)
   end
 
   # Propagates from each start module; every importer path must hit a boundary.

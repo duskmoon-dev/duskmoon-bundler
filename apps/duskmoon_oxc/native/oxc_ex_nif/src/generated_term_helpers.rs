@@ -20,13 +20,6 @@ fn str_val<'a>(term: Term<'a>, key: rustler::Atom) -> String {
 fn bool_val(term: Term, key: rustler::Atom) -> bool {
     get(term, key).and_then(|t| t.decode::<bool>().ok()).unwrap_or(false)
 }
-fn f64_val(term: Term, key: rustler::Atom) -> f64 {
-    get(term, key)
-        .and_then(|t| {
-            t.decode::<f64>().ok().or_else(|| t.decode::<i64>().ok().map(|i| i as f64))
-        })
-        .unwrap_or(0.0)
-}
 fn list_val<'a>(term: Term<'a>, key: rustler::Atom) -> Vec<Term<'a>> {
     get(term, key).and_then(|t| t.decode::<Vec<Term>>().ok()).unwrap_or_default()
 }

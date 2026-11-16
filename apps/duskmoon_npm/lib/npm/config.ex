@@ -23,6 +23,39 @@ defmodule NPM.Config do
   @default_registry "https://registry.npmjs.org"
 
   @doc """
+  Read the registry URL for a package.
+
+  A scoped package uses the `.npmrc` `@scope:registry` entry for its scope when
+  one is configured (project `.npmrc` first, then home); every other package
+  uses `registry/0`.
+  """
+  @spec registry_for(String.t()) :: String.t()
+  def registry_for(package), do: scope_registry(package) || registry()
+
+  @doc """
+  Read the `.npmrc` `@scope:registry` URL for a scoped package name.
+
+  Returns `nil` for unscoped packages and scopes without a configured registry.
+  """
+  @spec scope_registry(String.t()) :: String.t() | nil
+  def scope_registry(package) do
+    with scope when is_binary(scope) <- NPM.Scope.extract(package),
+         url when is_binary(url) and url != "" <- read_npmrc_value("@#{scope}:registry") do
+      normalize_registry_url(url)
+    else
+      _ -> nil
+    end
+  end
+
+  @doc "Read every `.npmrc` `@scope:registry` URL."
+  @spec scope_registries :: [String.t()]
+  def scope_registries do
+    for {key, url} <- load(), Regex.match?(~r/^@[^\/:]+:registry$/, key), url != "" do
+      normalize_registry_url(url)
+    end
+  end
+
+  @doc """
   Read the auth token for the configured registry.
 
   Priority: `NPM_TOKEN` env var > `config :duskmoon_npm, :token` > registry-matched project `.npmrc` > registry-matched home `.npmrc`.
@@ -104,12 +137,18 @@ defmodule NPM.Config do
     env_list("NPM_EX_EXOTIC_DEPS") || Application.get_env(:duskmoon_npm, :exotic_deps, [])
   end
 
-  @doc "Registry origins allowed for packuments and tarballs."
+  @doc """
+  Registry origins allowed for packuments and tarballs.
+
+  Defaults to the configured registry, the mirror, and every `.npmrc`
+  `@scope:registry`. An explicit allowlist is used as given, so a scope
+  registry outside it is rejected rather than silently replaced.
+  """
   @spec allowed_registries :: [String.t()]
   def allowed_registries do
     env_list("NPM_EX_ALLOWED_REGISTRIES") ||
       Application.get_env(:duskmoon_npm, :allowed_registries) ||
-      [registry(), mirror_url()]
+      [registry(), mirror_url() | scope_registries()]
   end
 
   @doc "Whether HTTP redirects to different registry origins are allowed."
@@ -119,6 +158,44 @@ defmodule NPM.Config do
       nil -> Application.get_env(:duskmoon_npm, :allow_registry_redirects, false)
       value -> truthy?(value)
     end
+  end
+
+  @doc """
+  Whether project `.npmrc` values may expand `${VAR}` references.
+
+  Defaults to `false`. Enable only for trusted projects through
+  `NPM_EX_EXPAND_PROJECT_NPMRC_ENV` or
+  `config :duskmoon_npm, :expand_project_npmrc_env, true`.
+  A project `.npmrc` cannot enable its own environment expansion.
+  """
+  @spec expand_project_npmrc_env? :: boolean()
+  def expand_project_npmrc_env? do
+    case System.get_env("NPM_EX_EXPAND_PROJECT_NPMRC_ENV") do
+      nil -> Application.get_env(:duskmoon_npm, :expand_project_npmrc_env, false) == true
+      value -> truthy?(value)
+    end
+  end
+
+  @doc """
+  Largest tarball download accepted, in bytes (default 512 MiB).
+
+  Set with `NPM_EX_MAX_TARBALL_BYTES` or `config :duskmoon_npm, :max_tarball_bytes`.
+  """
+  @spec max_tarball_bytes :: non_neg_integer()
+  def max_tarball_bytes do
+    env_integer("NPM_EX_MAX_TARBALL_BYTES") ||
+      Application.get_env(:duskmoon_npm, :max_tarball_bytes, 512 * 1024 * 1024)
+  end
+
+  @doc """
+  Largest unpacked tarball accepted, in bytes (default 2 GiB).
+
+  Set with `NPM_EX_MAX_UNPACKED_BYTES` or `config :duskmoon_npm, :max_unpacked_bytes`.
+  """
+  @spec max_unpacked_bytes :: non_neg_integer()
+  def max_unpacked_bytes do
+    env_integer("NPM_EX_MAX_UNPACKED_BYTES") ||
+      Application.get_env(:duskmoon_npm, :max_unpacked_bytes, 2 * 1024 * 1024 * 1024)
   end
 
   @doc "Warn when a package was created fewer than this many days ago."
@@ -170,21 +247,40 @@ defmodule NPM.Config do
   @doc """
   Read a value from `.npmrc` files.
 
-  Checks project-level first, then home-level.
+  Checks project-level first, then home-level. `${VAR}` references expand in
+  the home-level file and, with trusted opt-in, in the project-level file
+  (see `expand_project_npmrc_env?/0`).
   """
   @spec read_npmrc_value(String.t()) :: String.t() | nil
   def read_npmrc_value(key) do
-    read_from_file(".npmrc", key) ||
-      read_from_file(Path.join(System.user_home!(), ".npmrc"), key)
+    Map.get(read_file(".npmrc", expand_project_npmrc_env?()), key) ||
+      Map.get(read_file(home_npmrc(), true), key)
   end
 
-  @doc "Parse an `.npmrc` file into a map of key-value pairs."
-  @spec parse_npmrc(String.t()) :: %{String.t() => String.t()}
-  def parse_npmrc(content) do
+  @doc """
+  Parse an `.npmrc` file into a map of key-value pairs.
+
+  Lines starting with `#` or `;` are comments, and a value wrapped in matching
+  single or double quotes is unquoted.
+
+  ## Options
+
+    * `:expand_env` - replace `${VAR}` in values with the environment variable
+      (left as written when unset, like npm). Defaults to `false`: a project
+      `.npmrc` is controlled by the checked-out repository, and expanding it
+      would let that repository send any environment secret to a registry it
+      names. The user-level `.npmrc` always expands variables; the project
+      file only does so when `expand_project_npmrc_env?/0` is enabled.
+  """
+  @spec parse_npmrc(String.t(), keyword()) :: %{String.t() => String.t()}
+  def parse_npmrc(content, opts \\ []) do
+    expand_env? = Keyword.get(opts, :expand_env, false)
+
     content
     |> String.split("\n")
-    |> Enum.reject(&(String.starts_with?(String.trim(&1), "#") or String.trim(&1) == ""))
-    |> Enum.flat_map(&parse_line/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == "" or String.starts_with?(&1, ["#", ";"])))
+    |> Enum.flat_map(&parse_line(&1, expand_env?))
     |> Map.new()
   end
 
@@ -210,8 +306,8 @@ defmodule NPM.Config do
   """
   @spec load(String.t()) :: map()
   def load(project_dir \\ ".") do
-    user_config = read_file(Path.join(System.user_home!(), ".npmrc"))
-    project_config = read_file(Path.join(project_dir, ".npmrc"))
+    user_config = read_file(home_npmrc(), true)
+    project_config = read_file(Path.join(project_dir, ".npmrc"), expand_project_npmrc_env?())
     merge([user_config, project_config])
   end
 
@@ -224,17 +320,12 @@ defmodule NPM.Config do
     Map.get(config, key, Map.get(config, "registry", "https://registry.npmjs.org"))
   end
 
-  defp read_file(path) do
-    case File.read(path) do
-      {:ok, content} -> parse_npmrc(content)
-      _ -> %{}
-    end
-  end
+  defp home_npmrc, do: Path.join(System.user_home!(), ".npmrc")
 
-  defp read_from_file(path, key) do
+  defp read_file(path, expand_env?) do
     case File.read(path) do
-      {:ok, content} -> parse_npmrc(content) |> Map.get(key)
-      {:error, _} -> nil
+      {:ok, content} -> parse_npmrc(content, expand_env: expand_env?)
+      _ -> %{}
     end
   end
 
@@ -261,11 +352,29 @@ defmodule NPM.Config do
   defp npmrc_authority(%URI{host: host, port: 443, scheme: "https"}), do: host
   defp npmrc_authority(%URI{host: host, port: port}), do: "#{host}:#{port}"
 
-  defp parse_line(line) do
-    case String.split(String.trim(line), "=", parts: 2) do
-      [key, value] -> [{String.trim(key), String.trim(value)}]
-      _ -> []
+  defp parse_line(line, expand_env?) do
+    case String.split(line, "=", parts: 2) do
+      [key, value] ->
+        value = value |> String.trim() |> unquote_value()
+        [{String.trim(key), if(expand_env?, do: expand_env(value), else: value)}]
+
+      _ ->
+        []
     end
+  end
+
+  defp unquote_value(<<quote, rest::binary>> = value) when quote in [?", ?'] and rest != "" do
+    if :binary.last(rest) == quote,
+      do: binary_part(rest, 0, byte_size(rest) - 1),
+      else: value
+  end
+
+  defp unquote_value(value), do: value
+
+  defp expand_env(value) do
+    Regex.replace(~r/\$\{([^${}]+)\}/, value, fn reference, name ->
+      System.get_env(name) || reference
+    end)
   end
 
   defp normalize_registry_url(url), do: String.trim_trailing(url, "/")

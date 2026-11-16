@@ -371,6 +371,73 @@ defmodule DuskmoonBundler.WatcherTest do
                    500
   end
 
+  test "ignores unexpected messages", %{watch_dir: watch_dir} do
+    pid = start_supervised!({DuskmoonBundler.Watcher, root: watch_dir, name: nil})
+
+    send(pid, :unexpected_message)
+    send(pid, {:unexpected, make_ref()})
+
+    assert %DuskmoonBundler.Watcher{} = :sys.get_state(pid)
+    assert Process.alive?(pid)
+  end
+
+  test "survives a transiently missing Tailwind input and reports the error", %{watch_dir: dir} do
+    Registry.register(DuskmoonBundler.HMR.Registry, :clients, nil)
+    input = Path.join(dir, "input.css")
+    File.write!(input, ~s|@import "tailwindcss" source(none);\n.probe { color: red; }|)
+    outdir = Path.join(dir, "out")
+    pid = start_tailwind_watcher!(dir, outdir, tailwind_css: input, tailwind_sources: [])
+
+    # Editors that save atomically remove the file for an instant.
+    File.rm!(input)
+    send(pid, :tailwind_rebuild)
+
+    assert_receive {:duskmoon_bundler_hmr, :error, %{path: "tailwind", reason: reason}}, 2000
+    assert reason =~ "enoent"
+    assert %DuskmoonBundler.Watcher{} = :sys.get_state(pid)
+    assert Process.alive?(pid)
+  end
+
+  for {kind, file, changes} <- [{"CSS", "style.css", [:style]}, {"asset", "logo.svg", [:full]}] do
+    test "debounces bursts of #{kind} events into one update", %{watch_dir: watch_dir} do
+      Registry.register(DuskmoonBundler.HMR.Registry, :clients, nil)
+      path = Path.join(watch_dir, unquote(file))
+      File.write!(path, "")
+      pid = start_supervised!({DuskmoonBundler.Watcher, root: watch_dir, name: nil})
+      _ = :sys.get_state(pid)
+      flush_hmr()
+
+      for _ <- 1..3, do: send(pid, {:file_event, self(), {path, [:modified]}})
+
+      assert_receive {:duskmoon_bundler_hmr, :update,
+                      %{path: unquote(file), changes: unquote(changes)}},
+                     1000
+
+      refute_receive {:duskmoon_bundler_hmr, :update, %{path: unquote(file)}}, 300
+    end
+  end
+
+  test "watches JSON modules served by the dev server", %{watch_dir: watch_dir} do
+    Registry.register(DuskmoonBundler.HMR.Registry, :clients, nil)
+    path = Path.join(watch_dir, "data.json")
+    File.write!(path, ~s({"a": 1}))
+    pid = start_supervised!({DuskmoonBundler.Watcher, root: watch_dir, name: nil})
+    _ = :sys.get_state(pid)
+    flush_hmr()
+
+    send(pid, {:file_event, self(), {path, [:modified]}})
+
+    assert_receive {:duskmoon_bundler_hmr, :update, %{path: "data.json"}}, 1000
+  end
+
+  defp flush_hmr do
+    receive do
+      {:duskmoon_bundler_hmr, _, _} -> flush_hmr()
+    after
+      200 -> :ok
+    end
+  end
+
   defp start_tailwind_watcher!(root, outdir, opts) do
     opts = Keyword.merge([root: root, tailwind: true, tailwind_outdir: outdir, name: nil], opts)
 

@@ -137,6 +137,49 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImportsTest do
   end
 
   describe "transform/2 no glob" do
+    test "eager identifiers stay unique when a glob matches more than 100 files" do
+      many_dir = Path.join(@fixture_dir, "many")
+      File.mkdir_p!(many_dir)
+      for i <- 1..101, do: File.write!(Path.join(many_dir, "m#{i}.ts"), "export default #{i}")
+
+      source = """
+      const many = import.meta.glob('./many/*.ts', { eager: true })
+      const pages = import.meta.glob('./pages/*.ts', { eager: true })
+      """
+
+      result = DuskmoonBundler.JS.Transforms.GlobImports.transform(source, @fixture_dir, "app.ts")
+
+      identifiers =
+        Regex.scan(~r/^import \* as (__glob_\d+) from/m, result, capture: :all_but_first)
+
+      assert length(identifiers) == 103
+      assert identifiers == Enum.uniq(identifiers)
+    end
+
+    test "skips directories matched by the pattern" do
+      File.mkdir_p!(Path.join(@fixture_dir, "pages/nested"))
+      source = "const modules = import.meta.glob('./pages/*')"
+
+      result = DuskmoonBundler.JS.Transforms.GlobImports.transform(source, @fixture_dir, "app.ts")
+
+      assert result =~ ~s("./pages/home.ts")
+      refute result =~ "./pages/nested"
+    end
+
+    test "does not import the module that contains the glob" do
+      source = "const modules = import.meta.glob('./*.ts', { eager: true })"
+
+      result =
+        DuskmoonBundler.JS.Transforms.GlobImports.transform(
+          source,
+          Path.join(@fixture_dir, "pages"),
+          "home.ts"
+        )
+
+      assert result =~ ~s("./about.ts")
+      refute result =~ "./home.ts"
+    end
+
     test "passes through code without glob" do
       source = "const x = 42"
       assert DuskmoonBundler.JS.Transforms.GlobImports.transform(source, @fixture_dir) == source

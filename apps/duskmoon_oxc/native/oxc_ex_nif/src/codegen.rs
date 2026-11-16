@@ -71,6 +71,20 @@ fn err<T>(msg: impl Into<String>) -> R<T> {
 include!("generated_term_helpers.rs");
 include!("generated_ast_decoders.rs");
 
+// Integer literals at or above 2^63 arrive as unsigned 64-bit terms.
+fn integer_as_f64(term: Term) -> Option<f64> {
+    term.decode::<i64>()
+        .map(|value| value as f64)
+        .or_else(|_| term.decode::<u64>().map(|value| value as f64))
+        .ok()
+}
+
+fn numeric_literal_value(term: Term) -> R<f64> {
+    get(term, a::value())
+        .and_then(|value| value.decode::<f64>().ok().or_else(|| integer_as_f64(value)))
+        .ok_or_else(|| "Expected a numeric :value for numeric_literal".to_string())
+}
+
 fn oxc_s<'a>(b: &AstBuilder<'a>, s: &str) -> OxcStr<'a> {
     OxcStr::from_str_in(s, b)
 }
@@ -411,7 +425,7 @@ fn build_expr<'a>(b: &AstBuilder<'a>, term: Term) -> R<Expression<'a>> {
     if ty == a::numeric_literal() {
         return Ok(Expression::new_numeric_literal(
             SPAN,
-            f64_val(term, a::value()),
+            numeric_literal_value(term)?,
             None,
             NumberBase::Decimal,
             b,
@@ -732,10 +746,10 @@ fn build_generic_lit<'a>(b: &AstBuilder<'a>, term: Term) -> R<Expression<'a>> {
                     b,
                 ));
             }
-            if let Ok(v) = t.decode::<i64>() {
+            if let Some(v) = integer_as_f64(t) {
                 return Ok(Expression::new_numeric_literal(
                     SPAN,
-                    v as f64,
+                    v,
                     None,
                     NumberBase::Decimal,
                     b,
@@ -1460,9 +1474,9 @@ fn build_prop_key<'a>(b: &AstBuilder<'a>, term: Term) -> R<PropertyKey<'a>> {
                     b,
                 )));
             }
-            if let Ok(n) = t.decode::<i64>() {
+            if let Some(n) = integer_as_f64(t) {
                 return Ok(PropertyKey::NumericLiteral(OxcBox::new_in(
-                    NumericLiteral::new(SPAN, n as f64, None, NumberBase::Decimal, b),
+                    NumericLiteral::new(SPAN, n, None, NumberBase::Decimal, b),
                     b,
                 )));
             }
@@ -1472,7 +1486,7 @@ fn build_prop_key<'a>(b: &AstBuilder<'a>, term: Term) -> R<PropertyKey<'a>> {
         return Ok(PropertyKey::NumericLiteral(OxcBox::new_in(
             NumericLiteral::new(
                 SPAN,
-                f64_val(term, a::value()),
+                numeric_literal_value(term)?,
                 None,
                 NumberBase::Decimal,
                 b,

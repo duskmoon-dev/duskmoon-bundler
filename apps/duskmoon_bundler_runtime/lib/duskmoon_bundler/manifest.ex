@@ -55,15 +55,22 @@ defmodule DuskmoonBundler.Manifest do
 
   @doc "Read and normalize entries from a manifest file."
   def read(path) when is_binary(path) do
-    with {:ok, content} <- File.read(path),
-         {:ok, manifest} <- decode(path, content),
-         {:ok, entries} <- entries(manifest, path) do
-      {:ok, entries}
-    else
-      {:error, :enoent} -> {:error, %Error{reason: {:missing_manifest, path}}}
-      {:error, :enotdir} -> {:error, %Error{reason: {:missing_manifest, path}}}
-      {:error, %Error{} = error} -> {:error, error}
-      {:error, reason} -> {:error, %Error{reason: {:invalid_json, path, reason}}}
+    case File.read(path) do
+      {:ok, content} ->
+        parse(content, path)
+
+      {:error, reason} when reason in [:enoent, :enotdir] ->
+        {:error, %Error{reason: {:missing_manifest, path}}}
+
+      {:error, reason} ->
+        {:error, %Error{reason: {:invalid_json, path, reason}}}
+    end
+  end
+
+  @doc false
+  def parse(content, path) do
+    with {:ok, manifest} <- decode(path, content) do
+      entries(manifest, path)
     end
   end
 

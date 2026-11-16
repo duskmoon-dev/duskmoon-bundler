@@ -26,6 +26,8 @@ defmodule DuskmoonBundler.Env do
   prefix is `"DUSKMOON_BUNDLER_"`.
   """
 
+  require Logger
+
   @default_prefix "DUSKMOON_BUNDLER_"
 
   @doc """
@@ -90,8 +92,12 @@ defmodule DuskmoonBundler.Env do
       |> Enum.filter(&File.regular?/1)
 
     case Dotenvy.source(files) do
-      {:ok, vars} -> vars
-      {:error, _} -> %{}
+      {:ok, vars} ->
+        vars
+
+      {:error, reason} ->
+        Logger.warning("[DuskmoonBundler] Failed to load .env files: #{reason}")
+        %{}
     end
   end
 end

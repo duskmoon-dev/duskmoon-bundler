@@ -92,4 +92,3 @@ jobs:
     with:
       version: ${{ inputs.version }}
       source_sha: ${{ inputs.source_sha }}
-    secrets: inherit

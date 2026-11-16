@@ -5,7 +5,7 @@ defmodule OXC.Bundle.Result do
 
   defstruct outputs: [], warnings: []
 
-  @type t :: %__MODULE__{outputs: [Output.t()], warnings: [map()]}
+  @type t :: %__MODULE__{outputs: [Output.t()], warnings: [%{message: String.t()}]}
 
   def new(%__MODULE__{} = result), do: result
 

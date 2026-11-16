@@ -4,5 +4,6 @@ defmodule DuskmoonBundler.Config.Server do
   defstruct prefix: DuskmoonBundler.Paths.prefix(),
             watch_dirs: [],
             hmr_timeout: 60_000,
-            vendor_prebundle: true
+            vendor_prebundle: true,
+            allowed_origins: []
 end

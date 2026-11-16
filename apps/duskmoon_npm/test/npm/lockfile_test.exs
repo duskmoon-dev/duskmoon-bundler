@@ -248,6 +248,24 @@ defmodule NPM.LockfileTest do
            } = read_json!("package-lock.json")
   end
 
+  test "round trips platform constraints for flat and nested package records" do
+    entry = Map.merge(lock_entry("1.0.0"), %{os: ["!darwin"], cpu: ["x64"]})
+    unrestricted = Map.merge(lock_entry("2.0.0"), %{os: [], cpu: []})
+    nested_location = "node_modules/platform-package/node_modules/nested"
+
+    assert :ok =
+             NPM.Lockfile.write(%{"platform-package" => entry},
+               nested: %{nested_location => unrestricted}
+             )
+
+    assert {:ok, %{"platform-package" => %{os: ["!darwin"], cpu: ["x64"]}}} = NPM.Lockfile.read()
+    assert {:ok, %{^nested_location => %{os: [], cpu: []}}} = NPM.Lockfile.read_nested()
+
+    assert %{"packages" => packages} = read_json!("package-lock.json")
+    assert packages["node_modules/platform-package"]["os"] == ["!darwin"]
+    assert packages[nested_location]["cpu"] == []
+  end
+
   defp lock_entry(version, opts \\ []) do
     %{
       version: version,

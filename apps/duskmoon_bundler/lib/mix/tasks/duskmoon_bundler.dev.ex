@@ -74,10 +74,14 @@ defmodule Mix.Tasks.DuskmoonBundler.Dev do
       resolve_dirs: config.resolve_dirs,
       tailwind_outdir: tailwind_outdir,
       target: target,
+      import_source: to_string(config.import_source),
+      vapor: config.vapor,
+      custom_renderer: config.custom_renderer,
+      plugins: config.plugins,
       name: watcher_name(profile)
     ]
 
-    {:ok, _pid} = DuskmoonBundler.Watcher.start_link(opts)
+    {:ok, _pid} = DuskmoonBundler.Watcher.start_supervised(opts)
 
     Mix.shell().info("[DuskmoonBundler] Watching #{opts[:root]}...")
 

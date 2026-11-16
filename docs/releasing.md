@@ -28,8 +28,7 @@ UI repository tags remain the source for earlier toolchains.
    tests again. PR checks and post-release checks cannot substitute for these
    source gates. Neither source checks nor publication require a UI checkout or
    UI revision. Optional downstream integration is documented in [upgrade-ui.md](upgrade-ui.md).
-3. Release calls eight independent `native-<rust-target>.yml` workflows. Each
-   delegates to `native-prebuild.yml` for five Rust crates and, except Windows,
+3. Release uses an eight-target matrix calling `native-prebuild.yml` for five Rust crates and, except Windows,
    one QuickBEAM target. Rust and QuickBEAM builds are independent, so one target
    never waits for an unrelated target's Rust builds. Builds start without any
    restored compilation cache; CI/test retain their shared native cache.
@@ -52,7 +51,7 @@ UI repository tags remain the source for earlier toolchains.
    on Ubuntu 26.04 glibc and Alpine amd64/arm64, with no Rust/Zig compiler in
    those containers.
    A separate OTP 28.5.0.8 matrix loads and executes all six published NIFs on
-   Ubuntu 26.04 amd64/arm64, macOS 26 Intel and macOS 27 ARM.
+   Ubuntu 26.04 amd64/arm64, macOS 26 Intel and macOS 26 ARM.
    The complete registry consumers bootstrap the third-party `lazy_html` NIF
    through ElixirMake's target/URL/cache interfaces with a bounded 64 KiB header
    budget and the checksum from its published Hex package. Its default downloader
@@ -101,14 +100,24 @@ results. After publication, wait for the separate **Toolchain Tests** run before
 considering the published cohort verified for downstream adoption.
 
 Hosted runners use `ubuntu-26.04`, `ubuntu-26.04-arm`, `macos-26-intel`,
-`xcode-27` (macOS 27 ARM) and `windows-2025`. GitHub currently provides macOS 27
-through its `xcode-27` preview image label. Linux GNU Rust and QuickBEAM builds
+`macos-26` (ARM) and `windows-2025`. Linux GNU Rust and QuickBEAM builds
 run directly on the matching Ubuntu 26.04 host. This internal toolchain follows
 the current runner's glibc and does not impose an older-distribution ABI ceiling.
 Cross builds remain in use for the other Rust targets that require them.
 
+Source CI, native releases (including QuickBEAM's Rust dependencies), and
+optional UI compatibility pin Rust `1.99.0`, matching the locked development
+environment. Native cross builds pin `cross` to release `v0.2.5` instead of
+installing a moving repository revision. The pinned
+`rustler-precompiled-action` accepts release names through `cross-version`;
+its `from-source` option always installs the default branch and cannot select a
+commit. Update these pins together with source and native artifact verification
+when changing the release toolchain. Version pins do not replace the complete
+platform build and published-consumer gates, and historical artifacts stay
+immutable.
+
 The CI download regression additionally pins OTP `28.5.0.8` on the consumer
-environments `ubuntu-26.04`, `ubuntu-26.04-arm`, `macos-26-intel` and `xcode-27`.
+environments `ubuntu-26.04`, `ubuntu-26.04-arm`, `macos-26-intel` and `macos-26`.
 These consumers run directly on their hosted runners.
 It checks expanded redirect headers and the 64 KiB limit, then extracts verified
 10.0.3 Hex packages outside the checkout and overlays only the candidate URL
@@ -259,3 +268,17 @@ locks, platform/libc, Elixir/OTP and source-mode/toolchain keys through the shar
 `setup-toolchain` action; release jobs retain
 cold target builds. Optional downstream source integration runs separately in
 `ui-compatibility.yml`; its result does not determine toolchain release eligibility.
+
+## Signed build provenance and package history
+
+New releases attest the 47 native archives, nine exact Hex tarballs and
+`release-provenance.json` with GitHub Actions OIDC. The publication job has
+`id-token: write` and `attestations: write`; the signed bundle is retained as
+`release-attestations`. Verify a downloaded file with
+`gh attestation verify FILE --repo duskmoon-dev/duskmoon-bundler`.
+This does not retrofit attestations onto historical releases or alter their
+bytes; recovery still verifies their original hashes and source gates.
+
+Staging prepends the root cohort CHANGELOG to each package's CHANGELOG and
+retains its package-specific/upstream history underneath. Source manifests and
+source changelogs remain unchanged by staging.

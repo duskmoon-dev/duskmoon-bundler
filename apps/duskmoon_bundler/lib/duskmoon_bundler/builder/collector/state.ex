@@ -4,6 +4,8 @@ defmodule DuskmoonBundler.Builder.Collector.State do
   defstruct root: nil,
             ctx: nil,
             files: [],
+            compiled: %{},
+            loaded: %{},
             seen: MapSet.new(),
             used_labels: MapSet.new(),
             dep_map: %{},

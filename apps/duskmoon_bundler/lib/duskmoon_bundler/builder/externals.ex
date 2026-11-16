@@ -1,6 +1,11 @@
 defmodule DuskmoonBundler.Builder.Externals do
   @moduledoc "Rewrite external imports into global variable access for production builds."
 
+  alias DuskmoonBundler.Builder.Resolver
+
+  @identifier_path ~r/^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*$/
+  @default_interop "((m) => m && m.__esModule ? m.default : m)"
+
   @doc """
   Rewrite external import declarations into direct global access.
   """
@@ -8,45 +13,6 @@ defmodule DuskmoonBundler.Builder.Externals do
     Enum.map(js_files, fn {label, code} ->
       {label, rewrite_imports_in_module(code, external_set, external_globals)}
     end)
-  end
-
-  @doc """
-  Scan compiled JS files for imports from external specifiers.
-
-  Returns a map of `specifier => [imported_names]` where each name is
-  `{:named, name}`, `{:default, name}`, or `{:namespace, name}`.
-  """
-  def collect_imports(js_files, external_set) do
-    js_files
-    |> Enum.reduce(%{}, fn {_label, code}, acc ->
-      case extract_external_imports(code, external_set) do
-        [] -> acc
-        imports -> merge_imports(acc, imports)
-      end
-    end)
-  end
-
-  @doc """
-  Generate a JS preamble that destructures external globals.
-
-      %{"vue" => [named: "ref", named: "h"], "reka-ui" => [default: "RekaButton"]}
-
-  With globals `%{"vue" => "Vue", "reka-ui" => "RekaUi"}` produces:
-
-      const { ref, h } = Vue;
-      const RekaButton = RekaUi.default;
-  """
-  def generate_preamble(external_imports, external_globals) do
-    external_imports
-    |> Enum.sort_by(fn {spec, _} -> spec end)
-    |> Enum.map_join("\n", fn {specifier, names} ->
-      global = Map.get(external_globals, specifier, derive_global(specifier))
-      emit_global_access(global, names)
-    end)
-    |> case do
-      "" -> ""
-      preamble -> preamble <> "\n"
-    end
   end
 
   defp rewrite_imports_in_module(code, external_set, external_globals) do
@@ -62,10 +28,10 @@ defmodule DuskmoonBundler.Builder.Externals do
               specifiers: specifiers
             } = node,
             patches ->
-              if MapSet.member?(external_set, spec) do
+              if Resolver.external?(spec, external_set) do
                 names = Enum.map(specifiers, &classify_specifier/1)
                 global = Map.get(external_globals, spec, derive_global(spec))
-                replacement = emit_global_access(global, names)
+                replacement = emit_global_access(global_access(global), names)
                 patch = DuskmoonBundler.JS.Patch.new(start_pos, end_pos, replacement)
                 {node, [patch | patches]}
               else
@@ -80,31 +46,6 @@ defmodule DuskmoonBundler.Builder.Externals do
 
       {:error, _} ->
         code
-    end
-  end
-
-  defp extract_external_imports(code, external_set) do
-    case OXC.parse(code, "module.js") do
-      {:ok, ast} ->
-        {_ast, imports} =
-          OXC.postwalk(ast, [], fn
-            %{type: :import_declaration, source: %{value: spec}, specifiers: specifiers} = node,
-            acc ->
-              if MapSet.member?(external_set, spec) do
-                names = Enum.map(specifiers, &classify_specifier/1)
-                {node, [{spec, names} | acc]}
-              else
-                {node, acc}
-              end
-
-            node, acc ->
-              {node, acc}
-          end)
-
-        Enum.reverse(imports)
-
-      {:error, _} ->
-        []
     end
   end
 
@@ -125,17 +66,6 @@ defmodule DuskmoonBundler.Builder.Externals do
   end
 
   defp classify_specifier(_), do: nil
-
-  defp merge_imports(acc, imports) do
-    Enum.reduce(imports, acc, fn {spec, names}, merged ->
-      Map.update(merged, spec, Enum.uniq(names), fn existing ->
-        names
-        |> Enum.reverse()
-        |> Enum.reduce(existing, &[&1 | &2])
-        |> Enum.uniq()
-      end)
-    end)
-  end
 
   defp emit_global_access(global, names) do
     {named, others} =
@@ -163,7 +93,7 @@ defmodule DuskmoonBundler.Builder.Externals do
     other_parts =
       others
       |> Enum.map(fn
-        {:default, name} -> ~s(const #{name} = #{global}.default;)
+        {:default, name} -> ~s|const #{name} = #{@default_interop}(#{global});|
         {:namespace, name} -> ~s(const #{name} = #{global};)
         nil -> nil
       end)
@@ -173,6 +103,12 @@ defmodule DuskmoonBundler.Builder.Externals do
     |> Enum.concat()
     |> Enum.intersperse("\n")
     |> IO.iodata_to_binary()
+  end
+
+  # Reading through `globalThis` keeps a local binding that shares the global's
+  # name (`import React from "react"`) from referencing itself.
+  defp global_access(global) do
+    if String.match?(global, @identifier_path), do: "globalThis." <> global, else: global
   end
 
   defp derive_global(specifier), do: DuskmoonBundler.Builder.derive_global_name(specifier)

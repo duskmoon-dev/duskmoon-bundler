@@ -1,10 +1,19 @@
 {opts, _, _} = OptionParser.parse(System.argv(), strict: [source: :string])
 root = Path.expand("..", __DIR__)
-inventory = root |> Path.join("docs/migration-inventory.json") |> File.read!() |> JSON.decode!()
+
+inventory =
+  root |> Path.join("docs/archive/migration-inventory.json") |> File.read!() |> JSON.decode!()
+
 source = opts[:source]
 
 for row <- inventory["files"], row["action"] in ["move", "duplicate", "split"] do
-  path = Path.join(root, row["destination_path"])
+  destination =
+    case row["destination_path"] do
+      "biome.json" -> "docs/archive/biome.json"
+      path -> path
+    end
+
+  path = Path.join(root, destination)
   unless File.exists?(path), do: raise("Missing imported path #{row["destination_path"]}")
 
   if source do

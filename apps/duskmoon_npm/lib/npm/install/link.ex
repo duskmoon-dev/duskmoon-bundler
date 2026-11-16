@@ -17,7 +17,8 @@ defmodule NPM.Install.Link do
   """
   @spec link(String.t(), String.t()) :: {:ok, link_info()} | {:error, term()}
   def link(package_dir, node_modules_dir \\ "node_modules") do
-    with {:ok, name} <- read_package_name(package_dir) do
+    with {:ok, name} <- read_package_name(package_dir),
+         :ok <- validate_name(name, package_dir) do
       link_path = resolve_link_path(node_modules_dir, name)
       target = Path.expand(package_dir)
 
@@ -41,12 +42,11 @@ defmodule NPM.Install.Link do
   def unlink(name, node_modules_dir \\ "node_modules") do
     link_path = resolve_link_path(node_modules_dir, name)
 
-    case File.read_link(link_path) do
-      {:ok, _target} ->
-        File.rm(link_path)
-
-      {:error, _} ->
-        {:error, :not_linked}
+    with true <- NPM.Scope.installable_name?(name),
+         {:ok, _target} <- File.read_link(link_path) do
+      File.rm(link_path)
+    else
+      _ -> {:error, :not_linked}
     end
   end
 
@@ -73,10 +73,7 @@ defmodule NPM.Install.Link do
   def linked?(name, node_modules_dir \\ "node_modules") do
     link_path = resolve_link_path(node_modules_dir, name)
 
-    case File.read_link(link_path) do
-      {:ok, _} -> true
-      _ -> false
-    end
+    NPM.Scope.installable_name?(name) and match?({:ok, _}, File.read_link(link_path))
   end
 
   defp read_package_name(dir) do
@@ -90,6 +87,14 @@ defmodule NPM.Install.Link do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  # The link path is removed and re-created, so the name must be a plain
+  # installable package name that cannot leave node_modules.
+  defp validate_name(name, package_dir) do
+    if NPM.Scope.installable_name?(name),
+      do: :ok,
+      else: {:error, {:invalid_package_name, name, Path.join(package_dir, "package.json")}}
   end
 
   defp resolve_link_path(nm_dir, name) do

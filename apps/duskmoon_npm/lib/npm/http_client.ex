@@ -5,6 +5,9 @@ defmodule NPM.HTTPClient do
   JSON responses are decoded by content type unless `decode_body: false` is set.
   Transport failures return errors; HTTP status codes remain available to callers,
   which own retry and registry-origin policies.
+
+  `:max_body_bytes` rejects a response with `{:error, {:body_too_large, limit}}`
+  when its declared `content-length` or its buffered body exceeds the limit.
   """
 
   @doc "Perform a GET request."
@@ -47,13 +50,31 @@ defmodule NPM.HTTPClient do
 
     case HTTP.fetch(url, options) |> HTTP.Promise.await() do
       %HTTP.Response{} = response ->
-        with {:ok, body} <- read_body(response),
+        limit = opts[:max_body_bytes]
+
+        with :ok <- check_size(declared_length(response), limit),
+             {:ok, body} <- read_body(response),
+             :ok <- check_size(byte_size(body), limit),
              {:ok, body} <- decode_body(body, response, opts) do
           {:ok, %{status: response.status, headers: response.headers.headers, body: body}}
         end
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  defp check_size(size, limit) when is_integer(size) and is_integer(limit) and size > limit,
+    do: {:error, {:body_too_large, limit}}
+
+  defp check_size(_size, _limit), do: :ok
+
+  defp declared_length(response) do
+    with value when is_binary(value) <- HTTP.Response.get_header(response, "content-length"),
+         {length, ""} <- Integer.parse(String.trim(value)) do
+      length
+    else
+      _ -> nil
     end
   end
 

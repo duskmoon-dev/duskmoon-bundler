@@ -171,6 +171,26 @@ defmodule DuskmoonBundler.ChunkGraphTest do
       assert graph.module_to_chunk["/app/shared-lazy.ts"] == "common"
     end
 
+    test "async chunk importing the entry does not duplicate the entry module" do
+      modules = [
+        {"/app/router.ts", "router.ts", ""},
+        {"/app/page.ts", "page.ts", ""}
+      ]
+
+      dep_map = %{
+        "/app/router.ts" => %{static: [], dynamic: ["/app/page.ts"]},
+        "/app/page.ts" => %{static: ["/app/router.ts"], dynamic: []}
+      }
+
+      graph = ChunkGraph.build("/app/router.ts", modules, dep_map)
+
+      assert graph.chunks["entry"].modules == ["/app/router.ts"]
+      assert graph.chunks["page"].modules == ["/app/page.ts"]
+      assert graph.module_to_chunk["/app/router.ts"] == "entry"
+      assert graph.chunks["page"].imports == ["entry"]
+      assert graph.chunks["entry"].dynamic_imports == ["page"]
+    end
+
     test "creates chunks for nested dynamic imports" do
       modules = [
         {"/app/main.ts", "main.ts", ""},
@@ -371,6 +391,95 @@ defmodule DuskmoonBundler.ChunkGraphTest do
         )
 
       assert graph.module_to_chunk["/app/node_modules/lodash/index.js"] == "vendor"
+    end
+
+    defp manual_graph(paths, manual_chunks, opts \\ []) do
+      modules = [{"/app/main.ts", "main.ts", ""} | Enum.map(paths, &{&1, Path.basename(&1), ""})]
+
+      dep_map =
+        paths
+        |> Map.new(&{&1, %{static: [], dynamic: []}})
+        |> Map.put("/app/main.ts", %{static: paths, dynamic: []})
+
+      ChunkGraph.build("/app/main.ts", modules, dep_map, [manual_chunks: manual_chunks] ++ opts)
+    end
+
+    test "bare patterns match scoped packages" do
+      core = "/app/node_modules/@duskmoon-dev/core/dist/index.js"
+      other = "/app/node_modules/@duskmoon-dev/core-extras/index.js"
+
+      graph = manual_graph([core, other], %{"vendor" => ["@duskmoon-dev/core"]})
+
+      assert graph.chunks["vendor"].modules == [core]
+      assert graph.module_to_chunk[other] == "entry"
+    end
+
+    test "bare patterns match package subpaths" do
+      fp_file = "/app/node_modules/lodash/fp.js"
+      fp_dir = "/app/node_modules/lodash/fp/placeholder.js"
+      main = "/app/node_modules/lodash/lodash.js"
+
+      graph = manual_graph([fp_file, fp_dir, main], %{"fp" => ["lodash/fp"]})
+
+      assert graph.chunks["fp"].modules == [fp_file, fp_dir]
+      assert graph.module_to_chunk[main] == "entry"
+    end
+
+    test "bare patterns match packages under configured package directories" do
+      phoenix = "/app/deps/phoenix/priv/static/phoenix.mjs"
+      html = "/app/deps/phoenix_html/priv/static/phoenix_html.js"
+
+      graph =
+        manual_graph([phoenix, html], %{"vendor" => ["phoenix"]}, package_dirs: ["/app/deps"])
+
+      assert graph.chunks["vendor"].modules == [phoenix]
+      assert graph.module_to_chunk[html] == "entry"
+    end
+
+    test "relative directory patterns containing a slash still match by path" do
+      button = Path.expand("assets/src/components/Button.ts")
+      utils = Path.expand("assets/src/utils.ts")
+
+      graph = manual_graph([button, utils], %{"ui" => ["assets/src/components"]})
+
+      assert graph.chunks["ui"].modules == [button]
+      assert graph.unmatched_patterns == []
+    end
+
+    test "reports patterns that match no module" do
+      vue = "/app/node_modules/vue/index.js"
+
+      graph = manual_graph([vue], %{"vendor" => ["vue", "pinia"], "ui" => ["@scope/missing"]})
+
+      assert graph.unmatched_patterns == [{"ui", "@scope/missing"}, {"vendor", "pinia"}]
+      refute Map.has_key?(graph.chunks, "ui")
+    end
+
+    test "async chunk ids do not collide with manual chunk names" do
+      modules = [
+        {"/app/main.ts", "main.ts", ""},
+        {"/app/node_modules/vue/index.js", "vue", ""},
+        {"/app/lazy.ts", "lazy.ts", ""}
+      ]
+
+      dep_map = %{
+        "/app/main.ts" => %{
+          static: ["/app/node_modules/vue/index.js"],
+          dynamic: ["/app/lazy.ts"]
+        },
+        "/app/node_modules/vue/index.js" => %{static: [], dynamic: []},
+        "/app/lazy.ts" => %{static: [], dynamic: []}
+      }
+
+      graph =
+        ChunkGraph.build("/app/main.ts", modules, dep_map, manual_chunks: %{"lazy" => ["vue"]})
+
+      assert graph.chunks["lazy"].type == :manual
+      assert graph.chunks["lazy"].modules == ["/app/node_modules/vue/index.js"]
+
+      async = Enum.find(Map.values(graph.chunks), &(&1.type == :async))
+      assert async.modules == ["/app/lazy.ts"]
+      assert graph.module_to_chunk["/app/lazy.ts"] == async.id
     end
 
     test "empty manual chunks config has no effect" do

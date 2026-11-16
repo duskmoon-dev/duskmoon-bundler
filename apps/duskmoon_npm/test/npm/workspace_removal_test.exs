@@ -1,6 +1,10 @@
 defmodule NPM.WorkspaceRemovalTest do
   use ExUnit.Case, async: false
 
+  # Frozen installs require every lock entry to record an integrity, so the
+  # fixtures carry one and the cache marker records the same value.
+  @fixture_integrity "sha512-Zml4dHVyZQ=="
+
   import ExUnit.CaptureIO
 
   @alpha "@fixture-rm/alpha"
@@ -158,7 +162,7 @@ defmodule NPM.WorkspaceRemovalTest do
       put_in(lock, ["packages", "node_modules/@fixture-rm/orphan"], %{
         "version" => "1.0.0",
         "resolved" => tarball("@fixture-rm/orphan", "1.0.0"),
-        "integrity" => ""
+        "integrity" => @fixture_integrity
       })
 
     File.write!("package-lock.json", NPM.JSON.encode_pretty(stale))
@@ -248,7 +252,7 @@ defmodule NPM.WorkspaceRemovalTest do
   defp lock_entry(name, version, dependencies \\ %{}) do
     %{
       version: version,
-      integrity: "",
+      integrity: @fixture_integrity,
       tarball: tarball(name, version),
       dependencies: dependencies,
       optional_dependencies: %{},
@@ -269,7 +273,7 @@ defmodule NPM.WorkspaceRemovalTest do
       NPM.JSON.encode_pretty(%{"name" => name, "version" => version})
     )
 
-    File.write!(Path.join(cache_path, ".npm-ex-cache-complete"), "1\n")
+    File.write!(Path.join(cache_path, ".npm-ex-cache-complete"), "1\n#{@fixture_integrity}\n")
   end
 
   defp write_package!(dir, data) do

@@ -132,7 +132,7 @@ description is `docs/ui-cutover-pr.md`.
    unpublished candidate fixes in the destination.
 2. Configure destination package ownership, protected release approval, registry
    credentials and a least-privilege UI GitHub App or narrowly scoped PAT as
-   documented in [releasing.md](releasing.md) and [upgrade-ui.md](upgrade-ui.md).
+   documented in [releasing.md](../releasing.md) and [upgrade-ui.md](../upgrade-ui.md).
    Cross-repository coordination remains **unconfigured**, not executed.
 3. With separate authorization, execute the formal B1 release against an immutable
    destination SHA and pinned compatible UI SHA. The full 47-archive matrix,

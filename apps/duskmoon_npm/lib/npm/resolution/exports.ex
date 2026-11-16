@@ -110,21 +110,41 @@ defmodule NPM.Resolution.Exports do
   end
 
   defp candidates(export_map, subpath, conditions) when is_map(export_map) do
-    exact = Map.get(export_map, subpath) |> target_candidates(conditions)
+    case Map.fetch(export_map, subpath) do
+      {:ok, target} ->
+        target_candidates(target, conditions)
 
-    wildcard =
-      export_map
-      |> Enum.flat_map(fn {pattern, target} ->
-        case wildcard_replacement(pattern, subpath) do
-          nil -> []
-          replacement -> replace_wildcards(target_candidates(target, conditions), replacement)
+      :error ->
+        export_map
+        |> Enum.flat_map(fn {pattern, target} ->
+          case wildcard_replacement(pattern, subpath) do
+            nil -> []
+            replacement -> [{pattern, target, replacement}]
+          end
+        end)
+        |> Enum.max_by(fn {pattern, _, _} -> pattern_priority(pattern) end, fn -> nil end)
+        |> case do
+          nil ->
+            []
+
+          {_pattern, target, replacement} ->
+            replace_wildcards(target_candidates(target, conditions), replacement)
         end
-      end)
-
-    exact ++ wildcard
+    end
   end
 
   defp candidates(_, _, _), do: []
+
+  # Node's PATTERN_KEY_COMPARE ranks the prefix before `*` first, then the
+  # complete key. Only the best matching key is resolved: a null target or an
+  # unmatched condition must not expose a broader wildcard's target.
+  defp pattern_priority(pattern) do
+    [prefix, _suffix] = String.split(pattern, "*")
+    {utf16_length(prefix), utf16_length(pattern)}
+  end
+
+  defp utf16_length(value),
+    do: div(byte_size(:unicode.characters_to_binary(value, :utf8, {:utf16, :little})), 2)
 
   defp target_candidates(nil, _conditions), do: []
   defp target_candidates(path, _conditions) when is_binary(path), do: [path]
@@ -144,21 +164,19 @@ defmodule NPM.Resolution.Exports do
   end
 
   defp wildcard_replacement(pattern, subpath) do
-    case String.split(pattern, "*", parts: 2) do
+    case String.split(pattern, "*") do
       [prefix, suffix] ->
-        if String.starts_with?(subpath, prefix) and String.ends_with?(subpath, suffix) do
-          subpath
-          |> String.trim_leading(prefix)
-          |> trim_suffix(suffix)
+        replacement_size = byte_size(subpath) - byte_size(prefix) - byte_size(suffix)
+
+        if replacement_size > 0 and String.starts_with?(subpath, prefix) and
+             String.ends_with?(subpath, suffix) do
+          binary_part(subpath, byte_size(prefix), replacement_size)
         end
 
       _ ->
         nil
     end
   end
-
-  defp trim_suffix(value, ""), do: value
-  defp trim_suffix(value, suffix), do: String.trim_trailing(value, suffix)
 
   defp has_wildcard_match?(subpath, export_map) do
     Enum.any?(export_map, fn {pattern, _} -> wildcard_matches?(subpath, pattern) end)

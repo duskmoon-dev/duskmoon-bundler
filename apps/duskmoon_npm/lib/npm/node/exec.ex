@@ -89,31 +89,40 @@ defmodule NPM.Node.Exec do
   defp find_in_packages(command, node_modules_dir) do
     pkg_path = Path.join([node_modules_dir, command, "package.json"])
 
-    case File.read(pkg_path) do
-      {:ok, content} ->
-        data = NPM.JSON.decode!(content)
-        resolve_bin(data, command, node_modules_dir)
-
-      _ ->
-        {:error, :not_found}
+    with true <- NPM.Scope.installable_name?(command),
+         {:ok, content} <- File.read(pkg_path) do
+      data = NPM.JSON.decode!(content)
+      resolve_bin(data, command, node_modules_dir)
+    else
+      _ -> {:error, :not_found}
     end
   rescue
     # JSON decode, missing keys, or unexpected package.json shape
     _ -> {:error, :not_found}
   end
 
-  defp resolve_bin(%{"bin" => bin}, _command, nm_dir) when is_binary(bin) do
-    {:ok, Path.join(nm_dir, bin)}
+  defp resolve_bin(%{"bin" => bin}, command, nm_dir) when is_binary(bin) do
+    contained_bin(nm_dir, command, bin)
   end
 
   defp resolve_bin(%{"bin" => bin, "name" => name}, command, nm_dir) when is_map(bin) do
-    case Map.get(bin, command) || Map.get(bin, name) do
-      nil -> {:error, :not_found}
-      path -> {:ok, Path.join([nm_dir, name, path])}
-    end
+    contained_bin(nm_dir, command, Map.get(bin, command) || Map.get(bin, name))
   end
 
   defp resolve_bin(_, _, _), do: {:error, :not_found}
+
+  # The package was found at `node_modules/<command>`, so its bin resolves
+  # there and must stay inside that directory.
+  defp contained_bin(nm_dir, command, bin) when is_binary(bin) do
+    package_dir = Path.join(nm_dir, command)
+    root = Path.expand(package_dir)
+
+    if String.starts_with?(Path.expand(bin, root), root <> "/"),
+      do: {:ok, Path.join(package_dir, bin)},
+      else: {:error, :not_found}
+  end
+
+  defp contained_bin(_nm_dir, _command, _bin), do: {:error, :not_found}
 
   defp find_command_in_package(nm_dir, entry, command) do
     if String.starts_with?(entry, ".") or String.starts_with?(entry, "@") do

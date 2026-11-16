@@ -182,20 +182,24 @@ defmodule ReleaseSupport do
         target
       ])
 
+    failure = "unexpected status #{status} (curl exit #{exit_status}): #{target}"
+    transient? = exit_status != 0 or String.starts_with?(status, "5")
+
     cond do
       exit_status == 0 and status == "200" ->
         output
 
-      (exit_status != 0 or String.starts_with?(status, "5")) and attempt + 1 < attempts ->
+      transient? and attempt + 1 < attempts ->
         Process.sleep(base_ms * Integer.pow(2, attempt))
         http_attempt!(url, output, attempt + 1, attempts, base_ms)
 
+      transient? ->
+        release_api_download!(url, output, failure)
+
+      # A definite answer such as 404 or 403 means the asset is not anonymously
+      # available; the authenticated route must not mask that.
       true ->
-        release_api_download!(
-          url,
-          output,
-          "unexpected status #{status} (curl exit #{exit_status}): #{target}"
-        )
+        raise failure
     end
   end
 

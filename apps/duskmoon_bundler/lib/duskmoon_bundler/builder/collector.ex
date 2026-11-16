@@ -12,6 +12,14 @@ defmodule DuskmoonBundler.Builder.Collector do
   - `workers` is `%{importer_path => %{specifier => worker_abs_path}}`
   """
   def collect(entry_path, ctx) do
+    with {:ok, modules, dep_map, workers, specifier_labels, path_labels, _compiled} <-
+           collect_compiled(entry_path, ctx) do
+      {:ok, modules, dep_map, workers, specifier_labels, path_labels}
+    end
+  end
+
+  @doc "Collect the graph and retain pipeline output for the production build."
+  def collect_compiled(entry_path, ctx) do
     label = Path.basename(entry_path)
 
     state = %DuskmoonBundler.Builder.Collector.State{
@@ -24,7 +32,8 @@ defmodule DuskmoonBundler.Builder.Collector do
     case do_collect(entry_path, label, state) do
       {:ok, state} ->
         {:ok, Enum.reverse(state.files), state.dep_map, state.workers, state.specifier_labels,
-         state.path_labels}
+         state.path_labels,
+         Map.new(state.compiled, fn {path, {:ok, result}} -> {path, result} end)}
 
       {:error, _} = error ->
         error
@@ -42,7 +51,7 @@ defmodule DuskmoonBundler.Builder.Collector do
         collect_asset(abs_path, label, state)
 
       true ->
-        case read_module(path, state.ctx.plugins) do
+        case Map.get_lazy(state.loaded, abs_path, fn -> read_module(path, state.ctx.plugins) end) do
           {:ok, source, content_type} ->
             process_source(abs_path, label, source, content_type, state)
 
@@ -84,8 +93,20 @@ defmodule DuskmoonBundler.Builder.Collector do
 
   defp process_source(abs_path, label, source, content_type, state) do
     path = module_path(abs_path)
-    graph_source = graph_source(path, source, content_type, state.ctx)
 
+    result =
+      Map.get_lazy(state.compiled, abs_path, fn ->
+        compile_source(path, label, source, content_type, state.ctx)
+      end)
+
+    with {:ok, compiled} <- result do
+      graph_source = if compiled.type == :js, do: compiled.code, else: source
+      state = %{state | compiled: Map.put(state.compiled, abs_path, result)}
+      process_imports(abs_path, label, source, graph_source, content_type, state)
+    end
+  end
+
+  defp process_imports(abs_path, label, source, graph_source, content_type, state) do
     state = %{
       state
       | seen: MapSet.put(state.seen, abs_path),
@@ -100,7 +121,10 @@ defmodule DuskmoonBundler.Builder.Collector do
            state.ctx.plugins,
            graph_source != source
          ) do
-      {:ok, %{imports: typed_imports, requires: requires, workers: worker_specs}} ->
+      {:ok, imports} ->
+        %{imports: typed_imports, requires: requires, workers: worker_specs} =
+          without_generated_helpers(imports, source, abs_path, content_type, state.ctx)
+
         state = %{
           state
           | dep_map: Map.put(state.dep_map, abs_path, split_imports(typed_imports, requires))
@@ -118,6 +142,35 @@ defmodule DuskmoonBundler.Builder.Collector do
 
       {:error, _} = error ->
         error
+    end
+  end
+
+  # OXC lowering injects runtime helper imports that Rolldown provides internally.
+  # Explicit source imports still go through ordinary package resolution.
+  defp without_generated_helpers(imports, source, path, content_type, ctx) do
+    helpers =
+      for {:static, specifier} <- imports.imports,
+          String.starts_with?(specifier, "@oxc-project/runtime/helpers/"),
+          into: MapSet.new(),
+          do: specifier
+
+    if MapSet.size(helpers) == 0 do
+      imports
+    else
+      case extract_typed_imports(source, path, content_type, ctx.loaders, ctx.plugins, false) do
+        {:ok, original} ->
+          original_specifiers = MapSet.new(original.imports, &elem(&1, 1))
+          generated = MapSet.difference(helpers, original_specifiers)
+
+          %{
+            imports
+            | imports: Enum.reject(imports.imports, &MapSet.member?(generated, elem(&1, 1))),
+              requires: Enum.reject(imports.requires, &MapSet.member?(generated, &1))
+          }
+
+        {:error, _} ->
+          imports
+      end
     end
   end
 
@@ -194,17 +247,15 @@ defmodule DuskmoonBundler.Builder.Collector do
     end)
   end
 
-  defp graph_source(path, source, _content_type, ctx) do
-    case DuskmoonBundler.Pipeline.compile(path, source,
-           target: ctx.target,
-           import_source: ctx.import_source,
-           define: ctx.define,
-           plugins: ctx.plugins,
-           loaders: ctx.loaders
-         ) do
-      {:ok, %{type: :js, code: code}} -> code
-      _ -> source
-    end
+  defp compile_source(path, label, source, content_type, ctx) do
+    DuskmoonBundler.Pipeline.compile_loaded(path, source, content_type,
+      target: ctx.target,
+      import_source: ctx.import_source,
+      define: ctx.define,
+      plugins: ctx.plugins,
+      loaders: ctx.loaders,
+      preserve_json: Path.extname(label) == ".json"
+    )
   end
 
   defp extract_typed_imports(source, path, content_type, loaders, plugins, compiled?) do
@@ -277,7 +328,8 @@ defmodule DuskmoonBundler.Builder.Collector do
   end
 
   defp unique_label(_specifier, resolved_path, state) do
-    base_label = module_label(resolved_path, state.root, state.ctx)
+    state = prepare_json(resolved_path, state)
+    base_label = module_label(resolved_path, state.root, state.compiled)
     label = deduplicate_label(base_label, resolved_path, state.used_labels)
 
     state = %{
@@ -289,7 +341,7 @@ defmodule DuskmoonBundler.Builder.Collector do
     {label, state}
   end
 
-  defp module_label(resolved_path, root, ctx) do
+  defp module_label(resolved_path, root, compiled) do
     {path, query} = DuskmoonBundler.URL.split_query(resolved_path)
     [relative_path | rest] = path |> String.split("/node_modules/") |> Enum.reverse()
 
@@ -309,28 +361,44 @@ defmodule DuskmoonBundler.Builder.Collector do
       |> with_query_suffix(query)
 
     cond do
-      Path.extname(label) == ".json" -> json_label(label, path, ctx)
+      Path.extname(label) == ".json" -> json_label(label, Map.get(compiled, resolved_path))
       Path.extname(label) in DuskmoonBundler.JS.Extensions.css() -> label <> ".js"
       query != "" -> label <> ".js"
       true -> label
     end
   end
 
-  defp json_label(label, path, ctx) do
+  defp prepare_json(module_id, state) do
+    {path, query} = DuskmoonBundler.URL.split_query(module_id)
+
+    if Path.extname(path) == ".json" and not Map.has_key?(state.compiled, module_id) do
+      loaded = read_module(path, state.ctx.plugins)
+
+      compiled =
+        case loaded do
+          {:ok, source, content_type} ->
+            label = with_query_suffix(Path.basename(path), query)
+            compile_source(path, label, source, content_type, state.ctx)
+
+          {:error, reason} ->
+            {:error, {:file_read_error, module_id, reason}}
+        end
+
+      %{
+        state
+        | loaded: Map.put(state.loaded, module_id, loaded),
+          compiled: Map.put(state.compiled, module_id, compiled)
+      }
+    else
+      state
+    end
+  end
+
+  defp json_label(label, compiled) do
     # Plugins may replace JSON with JavaScript. Only the default data module
     # keeps its extension so Rolldown supplies CommonJS JSON interop.
-    with {:ok, source, _content_type} <- read_module(path, ctx.plugins),
-         {:ok, %{type: :json}} <-
-           DuskmoonBundler.Pipeline.compile(path, source,
-             target: ctx.target,
-             import_source: ctx.import_source,
-             define: ctx.define,
-             plugins: ctx.plugins,
-             loaders: ctx.loaders,
-             preserve_json: true
-           ) do
-      label
-    else
+    case compiled do
+      {:ok, %{type: :json}} -> label
       _ -> label <> ".js"
     end
   end

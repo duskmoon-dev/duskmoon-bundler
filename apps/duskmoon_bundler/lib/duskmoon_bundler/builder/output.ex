@@ -22,7 +22,6 @@ defmodule DuskmoonBundler.Builder.Output do
     case bundle_js_files(js_files, bundle_opts) do
       {:ok, bundle_result} ->
         {js_code, js_sourcemap} = extract_bundle_result(bundle_result)
-        js_code = Rewriter.inject_external_preamble(js_code, js_files, ctx)
 
         js_code =
           Rewriter.rewrite_worker_urls(js_code, Rewriter.all_worker_map(ctx), name)
@@ -75,7 +74,11 @@ defmodule DuskmoonBundler.Builder.Output do
     bundle_opts = Keyword.put(bundle_opts, :format, :esm)
 
     graph =
-      DuskmoonBundler.ChunkGraph.build(entry, modules, dep_map, manual_chunks: manual_chunks)
+      build_ctx.graph ||
+        DuskmoonBundler.ChunkGraph.build(entry, modules, dep_map,
+          manual_chunks: manual_chunks,
+          package_dirs: build_ctx.package_dirs
+        )
 
     js_map = Map.new(js_files)
     module_labels = Map.new(modules, fn {path, label, _source} -> {path, label} end)
@@ -107,7 +110,6 @@ defmodule DuskmoonBundler.Builder.Output do
           finalize_chunk_urls(
             chunk_bundles,
             graph,
-            js_map,
             module_labels,
             css_results,
             ctx,
@@ -297,10 +299,12 @@ defmodule DuskmoonBundler.Builder.Output do
   defp ast_name(%{name: name}) when is_binary(name), do: name
   defp ast_name(%{value: value}) when is_binary(value), do: value
 
+  # A chunk embeds the file names of the chunks it links to, so hashing the final
+  # code cannot settle for cyclic or deep chunk graphs. Names are derived instead
+  # from the code rendered with unhashed sibling names, for every reachable chunk.
   defp finalize_chunk_urls(
          chunk_bundles,
          graph,
-         js_map,
          module_labels,
          css_results,
          ctx,
@@ -308,73 +312,45 @@ defmodule DuskmoonBundler.Builder.Output do
          hash,
          dep_map
        ) do
-    initial_url_map = chunk_url_map(chunk_bundles, graph.chunks, name, hash)
+    process = &process_chunks(chunk_bundles, graph, module_labels, css_results, ctx, &1, dep_map)
+    stable_url_map = chunk_url_map(chunk_bundles, graph.chunks, name, false)
+    stable = process.(stable_url_map)
 
-    do_finalize_chunk_urls(
-      chunk_bundles,
-      graph,
-      js_map,
-      module_labels,
-      css_results,
-      ctx,
-      name,
-      hash,
-      dep_map,
-      initial_url_map,
-      0
-    )
+    links =
+      Map.new(stable, fn {chunk_id, _bundle} ->
+        chunk = graph.chunks[chunk_id]
+        linked = Map.values(chunk_import_map(chunk, graph, module_labels, dep_map))
+        {chunk_id, chunk.imports ++ chunk.dynamic_imports ++ linked}
+      end)
+
+    url_map =
+      Map.new(stable, fn {chunk_id, _bundle} ->
+        hash_input =
+          [chunk_id]
+          |> reachable_chunks(links, MapSet.new())
+          |> Enum.sort()
+          |> Enum.map_join("\0", fn id -> stable[id] |> elem(0) end)
+
+        chunk_name = chunk_output_name(graph.chunks[chunk_id], name)
+        {chunk_id, Writer.hashed_name(chunk_name, hash_input, ".js", hash)}
+      end)
+
+    if url_map == stable_url_map, do: {url_map, stable}, else: {url_map, process.(url_map)}
   end
 
-  defp do_finalize_chunk_urls(
-         chunk_bundles,
-         graph,
-         js_map,
-         module_labels,
-         css_results,
-         ctx,
-         name,
-         hash,
-         dep_map,
-         url_map,
-         iteration
-       ) do
-    processed =
-      process_chunks(
-        chunk_bundles,
-        graph,
-        js_map,
-        module_labels,
-        css_results,
-        ctx,
-        url_map,
-        dep_map
-      )
+  defp reachable_chunks([], _links, visited), do: visited
 
-    next_url_map = chunk_url_map(processed, graph.chunks, name, hash)
-
-    if next_url_map == url_map or iteration >= 5 do
-      {next_url_map, processed}
+  defp reachable_chunks([chunk_id | rest], links, visited) do
+    if MapSet.member?(visited, chunk_id) or not is_map_key(links, chunk_id) do
+      reachable_chunks(rest, links, visited)
     else
-      do_finalize_chunk_urls(
-        chunk_bundles,
-        graph,
-        js_map,
-        module_labels,
-        css_results,
-        ctx,
-        name,
-        hash,
-        dep_map,
-        next_url_map,
-        iteration + 1
-      )
+      reachable_chunks(links[chunk_id] ++ rest, links, MapSet.put(visited, chunk_id))
     end
   end
 
   defp process_chunks(
          chunk_bundles,
          graph,
-         js_map,
          module_labels,
          css_results,
          ctx,
@@ -385,9 +361,7 @@ defmodule DuskmoonBundler.Builder.Output do
 
     Map.new(chunk_bundles, fn {chunk_id, {code, sourcemap}} ->
       chunk = graph.chunks[chunk_id]
-      chunk_js = select_chunk_files(chunk.modules, js_map, module_labels)
       chunk_import_map = chunk_import_map(chunk, graph, module_labels, dep_map)
-      code = Rewriter.inject_external_preamble(code, chunk_js, ctx)
       code = Rewriter.rewrite_chunk_imports(code, chunk_import_map, chunk_url_map)
       code = Rewriter.rewrite_dynamic_preloads(code, preload_map)
 
@@ -564,9 +538,13 @@ defmodule DuskmoonBundler.Builder.Output do
   end
 
   defp build_chunk_bundles(chunks, js_map, module_labels, bundle_opts, ctx, graph, dep_map) do
+    module_requirements =
+      Map.new(js_map, fn {label, code} -> {label, import_requirements(code)} end)
+
     requirements =
       Map.new(chunks, fn {chunk_id, _chunk} ->
-        {chunk_id, chunk_export_requirements(chunk_id, graph, js_map, module_labels, dep_map)}
+        {chunk_id,
+         chunk_export_requirements(chunk_id, graph, module_requirements, module_labels, dep_map)}
       end)
 
     export_aliases = chunk_export_aliases(chunks, requirements, js_map)
@@ -818,13 +796,13 @@ defmodule DuskmoonBundler.Builder.Output do
     end
   end
 
-  defp chunk_export_requirements(chunk_id, graph, js_map, module_labels, dep_map) do
+  defp chunk_export_requirements(chunk_id, graph, module_requirements, module_labels, dep_map) do
     Enum.reduce(dep_map, %{}, fn {importer, deps}, requirements ->
       importer_chunk = Map.get(graph.module_to_chunk, importer)
       importer_label = Map.get(module_labels, importer)
-      code = Map.get(js_map, importer_label)
+      imports = Map.get(module_requirements, importer_label)
 
-      if importer_chunk == chunk_id or not is_binary(importer_label) or not is_binary(code) do
+      if importer_chunk == chunk_id or not is_binary(importer_label) or is_nil(imports) do
         requirements
       else
         deps
@@ -837,7 +815,7 @@ defmodule DuskmoonBundler.Builder.Output do
 
             if is_binary(dependency_label) do
               specifier = "./" <> relative_label(importer_label, dependency_label)
-              names = import_requirements(code, specifier)
+              names = Map.get(imports, specifier, MapSet.new())
 
               if MapSet.size(names) == 0 do
                 acc
@@ -855,33 +833,32 @@ defmodule DuskmoonBundler.Builder.Output do
     end)
   end
 
-  defp import_requirements(code, specifier) do
+  defp import_requirements(code) do
     case OXC.parse(code, "chunk.js") do
       {:ok, ast} ->
-        Enum.reduce(ast.body, MapSet.new(), fn
-          %{type: :import_declaration, source: %{value: ^specifier}, specifiers: specifiers},
-          acc ->
-            Enum.reduce(specifiers, acc, &put_import_requirement/2)
+        Enum.reduce(ast.body, %{}, fn
+          %{type: :import_declaration, source: %{value: source}, specifiers: specifiers}, acc ->
+            names = Enum.reduce(specifiers, MapSet.new(), &put_import_requirement/2)
+            Map.update(acc, source, names, &MapSet.union(&1, names))
 
-          %{
-            type: :export_named_declaration,
-            source: %{value: ^specifier},
-            specifiers: specifiers
-          },
+          %{type: :export_named_declaration, source: %{value: source}, specifiers: specifiers},
           acc ->
-            Enum.reduce(specifiers, acc, fn specifier, names ->
-              MapSet.put(names, normalize_import_requirement(ast_name(specifier.local)))
-            end)
+            names =
+              MapSet.new(specifiers, fn specifier ->
+                normalize_import_requirement(ast_name(specifier.local))
+              end)
 
-          %{type: :export_all_declaration, source: %{value: ^specifier}}, acc ->
-            MapSet.put(acc, :namespace)
+            Map.update(acc, source, names, &MapSet.union(&1, names))
+
+          %{type: :export_all_declaration, source: %{value: source}}, acc ->
+            Map.update(acc, source, MapSet.new([:namespace]), &MapSet.put(&1, :namespace))
 
           _node, acc ->
             acc
         end)
 
       {:error, _errors} ->
-        MapSet.new()
+        %{}
     end
   end
 

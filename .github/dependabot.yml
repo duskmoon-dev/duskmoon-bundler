@@ -1,0 +1,23 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: mix
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: cargo
+    directories:
+      - /apps/duskmoon_oxc
+      - /apps/duskmoon_oxc/native/oxc_fmt_nif
+      - /apps/duskmoon_oxc/native/oxc_lint_nif
+      - /apps/duskmoon_oxide
+      - /apps/duskmoon_vize
+    schedule:
+      interval: weekly

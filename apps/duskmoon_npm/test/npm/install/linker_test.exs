@@ -216,6 +216,28 @@ defmodule NPM.Install.LinkerTest do
     refute File.exists?(Path.join([node_modules, descendant, "package.json"]))
   end
 
+  test "platform checks use persisted lock metadata without consulting the registry" do
+    other_os = if NPM.Platform.current_os() == "linux", do: "darwin", else: "linux"
+
+    lockfile = %{
+      "unsupported" => Map.merge(lock_entry("1.0.0"), %{optional: true, os: [other_os], cpu: []}),
+      "supported" => Map.merge(lock_entry("1.0.0"), %{optional: true, os: [], cpu: []})
+    }
+
+    # Neither package has cached metadata. Fetching either packument would hit
+    # the registry; call tracing makes the offline property observable.
+    Code.ensure_loaded!(NPM.Registry)
+    pattern = {NPM.Registry, :get_packument, 1}
+    :erlang.trace_pattern(pattern, true, [:local])
+    on_exit(fn -> :erlang.trace_pattern(pattern, false, [:local]) end)
+    task = Task.async(fn -> receive do: (:go -> Linker.skipped_packages(lockfile)) end)
+    :erlang.trace(task.pid, true, [:call])
+    send(task.pid, :go)
+
+    assert Task.await(task) == MapSet.new(["unsupported"])
+    refute_received {:trace, _, :call, {NPM.Registry, :get_packument, _}}
+  end
+
   test "rejects unsafe nested lockfile locations before filesystem access", %{
     tmp_dir: tmp_dir
   } do
@@ -236,6 +258,79 @@ defmodule NPM.Install.LinkerTest do
     end)
 
     refute File.exists?(Path.join(tmp_dir, "escaped"))
+  end
+
+  describe "symlink strategy" do
+    test "never writes nested packages into the global cache", %{tmp_dir: tmp_dir} do
+      node_modules = Path.join(tmp_dir, "node_modules")
+      parent_cache = write_cached_package!("parent-pkg", "1.0.0")
+      write_cached_package!("child-pkg", "2.0.0")
+      write_cached_package!("grandchild-pkg", "3.0.0")
+      leaf_cache = write_cached_package!("leaf-pkg", "1.0.0")
+
+      flat = %{
+        "parent-pkg" => lock_entry("parent-pkg", "1.0.0"),
+        "leaf-pkg" => lock_entry("leaf-pkg", "1.0.0")
+      }
+
+      nested = %{
+        "node_modules/parent-pkg/node_modules/child-pkg" => lock_entry("child-pkg", "2.0.0"),
+        "node_modules/parent-pkg/node_modules/child-pkg/node_modules/grandchild-pkg" =>
+          lock_entry("grandchild-pkg", "3.0.0")
+      }
+
+      assert :ok = Linker.link(flat, node_modules, :symlink, MapSet.new())
+      assert :ok = Linker.link_nested_lockfile(nested, node_modules, :symlink)
+
+      # The cache entries are untouched.
+      assert File.ls!(parent_cache) |> Enum.sort() == [".npm-ex-cache-complete", "package.json"]
+
+      assert File.ls!(NPM.Cache.package_dir("child-pkg", "2.0.0")) |> Enum.sort() ==
+               [".npm-ex-cache-complete", "package.json"]
+
+      # A package with nested children, and every nested package, is a real copy.
+      parent = Path.join(node_modules, "parent-pkg")
+      child = Path.join(parent, "node_modules/child-pkg")
+      grandchild = Path.join(child, "node_modules/grandchild-pkg")
+
+      for dir <- [parent, child, grandchild] do
+        assert {:ok, %File.Stat{type: :directory}} = File.lstat(dir)
+        assert File.exists?(Path.join(dir, "package.json"))
+      end
+
+      # Packages without nested children are still symlinked.
+      assert {:ok, target} = File.read_link(Path.join(node_modules, "leaf-pkg"))
+      assert target == leaf_cache
+    end
+
+    test "runs non-executable cached bins without changing the shared cache", %{tmp_dir: tmp_dir} do
+      node_modules = Path.join(tmp_dir, "node_modules")
+      cache_path = write_cached_package!("bin-pkg", "1.0.0")
+
+      File.write!(
+        Path.join(cache_path, "package.json"),
+        NPM.JSON.encode_pretty(%{"name" => "bin-pkg", "version" => "1.0.0", "bin" => "cli"})
+      )
+
+      cached_bin = Path.join(cache_path, "cli")
+      File.write!(cached_bin, "#!/usr/bin/env sh\nprintf 'bin executed\\n'\n")
+      File.chmod!(cached_bin, 0o644)
+
+      flat = %{"bin-pkg" => lock_entry("bin-pkg", "1.0.0")}
+
+      assert :ok = Linker.link(flat, node_modules, :symlink, MapSet.new())
+      command = Path.join(node_modules, ".bin/bin-pkg")
+      assert {:ok, _target} = File.read_link(command)
+      assert System.cmd(command, []) == {"bin executed\n", 0}
+      assert {:ok, %File.Stat{type: :directory}} = File.lstat(Path.join(node_modules, "bin-pkg"))
+      assert Bitwise.band(File.stat!(cached_bin).mode, 0o777) == 0o644
+
+      # Copies are still made executable, without touching the cache.
+      assert :ok = Linker.link(flat, node_modules, :copy, MapSet.new())
+      installed_bin = Path.join(node_modules, "bin-pkg/cli")
+      assert Bitwise.band(File.stat!(installed_bin).mode, 0o777) == 0o755
+      assert Bitwise.band(File.stat!(cached_bin).mode, 0o777) == 0o644
+    end
   end
 
   defp write_cached_package!(name, version) do

@@ -8,7 +8,7 @@ use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_transformer::{EnvOptions, JsxRuntime, TransformOptions, Transformer};
 use oxc_transformer_plugins::{ReplaceGlobalDefines, ReplaceGlobalDefinesConfig};
-use rustler::{Binary, Encoder, Env, Error, NifResult, OwnedBinary, SerdeTerm, Term};
+use rustler::{Binary, Encoder, Env, Error, NifMap, NifResult, OwnedBinary, SerdeTerm, Term};
 use serde::de::{self, Visitor};
 use serde::Serialize;
 use serde_json::value::RawValue;
@@ -268,7 +268,7 @@ pub fn binary_to_str<'a, 'b>(binary: &'b Binary<'a>) -> NifResult<&'b str> {
     std::str::from_utf8(binary).map_err(|_| Error::BadArg)
 }
 
-#[derive(Serialize)]
+#[derive(NifMap)]
 struct CodeWithSourcemap {
     code: String,
     sourcemap: String,
@@ -280,7 +280,7 @@ pub fn build_transform_options(
     jsx_fragment: &str,
     import_source: &str,
     target: &str,
-) -> TransformOptions {
+) -> Result<TransformOptions, String> {
     let mut options = TransformOptions::default();
     options.jsx.runtime = match jsx_runtime {
         "classic" => JsxRuntime::Classic,
@@ -296,11 +296,9 @@ pub fn build_transform_options(
         options.jsx.import_source = Some(import_source.to_string());
     }
     if !target.is_empty() {
-        if let Ok(env) = EnvOptions::from_target(target) {
-            options.env = env;
-        }
+        options.env = EnvOptions::from_target(target)?;
     }
-    options
+    Ok(options)
 }
 
 // -- Shared transform logic used by both `transform` and `transform_many` --
@@ -317,10 +315,10 @@ impl TransformOutput {
             TransformOutput::Code(code) => (atoms::ok(), code.as_str()).encode(env),
             TransformOutput::CodeWithMap { code, sourcemap } => (
                 atoms::ok(),
-                SerdeTerm(CodeWithSourcemap {
+                CodeWithSourcemap {
                     code: code.clone(),
                     sourcemap: sourcemap.clone(),
-                }),
+                },
             )
                 .encode(env),
             TransformOutput::Error(errors) => crate::error::error_to_term(env, errors)
@@ -365,13 +363,16 @@ pub fn transform_source(source: &str, filename: &str, opts: &TransformInput) -> 
             .scoping
     };
 
-    let options = build_transform_options(
+    let options = match build_transform_options(
         &opts.jsx_runtime,
         &opts.jsx_factory,
         &opts.jsx_fragment,
         &opts.import_source,
         &opts.target,
-    );
+    ) {
+        Ok(options) => options,
+        Err(error) => return TransformOutput::Error(vec![error]),
+    };
     let result =
         Transformer::new(&allocator, path, &options).build_with_scoping(scoping, &mut program);
 

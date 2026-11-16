@@ -1,5 +1,14 @@
 # Changelog
 
+## 10.1.10 - 2026-11-16
+
+- Respect package export mappings and blocked subpaths in production,
+  development stylesheet and Tailwind resolution (#26).
+- Keep package stylesheet imports out of JavaScript vendor prebundling and
+  serve them through the development CSS pipeline (#27).
+- Skip stylesheet entries during vendor discovery while retaining JavaScript
+  imports from the same package and production stylesheet emission.
+
 ## 10.0.8 - 2026-10-26
 
 - Apply environment defines, including `process.env.NODE_ENV`, to development
@@ -30,17 +39,62 @@
 
 ## Unreleased
 
+### Performance and reliability
+
+- Load, compile and transform each collected production module once, including
+  JSON and plugin modules. Reuse import metadata across chunk dependencies.
+- Cache parsed development configuration by exact config contents and environment;
+  same-size edits, added/removed dotenv files and profile changes invalidate it.
+- Detect self/dependency HMR acceptance inside Vue and Svelte script blocks.
+  Development watchers now restart under the application supervisor after crashes.
+- Resolve imported CSS image/font URLs relative to their source stylesheet and
+  rewrite asset URLs with a plain accumulator instead of a per-stylesheet Agent.
+
 ### Added
 - `duskmoon_bundler_runtime` now owns production-safe manifest reading, `DuskmoonBundler.static_path/2`, `DuskmoonBundler.static_url/2`, and `DuskmoonBundler.Preload.tags/2`.
 - `:hmr_timeout` option on `DuskmoonBundler.DevServer` (and the `:server` config profile) controls the HMR websocket idle timeout. Defaults to `60_000`ms.
+- `:allowed_origins` on the DevServer and `:server` config accepts additional
+  origins or hosts for HMR websocket and console requests, including development
+  reverse proxies that rewrite the request host.
 
 ### Changed
+- Production builds fail when an imported package cannot be resolved instead of
+  silently skipping it. OXC runtime helpers introduced by compilation remain
+  supplied by Rolldown; explicit source imports still require package resolution.
+- External imports read globals through `globalThis` and apply default-import
+  interop. Classic-script top-level `const` and `let` bindings are not properties
+  of `globalThis`; expose these globals explicitly or use `var`.
+- HMR websocket and console endpoints reject cross-site `Origin` hosts with HTTP
+  403 unless configured in `allowed_origins`. Requests without `Origin` and
+  requests from the same host remain accepted. Oversized console bodies return 413.
+- JavaScript compilation errors return a non-cacheable HTTP 200 overlay module
+  that throws after rendering. HTML pages also load an independent HMR client so
+  initial errors in named or default ESM imports can display an overlay.
+- Reject reserved manual chunk names `entry` and `common`, and warn about manual
+  chunk patterns that match no modules.
 - Production manifests now include `manifest_version: 1` and an `entries` object while the runtime reader remains compatible with legacy flat manifests.
 - Phoenix projects should depend on both `:duskmoon_bundler_runtime` and `:duskmoon_bundler`, with `:duskmoon_bundler` configured as `runtime: Mix.env() in [:dev, :test]`.
 - HMR websocket messages (`ping`, `pong`, `update`, `error`) now flow through `DuskmoonBundler.HMR.Message`, which uses `JSONCodec` for struct<->JSON (de)serialization with `Jason` performing the final binary encoding.
 - Added `json_codec` as a runtime dependency.
 
 ### Fixed
+- Derive stable chunk filenames for cyclic and deep dependency graphs, and keep
+  the entry module out of async chunks that import it to avoid duplicate execution.
+- Match scoped packages, package subpaths, and packages from `resolve_dirs` in
+  manual chunks. Disambiguate identical worker specifiers from different modules.
+- Rewrite external package subpaths, normalize inferred global names, and avoid
+  self-references when an imported binding has the same name as its global.
+- Invalidate compiled stylesheet variants when an imported CSS partial changes;
+  report CSS Modules and Tailwind minification errors instead of accepting them.
+- Preserve byte offsets in dynamic imports containing Unicode, avoid eager glob
+  identifier collisions, and exclude the importing file and directories from globs.
+- Serve vendor package names ending in `.js` and percent-encoded source filenames;
+  preserve value-less query variants and TypeScript HMR acceptance boundaries.
+- Pass framework compilation options to the development watcher, debounce CSS and
+  asset events, and handle temporarily missing Tailwind inputs without crashing.
+- Ignore remote HTML entry URLs, resolve root-relative entries from the HTML
+  directory, and return errors for missing HTML files or entries without local
+  scripts or styles. Warn when malformed `.env` files cannot be loaded.
 - Development vendor discovery follows configured application entries and reachable
   static imports instead of scanning unrelated tests and scripts. Preserve lazy
   dynamic imports and report prebundle dependency failures in development logs.

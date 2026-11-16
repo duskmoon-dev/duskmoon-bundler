@@ -1,5 +1,37 @@
 # Changelog
 
+## 10.1.10 - 2026-11-16
+
+- Resolve overlapping npm export patterns using Node's specificity rules,
+  preserving exact matches and explicit export exclusions across production,
+  development stylesheet and Tailwind resolution (#26).
+- Route development package stylesheet imports through the CSS pipeline and
+  exclude stylesheet entries from JavaScript vendor discovery (#27).
+- Verify cold startup, mixed JavaScript/CSS entries, isolated preview styles,
+  repeated browser navigation, and production CSS emission.
+
+## Unreleased
+
+- Resolve overlapping npm export patterns by Node's specificity rules, retaining
+  exact matches and explicit blocked exports (#26).
+- Rebase imported CSS asset URLs, detect HMR boundaries in Vue/Svelte scripts,
+  supervise development watchers, and compile each production module only once.
+- Cache resolved development configuration with content-based invalidation and
+  reuse import requirements across chunk edges.
+- Enforce npm integrity, registry/token isolation and extraction limits; expose
+  trusted project `.npmrc` expansion through an explicit opt-in.
+- Share npm pack/publish file selection, upload complete package documents and
+  tarballs, and report publication failures accurately. Package-age warnings use
+  complete publication timestamps; lockfiles retain offline platform metadata.
+- Fix chunk cycles, external interop, CSS cache invalidation and initial compile
+  error overlays; affected packages document the behavior changes in detail.
+- Pin Rust/cross, retain the eight-target/47-artifact release cohort in a matrix,
+  attest new release bytes and include cohort history in each staged package.
+- Use Vize's existing patched LightningCSS fork for CSS processing, removing
+  the obsolete rkyv 0.7 dependency affected by RUSTSEC-2026-0235.
+- Add workflow/native linting, a source compile version matrix and scheduled
+  quality audits; archive completed migration documents.
+
 ## 10.1.9 - 2026-11-12
 
 - Keep local development module imports and vendor responses on the entry

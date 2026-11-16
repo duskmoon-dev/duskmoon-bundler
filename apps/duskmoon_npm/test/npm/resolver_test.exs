@@ -74,9 +74,10 @@ defmodule NPM.ResolverTest do
   end
 
   test "resolution survives an earlier cache caller exiting during prefetch" do
+    # Packuments are cached per registry, so stub them after selecting it.
+    configure_registry()
     cache_packument(%{"1.0.0" => version_info()})
     cache_child_versions()
-    configure_registry()
     parent = self()
 
     {owner, ref} =
@@ -100,8 +101,8 @@ defmodule NPM.ResolverTest do
   end
 
   test "simultaneous resolutions keep overrides and cache state isolated" do
-    cache_child_versions()
     configure_registry()
+    cache_child_versions()
 
     first =
       Task.async(fn ->
@@ -141,8 +142,8 @@ defmodule NPM.ResolverTest do
   end
 
   test "failed and empty resolutions clear saved nested ranges and leave no ETS tables" do
-    cache_nested_conflict()
     configure_registry()
+    cache_nested_conflict()
     before = owned_tables()
     assert {:ok, _} = resolve_nested_conflict()
     assert {:error, _} = NPM.Resolver.resolve(%{"missing" => "1.0.0"})

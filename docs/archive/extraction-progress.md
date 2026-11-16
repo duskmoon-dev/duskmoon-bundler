@@ -4,8 +4,8 @@ Implementation complete locally on `codex/bundler-extraction`, 2026-10-13.
 Final code heads before documentation commits: UI
 `4df3ff78ff3c3c4b112ab6697df6c131f01de634`; destination
 `27cc3088ad427a751b84a52debc277c1162263d9`. Resume operational rollout from
-[verification-report.md](verification-report.md), [releasing.md](releasing.md)
-and [upgrade-ui.md](upgrade-ui.md). Remote publication and setup remain gated.
+[verification-report.md](verification-report.md), [releasing.md](../releasing.md)
+and [upgrade-ui.md](../upgrade-ui.md). Remote publication and setup remain gated.
 
 Source baseline bca8e460adabe0454dd41125ed71a02662807767; destination baseline 5251f8a29231d8cf3f8f9ff4507ad428d2b1cde6. Snapshot import c78c95b4150a7c4b4068d835554acf63837d2754 preceded source removal. All 11,371 tracked source paths are classified, including 1,344 initially imported paths. Mixed root files remain immutable provenance snapshots.
 

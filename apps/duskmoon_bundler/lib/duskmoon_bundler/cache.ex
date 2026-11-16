@@ -4,6 +4,10 @@ defmodule DuskmoonBundler.Cache do
 
   Caches compiled output so repeated requests for unchanged files
   skip the compilation step entirely.
+
+  Keys are strings of the form `file_path` or `file_path <> "?" <> variant`.
+  They are stored as `{file_path, variant}` so every variant of a file can be
+  matched without scanning the table.
   """
 
   @table :duskmoon_bundler_cache
@@ -22,8 +26,8 @@ defmodule DuskmoonBundler.Cache do
   @doc "Look up a cached entry compiled from `version`. Returns `nil` on miss."
   @spec get(String.t(), version()) :: entry() | nil
   def get(path, version) do
-    case :ets.lookup(@table, path) do
-      [{^path, %{version: ^version, entry: entry}}] -> entry
+    case :ets.lookup(@table, key(path)) do
+      [{_key, %{version: ^version, entry: entry}}] -> entry
       _ -> nil
     end
   end
@@ -31,33 +35,55 @@ defmodule DuskmoonBundler.Cache do
   @doc "Look up any cached entry for a file path regardless of version."
   @spec get_file(String.t()) :: entry() | nil
   def get_file(path) do
-    case :ets.lookup(@table, path) do
-      [{^path, %{entry: entry}}] -> entry
-      [] -> get_file_variant(path)
+    {file, _variant} = key = key(path)
+
+    case :ets.lookup(@table, key) do
+      [{_key, %{entry: entry}}] ->
+        entry
+
+      [] ->
+        case :ets.match_object(@table, {{file, :_}, :_}, 1) do
+          {[{_key, %{entry: entry}}], _continuation} -> entry
+          _ -> nil
+        end
     end
   end
 
   @doc "Store a compiled entry."
   @spec put(String.t(), version(), entry()) :: :ok
   def put(path, version, entry) do
-    :ets.insert(@table, {path, %{version: version, entry: entry}})
+    :ets.insert(@table, {key(path), %{version: version, entry: entry}})
     :ok
   end
 
   @doc "Evict the entry for a cache key."
   @spec evict(String.t()) :: :ok
   def evict(key) do
-    :ets.delete(@table, key)
+    :ets.delete(@table, key(key))
     :ok
   end
 
   @doc "Evict all cache entries derived from a file path, including variant keys like `path <> \"?import\"`."
   @spec evict_file(String.t()) :: :ok
   def evict_file(path) do
+    {file, _variant} = key(path)
+    :ets.match_delete(@table, {{file, :_}, :_})
+    :ok
+  end
+
+  @doc """
+  Evict all cache entries for files with the given extension (e.g. `".css"`).
+
+  Used when a change can affect files other than the edited one, such as a CSS
+  partial inlined into every stylesheet that `@import`s it.
+  """
+  @spec evict_extension(String.t()) :: :ok
+  def evict_extension(extension) do
     @table
-    |> :ets.tab2list()
-    |> Enum.each(fn {key, _entry} ->
-      if file_variant_key?(key, path), do: :ets.delete(@table, key)
+    |> :ets.select([{{{:"$1", :_}, :_}, [], [:"$1"]}])
+    |> Enum.uniq()
+    |> Enum.each(fn file ->
+      if Path.extname(file) == extension, do: :ets.match_delete(@table, {{file, :_}, :_})
     end)
 
     :ok
@@ -70,23 +96,10 @@ defmodule DuskmoonBundler.Cache do
     :ok
   end
 
-  defp get_file_variant(path) do
-    @table
-    |> :ets.tab2list()
-    |> Enum.find_value(fn
-      {key, %{entry: entry}} ->
-        if file_variant_key?(key, path), do: entry
-
-      _ ->
-        nil
-    end)
-  end
-
-  defp file_variant_key?(key, path) when is_binary(key) do
-    key == path or String.starts_with?(key, path <> "?")
-  end
-
-  defp file_variant_key?(_key, _path) do
-    false
+  defp key(path) do
+    case :binary.split(path, "?") do
+      [file, variant] -> {file, variant}
+      [file] -> {file, ""}
+    end
   end
 end

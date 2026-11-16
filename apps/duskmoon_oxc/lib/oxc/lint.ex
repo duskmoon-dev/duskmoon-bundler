@@ -29,7 +29,9 @@ defmodule OXC.Lint do
   Lint source code with oxlint's built-in rules and optional custom rules.
 
   Pass a list of files with `type_aware: true` to run TypeScript type-aware
-  rules through `tsgolint` headless mode:
+  rules through `tsgolint` headless mode. These runs return
+  `OXC.Lint.TypeAware.Diagnostic` structs, which also carry `:file`, `:fixes`,
+  and `:suggestions`:
 
       OXC.Lint.run(["lib/app.ts"],
         type_aware: true,
@@ -48,7 +50,9 @@ defmodule OXC.Lint do
       `:jest`, `:vitest`, `:jsx_a11y`, `:nextjs`, `:react_perf`, `:promise`,
       `:node`, `:vue`, `:oxc`
 
-    * `:fix` — compute fix suggestions. Default: `false`
+    * `:fix` — type-aware runs (`run/2`) only: ask `tsgolint` for fixes, which
+      are returned in each diagnostic's `:fixes`. Default: `false`.
+      `run/3` does not return fixes.
 
     * `:custom_rules` — list of `{module, severity}` tuples for Elixir rules.
       Each module must implement the `OXC.Lint.Rule` behaviour.
@@ -72,7 +76,8 @@ defmodule OXC.Lint do
         custom_rules: [{MyApp.NoConsoleLog, :warn}]
       )
   """
-  @spec run([String.t()], keyword()) :: {:ok, [diagnostic()]} | {:error, [String.t()]}
+  @spec run([String.t()], keyword()) ::
+          {:ok, [OXC.Lint.TypeAware.Diagnostic.t()]} | {:error, [String.t()]}
   @spec run(iodata(), String.t(), keyword()) :: {:ok, [diagnostic()]} | {:error, [String.t()]}
   def run(files, opts) when is_list(files) and is_list(opts) do
     if Keyword.get(opts, :type_aware, false) do

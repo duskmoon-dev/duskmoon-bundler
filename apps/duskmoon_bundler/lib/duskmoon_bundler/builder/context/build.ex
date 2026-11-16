@@ -9,5 +9,7 @@ defmodule DuskmoonBundler.Builder.BuildContext do
             asset_url_prefix: DuskmoonBundler.Paths.prefix(),
             code_splitting: true,
             sourcemap_hidden: false,
-            chunks: %{}
+            chunks: %{},
+            package_dirs: [],
+            graph: nil
 end

@@ -43,4 +43,79 @@ defmodule OxideTest do
     assert ["flex"] = Oxide.scan_files(scanner, [%{content: "flex", extension: "html"}])
     assert is_list(Oxide.files(scanner))
   end
+
+  describe "filesystem scanning" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: tmp_dir} do
+      File.mkdir_p!(Path.join(tmp_dir, "lib/skip"))
+      File.write!(Path.join(tmp_dir, "lib/page.html"), ~s(<div class="flex mt-4"></div>))
+      File.write!(Path.join(tmp_dir, "lib/skip/hidden.html"), ~s(<div class="grid px-2"></div>))
+      File.write!(Path.join(tmp_dir, "lib/notes.txt"), "underline")
+      :ok
+    end
+
+    test "scan/1 extracts sorted candidates from files matching the sources", %{tmp_dir: tmp_dir} do
+      scanner = Oxide.new(sources: [%{base: tmp_dir, pattern: "**/*.html"}])
+
+      candidates = Oxide.scan(scanner)
+
+      assert candidates == Enum.sort(candidates)
+      for candidate <- ["flex", "mt-4", "grid", "px-2"], do: assert(candidate in candidates)
+      refute "underline" in candidates
+    end
+
+    test "scan/1 honours negated sources", %{tmp_dir: tmp_dir} do
+      scanner =
+        Oxide.new(
+          sources: [
+            %Oxide.Source{base: tmp_dir, pattern: "**/*.html"},
+            %{base: tmp_dir, pattern: "lib/skip/**", negated: true}
+          ]
+        )
+
+      candidates = Oxide.scan(scanner)
+
+      assert "flex" in candidates
+      refute "grid" in candidates
+      refute "px-2" in candidates
+      assert Oxide.files(scanner) == [Path.join(tmp_dir, "lib/page.html")]
+    end
+
+    test "scan/1 returns every known candidate on each call, including new files", %{
+      tmp_dir: tmp_dir
+    } do
+      scanner = Oxide.new(sources: [%{base: tmp_dir, pattern: "**/*.html"}])
+
+      first = Oxide.scan(scanner)
+      assert Oxide.scan(scanner) == first
+
+      File.write!(Path.join(tmp_dir, "lib/added.html"), ~s(<p class="italic"></p>))
+
+      second = Oxide.scan(scanner)
+      assert "italic" in second
+      assert first -- second == []
+    end
+
+    test "files/1 lists the scanned files", %{tmp_dir: tmp_dir} do
+      scanner = Oxide.new(sources: [%{base: tmp_dir, pattern: "**/*.html"}])
+      assert Oxide.files(Oxide.new()) == []
+
+      Oxide.scan(scanner)
+
+      assert Enum.sort(Oxide.files(scanner)) == [
+               Path.join(tmp_dir, "lib/page.html"),
+               Path.join(tmp_dir, "lib/skip/hidden.html")
+             ]
+    end
+
+    test "globs/1 returns the watch patterns for the sources", %{tmp_dir: tmp_dir} do
+      scanner = Oxide.new(sources: [%{base: tmp_dir, pattern: "**/*.html"}])
+      assert Oxide.globs(Oxide.new()) == []
+
+      Oxide.scan(scanner)
+
+      assert [%Oxide.Glob{base: ^tmp_dir, pattern: "**/*.html"}] = Oxide.globs(scanner)
+    end
+  end
 end

@@ -37,6 +37,8 @@ defmodule NPM.Lockfile do
           optional(:peer_dependencies) => %{String.t() => String.t()},
           optional(:peer_dependencies_meta) => %{String.t() => map()},
           optional(:peer) => true,
+          optional(:os) => [String.t()],
+          optional(:cpu) => [String.t()],
           version: String.t(),
           integrity: String.t(),
           tarball: String.t(),
@@ -452,14 +454,19 @@ defmodule NPM.Lockfile do
   defp parse_legacy_packages(packages) do
     for {name, info} <- packages, into: %{} do
       {name,
-       validate_entry!(name, name, %{
-         version: Map.get(info, "version", ""),
-         integrity: Map.get(info, "integrity", ""),
-         tarball: Map.get(info, "tarball", ""),
-         dependencies: Map.get(info, "dependencies", %{}),
-         optional_dependencies: optional_dependencies(info),
-         has_install_script: has_install_script?(info)
-       })}
+       validate_entry!(
+         name,
+         name,
+         %{
+           version: Map.get(info, "version", ""),
+           integrity: Map.get(info, "integrity", ""),
+           tarball: Map.get(info, "tarball", ""),
+           dependencies: Map.get(info, "dependencies", %{}),
+           optional_dependencies: optional_dependencies(info),
+           has_install_script: has_install_script?(info)
+         }
+         |> maybe_put_platform_metadata(info)
+       )}
     end
   end
 
@@ -527,25 +534,19 @@ defmodule NPM.Lockfile do
 
   defp parse_nested_location(_segments, _parents), do: :error
 
-  defp take_package_name(["@" <> scope = scoped, package | rest]) do
-    name = "#{scoped}/#{package}"
-
-    if scope != "" and NPM.Scope.valid_name?(name) do
-      {:ok, name, rest}
-    else
-      :error
-    end
+  # Same rule as top-level entries: legacy names (`JSONStream`,
+  # `@0no-co/graphql.web`) are valid, path-unsafe segments are not.
+  defp take_package_name(["@" <> _ = scope, package | rest]) do
+    take_installable_name("#{scope}/#{package}", rest)
   end
 
-  defp take_package_name([package | rest]) do
-    if NPM.Scope.valid_name?(package) do
-      {:ok, package, rest}
-    else
-      :error
-    end
-  end
+  defp take_package_name([package | rest]), do: take_installable_name(package, rest)
 
   defp take_package_name(_segments), do: :error
+
+  defp take_installable_name(name, rest) do
+    if NPM.Scope.installable_name?(name), do: {:ok, name, rest}, else: :error
+  end
 
   defp package_lock_entry_from_info(info) do
     %{
@@ -558,6 +559,21 @@ defmodule NPM.Lockfile do
     }
     |> maybe_mark_optional(info)
     |> maybe_put_peer_metadata(info)
+    |> maybe_put_platform_metadata(info)
+  end
+
+  # Retain explicit empty constraints too: they distinguish unrestricted
+  # packages from legacy entries that still require registry metadata.
+  defp maybe_put_platform_metadata(entry, info) do
+    Enum.reduce([{:os, "os"}, {:cpu, "cpu"}], entry, fn {key, field}, acc ->
+      case Map.get(info, field) do
+        values when is_list(values) ->
+          if Enum.all?(values, &is_binary/1), do: Map.put(acc, key, values), else: acc
+
+        _missing ->
+          acc
+      end
+    end)
   end
 
   # npm 7+ locks record auto-installed peers; keep the edges so reachability
@@ -581,14 +597,19 @@ defmodule NPM.Lockfile do
   defp parse_legacy_dependencies(deps) do
     Map.new(deps, fn {name, info} ->
       {name,
-       validate_entry!(name, name, %{
-         version: Map.get(info, "version", ""),
-         integrity: Map.get(info, "integrity", ""),
-         tarball: Map.get(info, "resolved", ""),
-         dependencies: Map.get(info, "requires", %{}),
-         optional_dependencies: optional_dependencies(info),
-         has_install_script: has_install_script?(info)
-       })}
+       validate_entry!(
+         name,
+         name,
+         %{
+           version: Map.get(info, "version", ""),
+           integrity: Map.get(info, "integrity", ""),
+           tarball: Map.get(info, "resolved", ""),
+           dependencies: Map.get(info, "requires", %{}),
+           optional_dependencies: optional_dependencies(info),
+           has_install_script: has_install_script?(info)
+         }
+         |> maybe_put_platform_metadata(info)
+       )}
     end)
   end
 
@@ -681,7 +702,9 @@ defmodule NPM.Lockfile do
          "dependencies" => entry.dependencies,
          "optional_dependencies" => Map.get(entry, :optional_dependencies, %{}),
          "has_install_script" => Map.get(entry, :has_install_script, false)
-       }}
+       }
+       |> maybe_put("os", Map.get(entry, :os))
+       |> maybe_put("cpu", Map.get(entry, :cpu))}
     end
   end
 
@@ -753,6 +776,8 @@ defmodule NPM.Lockfile do
     |> maybe_put("peer", if(Map.get(entry, :peer, false), do: true))
     |> maybe_put("peerDependencies", Map.get(entry, :peer_dependencies))
     |> maybe_put("peerDependenciesMeta", Map.get(entry, :peer_dependencies_meta))
+    |> maybe_put("os", Map.get(entry, :os))
+    |> maybe_put("cpu", Map.get(entry, :cpu))
   end
 
   defp put_workspace_links(packages, manifests) do

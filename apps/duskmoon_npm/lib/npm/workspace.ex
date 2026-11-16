@@ -356,41 +356,52 @@ defmodule NPM.Workspace do
   end
 
   defp collect_local_links(manifests) do
-    workspace_links = workspace_package_links(manifests)
+    with {:ok, workspace_links} <- workspace_package_links(manifests) do
+      manifests
+      |> dependency_entries()
+      |> Enum.reduce_while({:ok, workspace_links}, fn {manifest, name, range}, {:ok, acc} ->
+        cond do
+          workspace_range?(range) ->
+            if Map.has_key?(acc, name) do
+              {:cont, {:ok, acc}}
+            else
+              {:halt, {:error, {:unknown_workspace_dependency, name, manifest.path}}}
+            end
 
-    manifests
-    |> dependency_entries()
-    |> Enum.reduce_while({:ok, workspace_links}, fn {manifest, name, range}, {:ok, acc} ->
-      cond do
-        workspace_range?(range) ->
-          if Map.has_key?(acc, name) do
+          file_range?(range) ->
+            with :ok <- validate_link_name(name, manifest.path),
+                 {:ok, {link_name, path}} <- file_link(name, range, manifest.dir) do
+              put_local_link(acc, link_name, path)
+            else
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
+
+          true ->
             {:cont, {:ok, acc}}
-          else
-            {:halt, {:error, {:unknown_workspace_dependency, name, manifest.path}}}
-          end
+        end
+      end)
+    end
+  end
 
-        file_range?(range) ->
-          case file_link(name, range, manifest.dir) do
-            {:ok, {link_name, path}} -> put_local_link(acc, link_name, path)
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
+  # Local link names become `node_modules/<name>` paths that are removed and
+  # re-created on install, so they must be plain installable package names.
+  defp workspace_package_links(manifests) do
+    manifests
+    |> Enum.reject(& &1.root?)
+    |> Enum.reduce_while({:ok, %{}}, fn manifest, {:ok, acc} ->
+      name = package_name(manifest)
 
-        true ->
-          {:cont, {:ok, acc}}
+      case validate_link_name(name, manifest.path) do
+        :ok -> {:cont, {:ok, Map.put(acc, name, manifest.dir)}}
+        {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
   end
 
-  defp workspace_package_links(manifests) do
-    manifests
-    |> Enum.reject(& &1.root?)
-    |> Enum.flat_map(fn manifest ->
-      case package_name(manifest) do
-        nil -> []
-        name -> [{name, manifest.dir}]
-      end
-    end)
-    |> Map.new()
+  defp validate_link_name(name, path) do
+    if NPM.Scope.installable_name?(name),
+      do: :ok,
+      else: {:error, {:invalid_package_name, name, path}}
   end
 
   defp package_name(%{data: data, dir: dir}) do

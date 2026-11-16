@@ -5,6 +5,7 @@ defmodule DuskmoonBundler.Builder.Rewriter do
 
   @dynamic_import_keyword "import"
   @dynamic_import_placeholder_prefix "__duskmoon_bundler_dynamic_import__"
+  @worker_specifier_prefix "__duskmoon_worker__/"
 
   def rewrite_external_imports(js_files, ctx) do
     if MapSet.size(ctx.external_set) == 0 do
@@ -35,21 +36,6 @@ defmodule DuskmoonBundler.Builder.Rewriter do
 
   def restore_dynamic_imports(code, placeholder) do
     String.replace(code, placeholder <> "(", @dynamic_import_keyword <> "(")
-  end
-
-  def inject_external_preamble(code, js_files, ctx) do
-    if MapSet.size(ctx.external_set) == 0 do
-      code
-    else
-      external_imports = Externals.collect_imports(js_files, ctx.external_set)
-
-      if map_size(external_imports) == 0 do
-        code
-      else
-        preamble = Externals.generate_preamble(external_imports, ctx.external_globals)
-        inject_into_iife(code, preamble)
-      end
-    end
   end
 
   def rewrite_chunk_imports(code, chunk_import_map, chunk_url_map) do
@@ -151,6 +137,51 @@ defmodule DuskmoonBundler.Builder.Rewriter do
 
   defp source_span(code, %{start: start, end: finish}),
     do: binary_part(code, start, finish - start)
+
+  @doc """
+  Give every worker reference a specifier unique to its resolved file.
+
+  Modules in different directories can share a relative worker specifier, which
+  would be indistinguishable once they are bundled into the same file.
+  """
+  def disambiguate_workers(js_files, workers, _path_labels) when workers == %{},
+    do: {js_files, workers}
+
+  def disambiguate_workers(js_files, workers, path_labels) do
+    workers =
+      Map.new(workers, fn {importer, specifiers} ->
+        {importer,
+         Map.new(specifiers, fn {specifier, resolved_path} ->
+           {specifier,
+            {@worker_specifier_prefix <> Map.fetch!(path_labels, resolved_path), resolved_path}}
+         end)}
+      end)
+
+    label_to_path = Map.new(path_labels, fn {path, label} -> {label, path} end)
+
+    js_files =
+      Enum.map(js_files, fn {label, code} ->
+        specifiers = Map.get(workers, label_to_path[label], %{})
+
+        rewritten =
+          DuskmoonBundler.JS.Transforms.Workers.rewrite(code, label, fn specifier ->
+            case Map.fetch(specifiers, specifier) do
+              {:ok, {unique_specifier, _resolved_path}} -> {:rewrite, unique_specifier}
+              :error -> :keep
+            end
+          end)
+
+        case rewritten do
+          {:ok, code} -> {label, code}
+          {:error, _} -> {label, code}
+        end
+      end)
+
+    {js_files,
+     Map.new(workers, fn {importer, specifiers} ->
+       {importer, specifiers |> Map.values() |> Map.new()}
+     end)}
+  end
 
   def worker_map_for_modules(module_paths, ctx) do
     module_paths
@@ -394,38 +425,6 @@ defmodule DuskmoonBundler.Builder.Rewriter do
       [DuskmoonBundler.JS.Patch.new(s, e, "'./#{url}'") | patches]
     else
       _ -> patches
-    end
-  end
-
-  defp inject_into_iife(code, preamble) do
-    case find_iife_body_start(code) do
-      {:ok, offset} ->
-        binary_part(code, 0, offset) <>
-          "\n" <> preamble <> binary_part(code, offset, byte_size(code) - offset)
-
-      :error ->
-        preamble <> code
-    end
-  end
-
-  defp find_iife_body_start(code) do
-    case OXC.parse(code, "iife.js") do
-      {:ok, ast} ->
-        {_ast, result} =
-          OXC.postwalk(ast, :error, fn
-            %{type: :arrow_function_expression, body: %{type: :function_body, start: start}} =
-                node,
-            :error ->
-              {node, {:ok, start + 1}}
-
-            node, acc ->
-              {node, acc}
-          end)
-
-        result
-
-      {:error, _} ->
-        :error
     end
   end
 end

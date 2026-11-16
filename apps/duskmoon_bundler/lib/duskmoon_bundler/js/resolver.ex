@@ -38,7 +38,7 @@ defmodule DuskmoonBundler.JS.Resolver do
         {:ok, Path.expand(target)}
 
       String.starts_with?(specifier, prefix_with_slash) ->
-        rest = String.trim_leading(specifier, prefix_with_slash)
+        rest = String.replace_prefix(specifier, prefix_with_slash, "")
         {:ok, Path.expand(Path.join(target, rest))}
 
       true ->

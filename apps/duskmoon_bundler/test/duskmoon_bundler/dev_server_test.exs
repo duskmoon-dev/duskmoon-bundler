@@ -985,7 +985,8 @@ defmodule DuskmoonBundler.DevServerTest do
       _ = :sys.get_state(watcher)
 
       conn = call_dev_server("/assets/app.ts")
-      assert conn.status == 500
+      assert conn.status == 200
+      assert conn.resp_body =~ "[DuskmoonBundler] Compilation error"
       refute conn.resp_body =~ "const x = 1"
     end
   end
@@ -1064,12 +1065,78 @@ defmodule DuskmoonBundler.DevServerTest do
     end
   end
 
+  describe "HTML client injection" do
+    test "loads the HMR client independently of the application module graph" do
+      conn =
+        call_dev_server("/")
+        |> put_resp_content_type("text/html")
+        |> put_resp_header("content-length", "42")
+        |> put_resp_header("etag", "old-html")
+        |> send_resp(200, ["<html><head></head>", "<body></body></html>"])
+
+      assert conn.resp_body =~
+               ~s(</html><script type="module" async src="/@duskmoon_bundler/client.js"></script>)
+
+      assert get_resp_header(conn, "content-length") == []
+      assert get_resp_header(conn, "etag") == []
+
+      # Calling the plug twice must still append just one client script.
+      config = DuskmoonBundler.DevServer.init(root: Path.join(@fixture_dir, "src"))
+
+      repeated =
+        call_dev_server("/")
+        |> DuskmoonBundler.DevServer.call(config)
+        |> put_resp_content_type("text/html")
+        |> send_resp(200, "<html><head></head><body></body></html>")
+
+      assert repeated.resp_body == conn.resp_body
+    end
+
+    test "leaves non-HTML, encoded, streamed, file and HEAD responses untouched" do
+      for {type, encoding, body} <- [
+            {"application/json", nil, ~s({"ok":true})},
+            {"text/html", "gzip", :zlib.gzip("<html></html>")}
+          ] do
+        conn = call_dev_server("/") |> put_resp_content_type(type)
+        conn = if encoding, do: put_resp_header(conn, "content-encoding", encoding), else: conn
+        assert send_resp(conn, 200, body).resp_body == body
+      end
+
+      config = DuskmoonBundler.DevServer.init(root: Path.join(@fixture_dir, "src"))
+
+      head =
+        conn(:head, "/")
+        |> DuskmoonBundler.DevServer.call(config)
+        |> put_resp_content_type("text/html")
+        |> put_resp_header("etag", "original-html")
+        |> send_resp(200, "<html></html>")
+
+      assert head.resp_body == ""
+      assert get_resp_header(head, "etag") == ["original-html"]
+
+      streamed = call_dev_server("/") |> put_resp_content_type("text/html") |> send_chunked(200)
+      assert {:ok, _} = chunk(streamed, "<html></html>")
+
+      path = Path.join(@fixture_dir, "index.html")
+      File.write!(path, "<html></html>")
+      file = call_dev_server("/") |> put_resp_content_type("text/html") |> send_file(200, path)
+      assert file.resp_body == "<html></html>"
+    end
+  end
+
   describe "error handling" do
-    test "returns 500 with error overlay for invalid source" do
+    # Browsers never execute a module script served with a non-2xx status, so
+    # the overlay module must be a successful response that throws afterwards.
+    test "returns an executable error overlay module for invalid source" do
       File.write!(Path.join(@fixture_dir, "src/bad.ts"), "const = ;")
       conn = call_dev_server("/assets/bad.ts")
-      assert conn.status == 500
+      assert conn.status == 200
+      assert get_resp_header(conn, "content-type") |> hd() =~ "javascript"
+      assert get_resp_header(conn, "cache-control") |> hd() =~ "no-store"
       assert conn.resp_body =~ "[DuskmoonBundler] Compilation error"
+      assert conn.resp_body =~ "renderErrorOverlay("
+      assert conn.resp_body =~ ~r/renderErrorOverlay\(.*\n\s*throw new Error\(/s
+      assert {:ok, _ast} = OXC.parse(conn.resp_body, "overlay.js")
     end
   end
 
@@ -1221,6 +1288,198 @@ defmodule DuskmoonBundler.DevServerTest do
       conn = call_dev_server("/assets/same_second.ts")
       assert conn.resp_body =~ "bbb"
       refute conn.resp_body =~ "aaa"
+    end
+  end
+
+  describe "vendor specifiers ending in .js" do
+    test "serves packages whose name ends in .js" do
+      package = Path.join(@fixture_dir, "node_modules/highlight.js")
+      File.mkdir_p!(package)
+
+      File.write!(
+        Path.join(package, "package.json"),
+        Jason.encode!(%{"name" => "highlight.js", "main" => "index.js"})
+      )
+
+      File.write!(Path.join(package, "index.js"), "export const value = 'highlighted'")
+
+      conn = call_dev_server("/@vendor/highlight.js.js")
+
+      assert conn.status == 200
+      assert conn.resp_body =~ "highlighted"
+    end
+  end
+
+  describe "CSS @import partials" do
+    test "an edited partial is reflected after watcher invalidation" do
+      source_dir = Path.join(@fixture_dir, "src")
+      entry = Path.join(source_dir, "entry.css")
+      partial = Path.join(source_dir, "buttons.css")
+
+      File.write!(entry, ~s|@import "./buttons.css";\n.entry { color: blue }|)
+      File.write!(partial, ".btn { color: red }")
+
+      conn = call_dev_server("/assets/entry.css")
+      assert conn.status == 200
+      # The CSS compile path inlines @import-ed partials.
+      assert conn.resp_body =~ "red"
+      refute conn.resp_body =~ "@import"
+      assert call_dev_server("/assets/entry.css?import").resp_body =~ "red"
+
+      File.write!(partial, ".btn { color: green }")
+
+      watcher =
+        start_supervised!(
+          {DuskmoonBundler.Watcher, root: source_dir, name: :test_css_partial_cache}
+        )
+
+      send(watcher, {:rebuild, partial})
+      _ = :sys.get_state(watcher)
+
+      for path <- ["/assets/entry.css", "/assets/entry.css?import"] do
+        conn = call_dev_server(path)
+        assert conn.status == 200
+        assert conn.resp_body =~ "green"
+        refute conn.resp_body =~ "red"
+      end
+    end
+  end
+
+  describe "request origin checks" do
+    defp post_console(headers, opts \\ [], body \\ nil) do
+      init_opts =
+        Keyword.merge([root: Path.join(@fixture_dir, "src"), prefix: "/assets"], opts)
+
+      body =
+        body || Jason.encode!(%{"level" => "error", "source" => "", "args" => ["origin-probe"]})
+
+      headers
+      |> Enum.reduce(conn(:post, "/@duskmoon_bundler/console", body), fn {key, value}, conn ->
+        put_req_header(conn, key, value)
+      end)
+      |> DuskmoonBundler.DevServer.call(DuskmoonBundler.DevServer.init(init_opts))
+    end
+
+    test "console endpoint accepts requests without an Origin header" do
+      log = capture_log(fn -> assert post_console([]).status == 204 end)
+      assert log =~ "origin-probe"
+    end
+
+    test "console endpoint accepts a same-host Origin" do
+      log =
+        capture_log(fn ->
+          assert post_console([{"origin", "http://www.example.com:4000"}]).status == 204
+        end)
+
+      assert log =~ "origin-probe"
+    end
+
+    test "console endpoint rejects a cross-site Origin" do
+      log =
+        capture_log(fn ->
+          conn = post_console([{"origin", "http://evil.example"}])
+          assert conn.status == 403
+          assert conn.halted
+        end)
+
+      refute log =~ "origin-probe"
+    end
+
+    test "console endpoint accepts configured allowed origins" do
+      for allowed <- ["http://app.test:4001", "app.test"] do
+        log =
+          capture_log(fn ->
+            conn = post_console([{"origin", "http://app.test:4001"}], allowed_origins: [allowed])
+            assert conn.status == 204
+          end)
+
+        assert log =~ "origin-probe"
+      end
+
+      capture_log(fn ->
+        conn =
+          post_console([{"origin", "http://other.test"}], allowed_origins: ["http://app.test"])
+
+        assert conn.status == 403
+      end)
+    end
+
+    test "console endpoint rejects oversized bodies" do
+      body = String.duplicate("x", 1_100_000)
+      conn = post_console([], [], body)
+      assert conn.status == 413
+      assert conn.halted
+    end
+
+    test "websocket upgrade rejects a cross-site Origin" do
+      config =
+        DuskmoonBundler.DevServer.init(root: Path.join(@fixture_dir, "src"), prefix: "/assets")
+
+      conn =
+        conn(:get, "/@duskmoon_bundler/ws")
+        |> put_req_header("origin", "http://evil.example")
+        |> DuskmoonBundler.DevServer.call(config)
+
+      assert conn.status == 403
+      assert conn.halted
+    end
+  end
+
+  describe "percent-encoded request paths" do
+    test "serves source files whose names need percent-encoding" do
+      File.write!(Path.join(@fixture_dir, "src/my file.ts"), "export const spaced = 1")
+      File.write!(Path.join(@fixture_dir, "src/中文.ts"), "export const cjk = 1")
+
+      conn = call_dev_server("/assets/my%20file.ts")
+      assert conn.status == 200
+      assert conn.resp_body =~ "spaced"
+
+      conn = call_dev_server("/assets/" <> URI.encode("中文.ts"))
+      assert conn.status == 200
+      assert conn.resp_body =~ "cjk"
+    end
+
+    test "does not allow percent-encoded path traversal" do
+      File.write!(Path.join(@fixture_dir, "secret.ts"), "export const secret = 'TOPSECRET'")
+
+      for path <- ["/assets/%2e%2e/secret.ts", "/assets/..%2fsecret.ts"] do
+        conn = call_dev_server(path)
+        assert conn.status == nil
+        refute conn.halted
+      end
+    end
+
+    test "passes through malformed escapes" do
+      for path <- ["/assets/%zz.ts", "/assets/app%00.ts", "/assets/%E4%B8.ts", "/assets/%"] do
+        conn = call_dev_server(path)
+        refute conn.halted
+      end
+    end
+  end
+
+  describe "module graph import normalisation" do
+    test "links value-less query variants to their served module" do
+      File.write!(Path.join(@fixture_dir, "src/entry.ts"), "import './style.css'")
+
+      call_dev_server("/assets/entry.ts")
+      call_dev_server("/assets/style.css?import")
+
+      entry = DuskmoonBundler.HMR.ModuleGraph.get_by_url("/assets/entry.ts")
+      style = DuskmoonBundler.HMR.ModuleGraph.get_by_url("/assets/style.css?import")
+
+      assert MapSet.member?(entry.imports, "/assets/style.css?import")
+      assert MapSet.member?(style.importers, "/assets/entry.ts")
+    end
+
+    test "records self-accepting TypeScript modules with type annotations" do
+      File.write!(Path.join(@fixture_dir, "src/typed.ts"), """
+      export const count: number = 1
+      export function double(value: number): number { return value * 2 }
+      if (import.meta.hot) import.meta.hot.accept()
+      """)
+
+      assert call_dev_server("/assets/typed.ts").status == 200
+      assert DuskmoonBundler.HMR.ModuleGraph.get_by_url("/assets/typed.ts").self_accepting
     end
   end
 end

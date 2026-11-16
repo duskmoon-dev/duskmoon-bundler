@@ -9,6 +9,8 @@ defmodule DuskmoonBundler.Application do
     DuskmoonBundler.HMR.ImportGraph.create_table()
     DuskmoonBundler.HMR.GlobGraph.create_table()
     DuskmoonBundler.HMR.ModuleGraph.create_table()
+    DuskmoonBundler.HMR.CompileErrors.create_table()
+    DuskmoonBundler.DevServer.ConfigCache.create_table()
 
     children = [
       {Registry, keys: :duplicate, name: DuskmoonBundler.HMR.Registry},

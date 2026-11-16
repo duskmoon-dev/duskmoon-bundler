@@ -1,6 +1,10 @@
 defmodule NPM.InstallTest do
   use ExUnit.Case, async: false
 
+  # Frozen installs require every lock entry to record an integrity, so the
+  # fixtures carry one and the cache marker records the same value.
+  @fixture_integrity "sha512-Zml4dHVyZQ=="
+
   import ExUnit.CaptureIO
 
   setup do
@@ -170,9 +174,18 @@ defmodule NPM.InstallTest do
       assert installed_version!(installed_path) == version
       assert File.read!("package-lock.json") == original_lock
 
-      case strategy do
-        :copy -> assert_copied_package(cache_path, installed_path)
-        :symlink -> assert_symlink_target!(installed_path, cache_path)
+      case {strategy, install_location} do
+        {:symlink, :root} ->
+          assert_symlink_target!(installed_path, cache_path)
+
+        # Nested packages are copied even with the symlink strategy: a symlinked
+        # parent would place them inside the shared global cache entry.
+        _ ->
+          assert_copied_package(cache_path, installed_path)
+
+          refute File.exists?(
+                   Path.join(NPM.Cache.package_dir("fixture-parent", "1.0.0"), "node_modules")
+                 )
       end
 
       output = capture_io(fn -> assert :ok = NPM.install() end)
@@ -248,6 +261,67 @@ defmodule NPM.InstallTest do
 
     assert {:ok, lockfile} = NPM.Lockfile.read()
     assert Map.has_key?(lockfile, dependency)
+  end
+
+  test "computes platform-skipped packages once per install", %{project_dir: project_dir} do
+    package = "root-package"
+    optional_package = "other-platform-package"
+    version = "1.0.0"
+    write_cached_package!(package, version)
+    put_incompatible_packument!(optional_package, version)
+
+    write_package!(project_dir, %{
+      "name" => "platform_optional_project",
+      "dependencies" => %{package => version}
+    })
+
+    assert :ok =
+             NPM.Lockfile.write(%{
+               package =>
+                 lock_entry(package, version,
+                   optional_dependencies: %{optional_package => version}
+                 ),
+               optional_package => lock_entry(optional_package, version)
+             })
+
+    Code.ensure_loaded!(NPM.Install.Linker)
+    pattern = {NPM.Install.Linker, :skipped_packages, 1}
+    assert 1 = :erlang.trace_pattern(pattern, true, [:local])
+    on_exit(fn -> :erlang.trace_pattern(pattern, false, [:local]) end)
+
+    count_calls = fn ->
+      # A process cannot receive its own call traces, so trace a worker.
+      task =
+        Task.async(fn ->
+          receive do
+            :go -> capture_io(fn -> assert :ok = NPM.install() end)
+          end
+        end)
+
+      :erlang.trace(task.pid, true, [:call])
+      send(task.pid, :go)
+      output = Task.await(task)
+
+      calls =
+        Stream.repeatedly(fn ->
+          receive do
+            {:trace, _pid, :call, {NPM.Install.Linker, :skipped_packages, _args}} -> :call
+          after
+            0 -> :done
+          end
+        end)
+        |> Enum.take_while(&(&1 == :call))
+        |> length()
+
+      {output, calls}
+    end
+
+    assert {output, 1} = count_calls.()
+    assert output =~ "Installing from current package-lock.json."
+    refute File.exists?(Path.join([project_dir, "node_modules", optional_package]))
+
+    assert {output, 1} = count_calls.()
+    assert output =~ "Already up to date."
   end
 
   test "current lockfile stays up to date with skipped platform optional packages", %{
@@ -1319,7 +1393,7 @@ defmodule NPM.InstallTest do
       NPM.JSON.encode_pretty(%{"name" => name, "version" => version})
     )
 
-    File.write!(Path.join(cache_path, ".npm-ex-cache-complete"), "1\n")
+    File.write!(Path.join(cache_path, ".npm-ex-cache-complete"), "1\n#{@fixture_integrity}\n")
 
     cache_path
   end
@@ -1327,7 +1401,7 @@ defmodule NPM.InstallTest do
   defp lock_entry(package, version, opts \\ []) do
     %{
       version: version,
-      integrity: "",
+      integrity: @fixture_integrity,
       tarball: "https://registry.npmjs.org/#{package}/-/#{package}-#{version}.tgz",
       dependencies: Keyword.get(opts, :dependencies, %{}),
       optional_dependencies: Keyword.get(opts, :optional_dependencies, %{}),
@@ -1354,7 +1428,7 @@ defmodule NPM.InstallTest do
              peer_dependencies_meta: %{},
              dist: %{
                tarball: "https://registry.npmjs.org/#{package}/-/#{package}-#{version}.tgz",
-               integrity: ""
+               integrity: @fixture_integrity
              },
              has_install_script: false,
              deprecated: nil,

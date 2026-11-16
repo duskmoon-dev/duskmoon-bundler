@@ -48,7 +48,8 @@ defmodule DuskmoonBundler.Builder.Output.CSSTest do
           entry: Path.join(@fixture_dir, "src/main.ts"),
           outdir: @outdir,
           minify: false,
-          sourcemap: false
+          sourcemap: false,
+          external: ["vue"]
         )
 
       assert result.css != nil
@@ -187,7 +188,8 @@ defmodule DuskmoonBundler.Builder.Output.CSSTest do
           entry: Path.join(@fixture_dir, "src/vue_css_asset.ts"),
           outdir: @outdir,
           minify: false,
-          sourcemap: false
+          sourcemap: false,
+          external: ["vue"]
         )
 
       css = File.read!(result.css.path)

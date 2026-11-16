@@ -17,9 +17,6 @@ npm package management through `duskmoon_npm`. Keep setup small and prefer the
 installer unless the user is in an umbrella, custom endpoint, or migration path
 that needs manual edits.
 
-Current repository package version: `10.0.0` for `duskmoon_bundler`,
-`duskmoon_bundler_runtime`, and `duskmoon_npm`.
-
 ## Setup Path
 
 Prefer the Igniter installer for normal Phoenix apps:

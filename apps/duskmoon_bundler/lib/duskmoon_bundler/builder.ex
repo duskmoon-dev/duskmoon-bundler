@@ -53,8 +53,9 @@ defmodule DuskmoonBundler.Builder do
     * `:chunks` — manual chunk definitions, map of chunk name to list of patterns:
 
           chunks: %{"vendor" => ["vue", "vue-router"], "ui" => ["assets/src/components"]}
-    * `:external` — specifiers to exclude from the bundle and access as globals.
-      Accepts a list (global name auto-derived) or a map of `specifier => global_name`:
+    * `:external` — specifiers to exclude from the bundle and read from `globalThis`.
+      Accepts a list (global name auto-derived) or a map of `specifier => global_name`.
+      Subpaths of an external package (`react-dom/client`) are external too:
 
           external: ["vue", "phoenix"]
           external: %{"vue" => "Vue", "phoenix" => "Phoenix"}
@@ -139,39 +140,60 @@ defmodule DuskmoonBundler.Builder do
       asset_url_prefix: asset_url_prefix,
       code_splitting: code_splitting,
       sourcemap_hidden: sourcemap_opt == :hidden,
-      chunks: chunks
+      chunks: chunks,
+      package_dirs: Enum.reject([node_modules | resolve_dirs], &is_nil/1)
     }
 
-    DuskmoonBundler.PublicDir.copy(public_dir, Path.dirname(outdir))
+    with :ok <- validate_chunk_names(chunks) do
+      DuskmoonBundler.PublicDir.copy(public_dir, Path.dirname(outdir))
 
-    results =
-      Enum.flat_map(entries, fn entry ->
-        expand_entry(entry, name)
-        |> Enum.map(fn {entry_path, entry_type, entry_name} ->
-          build_entry(entry_path, entry_type, entry_name, ctx, build_ctx)
+      results =
+        Enum.flat_map(entries, fn entry ->
+          case expand_entry(entry, name) do
+            {:ok, expanded} ->
+              Enum.map(expanded, fn {entry_path, entry_type, entry_name} ->
+                build_entry(entry_path, entry_type, entry_name, ctx, build_ctx)
+              end)
+
+            {:error, _} = error ->
+              [error]
+          end
         end)
-      end)
 
-    with {:ok, result} <- finalize_build_results(results) do
-      DuskmoonBundler.Builder.Writer.write_manifest(outdir, result.manifest)
-      {:ok, result}
+      with {:ok, result} <- finalize_build_results(results) do
+        DuskmoonBundler.Builder.Writer.write_manifest(outdir, result.manifest)
+        {:ok, result}
+      end
+    end
+  end
+
+  # The chunk graph names its automatic chunks "entry" and "common".
+  defp validate_chunk_names(chunks) do
+    case Enum.find(["common", "entry"], &Map.has_key?(chunks, &1)) do
+      nil -> :ok
+      name -> {:error, {:reserved_chunk_name, name}}
     end
   end
 
   defp build_entry(entry, :script, name, ctx, build_ctx) do
     %{
       outdir: outdir,
-      target: target,
       hash: hash,
       bundle_opts: bundle_opts,
       code_splitting: code_splitting
     } = build_ctx
 
-    with {:ok, modules, dep_map, workers, specifier_labels, path_labels} <-
-           Collector.collect(entry, ctx),
-         {:ok, compiled} <- compile_all(modules, target, ctx),
+    with {:ok, modules, dep_map, workers, specifier_labels, path_labels, pipeline_results} <-
+           Collector.collect_compiled(entry, ctx),
+         {:ok, compiled} <- compile_all(modules, ctx, pipeline_results),
          {:ok, worker_results} <- build_worker_results(workers, ctx, build_ctx) do
-      compiled = rewrite_nonlocal_labels(compiled, specifier_labels, path_labels)
+      {js_files, css_parts, assets} =
+        rewrite_nonlocal_labels(compiled, specifier_labels, path_labels)
+
+      {js_files, workers} =
+        DuskmoonBundler.Builder.Rewriter.disambiguate_workers(js_files, workers, path_labels)
+
+      compiled = {js_files, css_parts, assets}
 
       output_ctx = %DuskmoonBundler.Builder.OutputContext{
         plugins: ctx.plugins,
@@ -187,16 +209,24 @@ defmodule DuskmoonBundler.Builder do
         bundle_opts: bundle_opts,
         sourcemap_hidden: build_ctx.sourcemap_hidden,
         chunks: build_ctx.chunks,
+        package_dirs: build_ctx.package_dirs,
         ctx: output_ctx,
         asset_url_prefix: build_ctx.asset_url_prefix
       }
 
-      use_chunks =
-        code_splitting and
-          (has_dynamic_imports?(dep_map) or build_ctx.chunks != %{}) and
-          not has_cross_chunk_require?(entry, modules, dep_map, build_ctx.chunks)
+      graph =
+        if code_splitting and (has_dynamic_imports?(dep_map) or build_ctx.chunks != %{}) do
+          entry
+          |> DuskmoonBundler.ChunkGraph.build(modules, dep_map,
+            manual_chunks: build_ctx.chunks,
+            package_dirs: build_ctx.package_dirs
+          )
+          |> warn_unmatched_chunk_patterns(entry)
+        end
 
-      if use_chunks do
+      if graph && not has_cross_chunk_require?(graph, dep_map) do
+        out = %{out | graph: graph}
+
         case Output.build_chunks(entry, name, compiled, {modules, dep_map}, out) do
           {:error, {:invalid_chunk_links, missing_exports}} ->
             Logger.warning(
@@ -236,10 +266,18 @@ defmodule DuskmoonBundler.Builder do
     Enum.any?(dep_map, fn {_, %{dynamic: dyn}} -> dyn != [] end)
   end
 
-  defp has_cross_chunk_require?(entry, modules, dep_map, manual_chunks) do
-    graph =
-      DuskmoonBundler.ChunkGraph.build(entry, modules, dep_map, manual_chunks: manual_chunks)
+  defp warn_unmatched_chunk_patterns(graph, entry) do
+    for {chunk_name, pattern} <- graph.unmatched_patterns do
+      Logger.warning(
+        "[DuskmoonBundler] manual chunk #{inspect(chunk_name)} pattern #{inspect(pattern)} " <>
+          "matched no modules of #{Path.basename(entry)}"
+      )
+    end
 
+    graph
+  end
+
+  defp has_cross_chunk_require?(graph, dep_map) do
     Enum.any?(dep_map, fn {importer, deps} ->
       importer_chunk = graph.module_to_chunk[importer]
 
@@ -305,15 +343,15 @@ defmodule DuskmoonBundler.Builder do
 
   # ── Module compilation ──────────────────────────────────────────────
 
-  defp compile_all(modules, _target, ctx) do
-    with {:ok, compiled} <- compile_modules(modules, ctx) do
+  defp compile_all(modules, ctx, pipeline_results) do
+    with {:ok, compiled} <- compile_modules(modules, ctx, pipeline_results) do
       merge_compiled(compiled)
     end
   end
 
-  defp compile_modules(modules, ctx) do
+  defp compile_modules(modules, ctx, pipeline_results) do
     Enum.reduce_while(modules, {:ok, []}, fn {path, label, source}, {:ok, acc} ->
-      case compile_module(path, label, source, ctx) do
+      case compile_module(path, source, ctx, Map.get(pipeline_results, path)) do
         {:ok, js, css, assets} -> {:cont, {:ok, [{label, js, css_part(path, css), assets} | acc]}}
         {:error, _} = error -> {:halt, error}
       end
@@ -336,12 +374,12 @@ defmodule DuskmoonBundler.Builder do
      {Enum.reverse(js_files), Enum.reverse(css_parts), assets |> List.flatten() |> Enum.uniq()}}
   end
 
-  defp compile_module(module_id, label, source, ctx) do
+  defp compile_module(module_id, _source, ctx, compiled) do
     {path, query} = DuskmoonBundler.URL.split_query(module_id)
 
     cond do
       Path.extname(path) in @css_exts and not DuskmoonBundler.CSS.Modules.css_module?(path) ->
-        compile_css_import(path, source, ctx)
+        {:ok, "export default undefined;", compiled.code, []}
 
       DuskmoonBundler.Assets.asset?(path) ->
         query_params = DuskmoonBundler.URL.decode_query(query)
@@ -362,30 +400,7 @@ defmodule DuskmoonBundler.Builder do
         end
 
       true ->
-        case DuskmoonBundler.Pipeline.compile(path, source,
-               target: ctx.target,
-               import_source: ctx.import_source,
-               define: ctx.define,
-               plugins: ctx.plugins,
-               loaders: ctx.loaders,
-               preserve_json: Path.extname(label) == ".json"
-             ) do
-          {:ok, %{code: code, css: css}} -> {:ok, code, css, []}
-          {:error, _} = error -> error
-        end
-    end
-  end
-
-  defp compile_css_import(path, source, ctx) do
-    case DuskmoonBundler.Pipeline.compile(path, source,
-           target: ctx.target,
-           import_source: ctx.import_source,
-           define: ctx.define,
-           plugins: ctx.plugins,
-           loaders: ctx.loaders
-         ) do
-      {:ok, %{code: css}} -> {:ok, "export default undefined;", css, []}
-      {:error, _} = error -> error
+        {:ok, compiled.code, compiled.css, []}
     end
   end
 
@@ -550,14 +565,22 @@ defmodule DuskmoonBundler.Builder do
 
   defp expand_entry(entry, override_name) do
     if DuskmoonBundler.HTMLEntry.html?(entry) do
-      {:ok, %{scripts: scripts, styles: styles}} = DuskmoonBundler.HTMLEntry.extract(entry)
+      case DuskmoonBundler.HTMLEntry.extract(entry) do
+        {:ok, %{scripts: [], styles: []}} ->
+          {:error, {:no_entries, entry}}
 
-      Enum.map(scripts, &{&1, :script, Path.basename(&1) |> Path.rootname()}) ++
-        Enum.map(styles, &{&1, :style, Path.basename(&1) |> Path.rootname()})
+        {:ok, %{scripts: scripts, styles: styles}} ->
+          {:ok,
+           Enum.map(scripts, &{&1, :script, Path.basename(&1) |> Path.rootname()}) ++
+             Enum.map(styles, &{&1, :style, Path.basename(&1) |> Path.rootname()})}
+
+        {:error, _} = error ->
+          error
+      end
     else
       type = if Path.extname(entry) == ".css", do: :style, else: :script
       entry_name = override_name || entry |> Path.basename() |> Path.rootname()
-      [{entry, type, entry_name}]
+      {:ok, [{entry, type, entry_name}]}
     end
   end
 
@@ -574,10 +597,13 @@ defmodule DuskmoonBundler.Builder do
 
   @doc false
   def derive_global_name(specifier) do
-    specifier
-    |> String.replace(~r"^@\w+/", "")
-    |> String.split(~r"[-_/]")
-    |> Enum.map_join(&String.capitalize/1)
+    name =
+      specifier
+      |> String.replace(~r"^@[^/]+/", "")
+      |> String.split(~r"[^A-Za-z0-9$]+", trim: true)
+      |> Enum.map_join(&String.capitalize/1)
+
+    if name =~ ~r/^[A-Za-z$]/, do: name, else: "_" <> name
   end
 
   defp to_string_or_nil(nil), do: nil

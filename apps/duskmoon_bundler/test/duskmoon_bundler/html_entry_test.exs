@@ -58,6 +58,41 @@ defmodule DuskmoonBundler.HTMLEntryTest do
     end
   end
 
+  describe "extract/1 path handling" do
+    test "resolves root-absolute paths against the HTML directory" do
+      File.write!(Path.join(@fixture_dir, "index.html"), """
+      <link rel="stylesheet" href="/src/app.css">
+      <script type="module" src="/src/main.ts"></script>
+      """)
+
+      {:ok, entries} = DuskmoonBundler.HTMLEntry.extract(Path.join(@fixture_dir, "index.html"))
+      assert entries.scripts == [Path.join(@fixture_dir, "src/main.ts")]
+      assert entries.styles == [Path.join(@fixture_dir, "src/app.css")]
+    end
+
+    test "ignores remote, protocol-relative and data URLs" do
+      File.write!(Path.join(@fixture_dir, "index.html"), """
+      <link rel="stylesheet" href="https://cdn.example.com/app.css">
+      <link rel="stylesheet" href="//cdn.example.com/other.css">
+      <script src="https://cdn.example.com/lib.js"></script>
+      <script src="//cdn.example.com/lib2.js"></script>
+      <script src="data:text/javascript,console.log(1)"></script>
+      <script type="module" src="js/app.ts"></script>
+      """)
+
+      {:ok, entries} = DuskmoonBundler.HTMLEntry.extract(Path.join(@fixture_dir, "index.html"))
+      assert entries.scripts == [Path.join(@fixture_dir, "js/app.ts")]
+      assert entries.styles == []
+    end
+
+    test "returns an error for a missing HTML file" do
+      path = Path.join(@fixture_dir, "missing.html")
+
+      assert {:error, {:file_read_error, ^path, :enoent}} =
+               DuskmoonBundler.HTMLEntry.extract(path)
+    end
+  end
+
   describe "html?/1" do
     test "recognizes HTML files" do
       assert DuskmoonBundler.HTMLEntry.html?("index.html")

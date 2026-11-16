@@ -37,7 +37,7 @@ defmodule Mix.Tasks.DuskmoonBundler.DevTest do
         Module.concat(DuskmoonBundler.Watcher, @profile |> Atom.to_string() |> Macro.camelize())
 
       on_exit(fn ->
-        if watcher = Process.whereis(name), do: GenServer.stop(watcher)
+        stop_watcher(name)
         if Process.alive?(runner), do: Process.exit(runner, :kill)
 
         if previous do
@@ -62,6 +62,74 @@ defmodule Mix.Tasks.DuskmoonBundler.DevTest do
 
       assert :sys.get_state(name).config.tailwind_sources == sources
     end
+  end
+
+  defmodule WatchPlugin do
+    def name, do: "watch-plugin"
+    def extensions(:watch), do: [".widget"]
+    def extensions(_kind), do: []
+  end
+
+  test "forwards compile options and plugins to the watcher", %{tmp_dir: dir} do
+    profile = :dev_compile_options_test
+    root = Path.join(dir, "assets")
+    File.mkdir_p!(root)
+    previous = Application.get_env(:duskmoon_bundler, profile)
+
+    Application.put_env(:duskmoon_bundler, profile,
+      root: root,
+      outdir: Path.join(dir, "dist"),
+      plugins: [WatchPlugin],
+      import_source: "vue",
+      vapor: true,
+      custom_renderer: true,
+      server: [watch_dirs: []]
+    )
+
+    runner = spawn(fn -> Mix.Tasks.DuskmoonBundler.Dev.run([Atom.to_string(profile)]) end)
+    name = DuskmoonBundler.Watcher.DevCompileOptionsTest
+
+    on_exit(fn ->
+      stop_watcher(name)
+      if Process.alive?(runner), do: Process.exit(runner, :kill)
+
+      if previous do
+        Application.put_env(:duskmoon_bundler, profile, previous)
+      else
+        Application.delete_env(:duskmoon_bundler, profile)
+      end
+    end)
+
+    assert_eventually(fn -> Process.whereis(name) != nil end)
+
+    config = :sys.get_state(name).config
+    assert config.plugins == [WatchPlugin]
+    assert config.import_source == "vue"
+    assert config.vapor == true
+    assert config.custom_renderer == true
+  end
+
+  test "restarts a crashed watcher under the application supervisor", %{tmp_dir: dir} do
+    name = DuskmoonBundler.Watcher.DevSupervisionTest
+    File.mkdir_p!(dir)
+    on_exit(fn -> stop_watcher(name) end)
+
+    assert {:ok, first} = DuskmoonBundler.Watcher.start_supervised(root: dir, name: name)
+    Process.exit(first, :kill)
+
+    assert_eventually(fn ->
+      case Process.whereis(name) do
+        nil -> false
+        pid -> pid != first and Process.alive?(pid)
+      end
+    end)
+
+    assert :sys.get_state(name).root == Path.expand(dir)
+  end
+
+  defp stop_watcher(name) do
+    Supervisor.terminate_child(DuskmoonBundler.Supervisor, name)
+    Supervisor.delete_child(DuskmoonBundler.Supervisor, name)
   end
 
   defp assert_eventually(fun, attempts \\ 100)

@@ -24,6 +24,13 @@ defmodule DuskmoonBundler.JS.ResolverTest do
       refute result =~ "src/components/Button" and result =~ "src/@components"
     end
 
+    test "strips the alias prefix only once" do
+      aliases = %{"components" => "/app/src/components"}
+
+      assert {:ok, "/app/src/components/components/Button"} =
+               DuskmoonBundler.JS.Resolver.resolve("components/components/Button", aliases)
+    end
+
     test "returns :pass for no match" do
       aliases = %{"@" => "/app/src"}
       assert :pass = DuskmoonBundler.JS.Resolver.resolve("vue", aliases)

@@ -9,6 +9,12 @@ defmodule DuskmoonBundler.Integration.TestPlug do
 
   @impl true
   def call(conn, opts) do
+    conn = DuskmoonBundler.DevServer.call(conn, opts[:dev_server])
+
+    if conn.halted, do: conn, else: serve_page(conn, opts)
+  end
+
+  defp serve_page(conn, opts) do
     if String.ends_with?(conn.request_path, ".html") or conn.request_path == "/" do
       file =
         case conn.request_path do
@@ -29,10 +35,7 @@ defmodule DuskmoonBundler.Integration.TestPlug do
         Conn.send_resp(conn, 404, "not found")
       end
     else
-      case DuskmoonBundler.DevServer.call(conn, opts[:dev_server]) do
-        %{halted: true} = conn -> conn
-        conn -> Conn.send_resp(conn, 404, "not found")
-      end
+      Conn.send_resp(conn, 404, "not found")
     end
   end
 end
@@ -99,7 +102,108 @@ defmodule DuskmoonBundler.Integration.HMRTest do
       File.rm_rf!(@fixture_dir)
     end)
 
-    %{page: page, hmr_clients: hmr_clients}
+    %{page: page, hmr_clients: hmr_clients, dev_server: dev_server_opts}
+  end
+
+  describe "compile error overlay" do
+    for import_clause <- ["{ value }", "value", "side effect"] do
+      @tag :compile_overlay
+      @tag import_clause: import_clause
+      test "shows errors before #{import_clause} import evaluation and recovers after a save", %{
+        page: page,
+        hmr_clients: hmr_clients,
+        import_clause: import_clause
+      } do
+        write_fixture("broken.ts", "export const value = ; export default value")
+
+        write_fixture("index.html", """
+        <!DOCTYPE html><html><head>
+          <script>window.__rawHtmlTag = "</head>";</script>
+          <!-- </head> -->
+        </head><body>
+          <script type="module" src="/assets/app.ts"></script>
+        </body></html>
+        """)
+
+        import_statement =
+          if import_clause == "side effect",
+            do: "import './broken'; const value = 42",
+            else: "import #{import_clause} from './broken'"
+
+        write_fixture("app.ts", """
+        #{import_statement}
+        window.__overlayResult = value
+        """)
+
+        :ok = CDPBrowser.goto(page, base_url(), timeout: 10_000)
+        assert {:ok, "</head>"} = CDPBrowser.evaluate(page, "window.__rawHtmlTag")
+
+        assert {:ok, message} =
+                 eval_poll(
+                   page,
+                   "document.getElementById('duskmoon_bundler-error-overlay')?.textContent"
+                 )
+
+        assert message =~ "[DuskmoonBundler]"
+        assert {:ok, nil} = CDPBrowser.evaluate(page, "window.__overlayResult")
+        assert :ok = wait_for_hmr_client(hmr_clients)
+        assert MapSet.size(MapSet.difference(hmr_client_pids(), hmr_clients)) == 1
+
+        assert {:ok, 1} =
+                 CDPBrowser.evaluate(page, """
+                 Array.from(document.querySelectorAll('body > div')).filter(
+                   el => getComputedStyle(el).position === 'fixed' &&
+                     getComputedStyle(el).zIndex === '99999'
+                 ).length
+                 """)
+
+        {:ok, _watcher} = start_watcher(hmr_clients)
+        update_fixture("broken.ts", fn _ -> "export const value = 42; export default value" end)
+
+        assert {:ok, 42} = eval_until(page, "window.__overlayResult", 42)
+
+        assert {:ok, false} =
+                 CDPBrowser.evaluate(
+                   page,
+                   "!!document.getElementById('duskmoon_bundler-error-overlay')"
+                 )
+      end
+    end
+
+    @tag :compile_overlay
+    test "replays errors that occurred before the client connected", %{
+      page: page,
+      dev_server: dev_server
+    } do
+      write_fixture("broken.ts", "export const value = ;")
+
+      assert %{status: 200} =
+               Plug.Test.conn(:get, "/assets/broken.ts")
+               |> DuskmoonBundler.DevServer.call(dev_server)
+
+      # No module request on this page can rebroadcast the earlier error.
+      write_fixture("index.html", "<html><head></head><body>pending error</body></html>")
+      :ok = CDPBrowser.goto(page, base_url(), timeout: 10_000)
+
+      assert {:ok, message} =
+               eval_poll(
+                 page,
+                 "document.getElementById('duskmoon_bundler-error-overlay')?.textContent"
+               )
+
+      assert message =~ "[DuskmoonBundler]"
+
+      write_fixture("broken.ts", "export const value = 42")
+      existing_clients = hmr_client_pids()
+      :ok = CDPBrowser.goto(page, base_url(), timeout: 10_000)
+      assert :ok = wait_for_hmr_client(existing_clients)
+
+      assert {:ok, false} =
+               CDPBrowser.evaluate(
+                 page,
+                 "!!document.getElementById('duskmoon_bundler-error-overlay')"
+               )
+    end
   end
 
   describe "dev server module serving" do

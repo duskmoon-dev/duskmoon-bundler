@@ -14,6 +14,10 @@ defmodule DuskmoonBundler.DevServer do
   the development bootstrap leaves `import.meta.hot` undefined and skips
   page-only console forwarding, HMR connections, and style injection.
 
+  Ordinary HTML responses from downstream plugs also receive an independent
+  HMR client script, so compilation errors can be displayed before application
+  modules execute.
+
   ## Options
 
     * `:root` — source directory (required, e.g. `"assets/src"`)
@@ -24,6 +28,10 @@ defmodule DuskmoonBundler.DevServer do
     * `:vapor` — use Vue Vapor mode (default: `false`)
     * `:vendor_prebundle` — prebundle bare npm imports on startup (default: `true`)
     * `:vendor_source` — vendor specifiers to serve as source ESM with import rewriting
+    * `:allowed_origins` — extra origins (`"http://app.test:4000"`) or hosts
+      (`"app.test"`) allowed to open the HMR websocket and post console logs.
+      Requests whose `Origin` host matches the request host, or that carry no
+      `Origin` header, are always allowed. Also read from the `:server` config.
 
   ## Example
 
@@ -35,17 +43,33 @@ defmodule DuskmoonBundler.DevServer do
 
   require Logger
 
-  alias Plug.Conn
+  alias DuskmoonBundler.HMR.CompileErrors
   alias DuskmoonBundler.URL
+  alias Plug.Conn
 
   @behaviour Plug
+
+  @console_body_limit 1_000_000
 
   @impl true
   def init(opts) do
     profile = Keyword.get(opts, :profile)
     build_opts = Keyword.delete(opts, :profile)
-    config = DuskmoonBundler.Config.build(profile, build_opts)
-    server_config = DuskmoonBundler.Config.server(profile, build_opts)
+
+    {config, server_config, define} =
+      DuskmoonBundler.DevServer.ConfigCache.fetch(opts, fn ->
+        config = DuskmoonBundler.Config.build(profile, build_opts)
+        server_config = DuskmoonBundler.Config.server(profile, build_opts)
+
+        define =
+          DuskmoonBundler.Env.define(
+            mode: "development",
+            root: File.cwd!(),
+            env_prefix: config.env_prefix
+          )
+
+        {config, server_config, define}
+      end)
 
     root = Keyword.get(opts, :root) || to_string(config.root)
     expanded_root = Path.expand(root)
@@ -108,21 +132,25 @@ defmodule DuskmoonBundler.DevServer do
           config.vendor_source
         }),
       module_types: module_types,
-      define:
-        DuskmoonBundler.Env.define(
-          mode: "development",
-          root: File.cwd!(),
-          env_prefix: config.env_prefix
-        ),
-      hmr_timeout: server_config.hmr_timeout
+      define: define,
+      hmr_timeout: server_config.hmr_timeout,
+      allowed_origins: server_config.allowed_origins
     }
   end
 
   @impl true
   def call(%Conn{request_path: "/@duskmoon_bundler/ws"} = conn, config) do
-    conn
-    |> WebSockAdapter.upgrade(DuskmoonBundler.HMR.Socket, [], timeout: config.hmr_timeout)
-    |> Conn.halt()
+    if allowed_origin?(conn, config) do
+      conn
+      |> WebSockAdapter.upgrade(
+        DuskmoonBundler.HMR.Socket,
+        %{error_scope: CompileErrors.scope(config)},
+        timeout: config.hmr_timeout
+      )
+      |> Conn.halt()
+    else
+      forbidden_origin(conn)
+    end
   end
 
   def call(%Conn{request_path: "/@duskmoon_bundler/client.js"} = conn, config) do
@@ -137,44 +165,43 @@ defmodule DuskmoonBundler.DevServer do
     |> Conn.halt()
   end
 
-  def call(%Conn{method: "POST", request_path: "/@duskmoon_bundler/console"} = conn, _config) do
-    {:ok, body, conn} = Conn.read_body(conn)
-    DuskmoonBundler.Dev.ConsoleForwarder.log(body)
+  def call(%Conn{method: "POST", request_path: "/@duskmoon_bundler/console"} = conn, config) do
+    if allowed_origin?(conn, config) do
+      case Conn.read_body(conn, length: @console_body_limit) do
+        {:ok, body, conn} ->
+          DuskmoonBundler.Dev.ConsoleForwarder.log(body)
+          conn |> Conn.send_resp(204, "") |> Conn.halt()
 
-    conn
-    |> Conn.send_resp(204, "")
-    |> Conn.halt()
+        {:more, _partial, conn} ->
+          conn |> Conn.send_resp(413, "") |> Conn.halt()
+
+        {:error, _reason} ->
+          conn |> Conn.send_resp(400, "") |> Conn.halt()
+      end
+    else
+      forbidden_origin(conn)
+    end
   end
 
   def call(%Conn{request_path: "/@vendor/" <> specifier_js} = conn, config) do
     conn = Conn.fetch_query_params(conn)
 
     specifier =
-      specifier_js |> String.trim_trailing(".js") |> DuskmoonBundler.JS.Vendor.decode_specifier()
+      specifier_js
+      |> String.replace_suffix(".js", "")
+      |> DuskmoonBundler.JS.Vendor.decode_specifier()
 
-    case serve_vendor(specifier, config, conn.query_params["v"], conn.query_params["t"]) do
-      {:ok, code} ->
-        conn
-        |> Conn.put_resp_content_type("application/javascript")
-        # Vendor aliases and their graph queries can change during development.
-        |> Conn.put_resp_header("cache-control", "no-cache")
-        |> Conn.send_resp(200, code)
-        |> Conn.halt()
+    case DuskmoonBundler.JS.Vendor.stylesheet_path(specifier, vendor_opts(config)) do
+      {:ok, path} ->
+        serve_compiled(conn, path, config, true)
 
-      {:error, :outdated} ->
-        conn
-        |> Conn.put_resp_content_type("application/javascript")
-        |> Conn.send_resp(504, "// outdated optimized dependency: #{specifier}")
-        |> Conn.halt()
-
-      {:error, _} ->
-        conn
-        |> Conn.send_resp(404, "// vendor module not found: #{specifier}")
-        |> Conn.halt()
+      :error ->
+        serve_vendor_module(conn, specifier, config)
     end
   end
 
   def call(%Conn{request_path: request_path} = conn, config) do
+    conn = Conn.register_before_send(conn, &inject_hmr_client/1)
     prefix = config.prefix
 
     case DuskmoonBundler.PublicDir.lookup(config.public_dir, request_path) do
@@ -190,6 +217,60 @@ defmodule DuskmoonBundler.DevServer do
             conn
         end
     end
+  end
+
+  # A static import can fail during ESM linking, before any application module
+  # (including its HMR preamble) runs. Load the client as an independent graph
+  # from HTML so it can display compilation errors received over the socket.
+  defp inject_hmr_client(%Conn{method: "GET", state: :set, status: 200, resp_body: body} = conn)
+       when is_binary(body) or is_list(body) do
+    html? =
+      Enum.any?(Conn.get_resp_header(conn, "content-type"), fn type ->
+        type |> String.split(";", parts: 2) |> hd() |> String.trim() == "text/html"
+      end)
+
+    if html? and Conn.get_resp_header(conn, "content-encoding") in [[], ["identity"]] and
+         conn.private[:duskmoon_bundler_client_injected] != true do
+      client = ~s(<script type="module" async src="/@duskmoon_bundler/client.js"></script>)
+
+      # Appending is valid even after </html>. Searching for a closing tag can
+      # instead match JavaScript strings, comments or other HTML raw text.
+      # The shared module URL still executes once if the page also imports it.
+      body = IO.iodata_to_binary([body, client])
+
+      conn
+      |> Conn.delete_resp_header("content-length")
+      |> Conn.delete_resp_header("etag")
+      |> Conn.put_private(:duskmoon_bundler_client_injected, true)
+      |> Map.put(:resp_body, body)
+    else
+      conn
+    end
+  end
+
+  defp inject_hmr_client(conn), do: conn
+
+  # Browsers attach `Origin` to websocket handshakes and cross-site POSTs, so a
+  # page on another site cannot read HMR traffic or inject console lines.
+  defp allowed_origin?(conn, config) do
+    case Conn.get_req_header(conn, "origin") do
+      [] ->
+        true
+
+      origins ->
+        Enum.all?(origins, fn origin ->
+          host = URI.parse(origin).host
+
+          host == conn.host or origin in config.allowed_origins or
+            (is_binary(host) and host in config.allowed_origins)
+        end)
+    end
+  end
+
+  defp forbidden_origin(conn) do
+    conn
+    |> Conn.send_resp(403, "")
+    |> Conn.halt()
   end
 
   defp serve_public(conn, path) do
@@ -210,14 +291,14 @@ defmodule DuskmoonBundler.DevServer do
   end
 
   defp serve(conn, relative, config) do
-    file_path = config.root |> Path.join(relative) |> Path.expand()
+    file_path = source_path(relative, config)
 
     cond do
       not DuskmoonBundler.Path.inside?(file_path, config.root) ->
         conn
 
       compilable?(file_path, config) and File.regular?(file_path) ->
-        serve_compiled(conn, file_path, relative, config)
+        serve_compiled(conn, file_path, config)
 
       DuskmoonBundler.Assets.asset?(file_path) and File.regular?(file_path) ->
         if asset_import_request?(conn) do
@@ -231,10 +312,16 @@ defmodule DuskmoonBundler.DevServer do
     end
   end
 
+  # Request paths arrive percent-encoded; containment is checked by callers on
+  # the expanded result, after decoding.
+  defp source_path(relative, config) do
+    config.root |> Path.join(URI.decode(relative)) |> Path.expand()
+  end
+
   defp compilable?(path, config),
     do: Path.extname(path) in DuskmoonBundler.JS.Extensions.compilable(config.plugins)
 
-  defp serve_compiled(conn, file_path, relative, config) do
+  defp serve_compiled(conn, file_path, config, force_css_import? \\ false) do
     query = URL.decode_query(conn.query_string)
 
     inherited_hash =
@@ -269,19 +356,19 @@ defmodule DuskmoonBundler.DevServer do
     # may store its result after the watcher evicted the entry.
     source = File.read!(file_path)
     version = :crypto.hash(:sha256, source)
-    css_import? = css_import_request?(conn, file_path)
+    css_import? = force_css_import? or css_import_request?(conn, file_path)
     content_type = content_type_for(file_path, css_import?)
     cache_key = cache_key_for(file_path, css_import?, config)
 
     case DuskmoonBundler.Cache.get(cache_key, version) do
       %{code: code, sourcemap: sourcemap} ->
+        CompileErrors.clear(CompileErrors.scope(config), cache_key, version)
         send_compiled(conn, code, sourcemap, content_type)
 
       nil ->
         compile_and_serve(
           conn,
           {file_path, source},
-          relative,
           version,
           content_type,
           cache_key,
@@ -294,7 +381,6 @@ defmodule DuskmoonBundler.DevServer do
   defp compile_and_serve(
          conn,
          {file_path, source},
-         relative,
          version,
          content_type,
          cache_key,
@@ -318,7 +404,7 @@ defmodule DuskmoonBundler.DevServer do
         DuskmoonBundler.HMR.ImportGraph.update_from_compiled(file_path, result.code)
 
         result = rewrite_dev_css_urls(result, file_path, config)
-        mod_url = DuskmoonBundler.URL.join(config.prefix, relative)
+        mod_url = conn.request_path
         code = code_for_request(result, mod_url, content_type, css_import?)
         graph_url = if css_import?, do: URL.append_query(mod_url, "import"), else: mod_url
         update_module_graph(graph_url, graph_url, file_path, code, source, content_type)
@@ -332,12 +418,21 @@ defmodule DuskmoonBundler.DevServer do
         }
 
         DuskmoonBundler.Cache.put(cache_key, version, entry)
+        CompileErrors.clear(CompileErrors.scope(config), cache_key, version)
         send_compiled(conn, code, result.sourcemap, content_type)
 
       {:error, errors} ->
+        message = error_message(errors)
+        CompileErrors.put(CompileErrors.scope(config), cache_key, file_path, version, message)
+
+        # Browsers refuse to execute a module script served with a non-2xx
+        # status, which would hide the overlay behind a blank page.
+        status = if content_type == "application/javascript", do: 200, else: 500
+
         conn
         |> Conn.put_resp_content_type("application/javascript")
-        |> Conn.send_resp(500, error_overlay(errors))
+        |> Conn.put_resp_header("cache-control", "no-cache, no-store, must-revalidate")
+        |> Conn.send_resp(status, error_overlay(message))
         |> Conn.halt()
     end
   end
@@ -351,7 +446,7 @@ defmodule DuskmoonBundler.DevServer do
 
     DuskmoonBundler.HMR.ModuleGraph.update_module(mod_url, cache_key, file_path, imports,
       type: module_graph_type(content_type),
-      self_accepting: DuskmoonBundler.HMR.Boundary.self_accepting?(source)
+      self_accepting: DuskmoonBundler.HMR.Boundary.self_accepting?(source, file_path)
     )
   end
 
@@ -371,11 +466,15 @@ defmodule DuskmoonBundler.DevServer do
   defp strip_cache_query(specifier) do
     uri = URI.parse(specifier)
 
+    # Filter raw components: re-encoding would turn `?import` into `?import=`.
     query =
       (uri.query || "")
-      |> DuskmoonBundler.URL.decode_query()
-      |> Map.drop(["t", "v", "__duskmoon_vendor", "__duskmoon_server", "__duskmoon_entry"])
-      |> URI.encode_query()
+      |> String.split("&", trim: true)
+      |> Enum.reject(fn component ->
+        key = component |> String.split("=", parts: 2) |> hd() |> URI.decode_www_form()
+        key in ["t", "v", "__duskmoon_vendor", "__duskmoon_server", "__duskmoon_entry"]
+      end)
+      |> Enum.join("&")
 
     %{uri | query: if(query == "", do: nil, else: query)}
     |> URI.to_string()
@@ -650,6 +749,28 @@ defmodule DuskmoonBundler.DevServer do
 
   # ── Vendor pre-bundling ───────────────────────────────────────────
 
+  defp serve_vendor_module(conn, specifier, config) do
+    case serve_vendor(specifier, config, conn.query_params["v"], conn.query_params["t"]) do
+      {:ok, code} ->
+        conn
+        |> Conn.put_resp_content_type("application/javascript")
+        |> Conn.put_resp_header("cache-control", "no-cache")
+        |> Conn.send_resp(200, code)
+        |> Conn.halt()
+
+      {:error, :outdated} ->
+        conn
+        |> Conn.put_resp_content_type("application/javascript")
+        |> Conn.send_resp(504, "// outdated optimized dependency: #{specifier}")
+        |> Conn.halt()
+
+      {:error, _} ->
+        conn
+        |> Conn.send_resp(404, "// vendor module not found: #{specifier}")
+        |> Conn.halt()
+    end
+  end
+
   defp configured_entry(entry, root, dir) do
     path = Path.expand(entry, dir)
     parent = Path.dirname(dir)
@@ -714,7 +835,7 @@ defmodule DuskmoonBundler.DevServer do
          nil <- uri.fragment,
          true <- is_binary(uri.path),
          {:ok, relative} <- strip_prefix(uri.path, config.prefix) do
-      file = config.root |> Path.join(relative) |> Path.expand()
+      file = source_path(relative, config)
       DuskmoonBundler.Path.inside?(file, config.root) and compilable?(file, config)
     else
       _ -> false
@@ -814,21 +935,26 @@ defmodule DuskmoonBundler.DevServer do
 
   defp maybe_inject_dev_console_forwarder(code, _content_type), do: code
 
-  defp error_overlay(errors) do
-    msg =
-      errors
-      |> List.wrap()
-      |> Enum.map_join("\n", fn
-        %{message: m} -> m
-        e when is_binary(e) -> e
-        e -> inspect(e)
-      end)
+  defp error_message(errors) do
+    errors
+    |> List.wrap()
+    |> Enum.map_join("\n", fn
+      %{message: m} -> m
+      e when is_binary(e) -> e
+      e -> inspect(e)
+    end)
+  end
 
+  defp error_overlay(msg) do
     overlay = DuskmoonBundler.JS.Asset.compiled!("dev/error-overlay.ts")
 
     invocation =
       DuskmoonBundler.JS.Asset.compiled_template!("dev/error-overlay-invocation.ts", message: msg)
 
-    overlay <> "\n" <> invocation
+    # Throwing keeps importers from evaluating against a module with no exports.
+    failure =
+      "throw new Error(#{Jason.encode!("[DuskmoonBundler] Compilation error:\n" <> msg)});\n"
+
+    overlay <> "\n" <> invocation <> "\n" <> failure
   end
 end

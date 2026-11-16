@@ -511,10 +511,14 @@ defmodule DuskmoonBundler.Integration.CDPBrowser do
   defp executable?(path), do: File.exists?(path)
 
   defp profile_dir do
-    path = Path.join(System.tmp_dir!(), "duskmoon-cdp-#{System.unique_integer([:positive])}")
+    # VM-local counters repeat across test runs. Reusing an old profile can
+    # read a stale DevToolsActivePort or hit Chromium's profile-in-use lock.
+    suffix = Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+    path = Path.join(System.tmp_dir!(), "duskmoon-cdp-#{suffix}")
 
-    case File.mkdir_p(path) do
+    case File.mkdir(path) do
       :ok -> {:ok, path}
+      {:error, :eexist} -> profile_dir()
       {:error, reason} -> {:error, reason}
     end
   end

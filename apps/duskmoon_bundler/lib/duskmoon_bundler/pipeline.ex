@@ -43,6 +43,12 @@ defmodule DuskmoonBundler.Pipeline do
         nil -> {source, nil}
       end
 
+    compile_loaded(path, source, content_type, opts)
+  end
+
+  @doc false
+  def compile_loaded(path, source, content_type, opts) do
+    plugins = Keyword.get(opts, :plugins, [])
     ext = Path.extname(path)
 
     result =
@@ -210,10 +216,10 @@ defmodule DuskmoonBundler.Pipeline do
   defp compile_css_module(path, source, opts) do
     minify = Keyword.get(opts, :minify, false)
 
-    {:ok, js, scoped_css} =
-      DuskmoonBundler.CSS.Modules.compile(source, Path.basename(path), minify: minify)
-
-    {:ok, compiled(js, css: scoped_css)}
+    with {:ok, js, scoped_css} <-
+           DuskmoonBundler.CSS.Modules.compile(source, Path.basename(path), minify: minify) do
+      {:ok, compiled(js, css: scoped_css)}
+    end
   end
 
   defp compile_json(source) do

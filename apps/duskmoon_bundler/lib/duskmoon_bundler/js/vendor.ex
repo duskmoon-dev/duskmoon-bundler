@@ -531,6 +531,19 @@ defmodule DuskmoonBundler.JS.Vendor do
 
   # ── Scanning ──────────────────────────────────────────────────────
 
+  @doc false
+  def stylesheet_path(specifier, opts) do
+    dirs = module_dirs(opts[:node_modules], Keyword.get(opts, :resolve_dirs, []))
+
+    with true <- request_specifier?(specifier),
+         {:ok, path} <- resolve_package_entry(specifier, dirs),
+         true <- Path.extname(path) in DuskmoonBundler.JS.Extensions.css() do
+      {:ok, path}
+    else
+      _ -> :error
+    end
+  end
+
   defp scan_bare_imports(root, plugins, opts) do
     entries = application_entries(root, plugins, opts)
 
@@ -550,12 +563,19 @@ defmodule DuskmoonBundler.JS.Vendor do
       entry ->
         entry |> List.wrap() |> Enum.map(&Path.expand/1)
     end
+    |> Enum.reject(fn path ->
+      {file, _query} = DuskmoonBundler.URL.split_query(path)
+      Path.extname(file) in DuskmoonBundler.JS.Extensions.css()
+    end)
   end
 
   defp scan_application(entries, plugins, opts) do
     ctx = %DuskmoonBundler.Builder.Context{
       plugins: plugins,
-      aliases: Keyword.get(opts, :aliases, %{})
+      aliases: Keyword.get(opts, :aliases, %{}),
+      node_modules:
+        opts[:node_modules] || NPM.Resolution.PackageResolver.find_node_modules(opts[:root]),
+      resolve_dirs: Keyword.get(opts, :resolve_dirs, [])
     }
 
     scan_source_files(entries, ctx, %{}, MapSet.new())
@@ -586,7 +606,13 @@ defmodule DuskmoonBundler.JS.Vendor do
 
       if NPM.Resolution.PackageResolver.bare?(path_specifier) and
            DuskmoonBundler.JS.Resolver.resolve(path_specifier, ctx.aliases) == :pass do
-        {:cont, {:ok, files, MapSet.put(specs, path_specifier)}}
+        case stylesheet_path(path_specifier,
+               node_modules: ctx.node_modules,
+               resolve_dirs: ctx.resolve_dirs
+             ) do
+          {:ok, _path} -> {:cont, {:ok, files, specs}}
+          :error -> {:cont, {:ok, files, MapSet.put(specs, path_specifier)}}
+        end
       else
         case DuskmoonBundler.Builder.Resolver.resolve(specifier, importer, ctx) do
           {:ok, resolved} ->
@@ -1361,26 +1387,40 @@ defmodule DuskmoonBundler.JS.Vendor do
   # ── Helpers ───────────────────────────────────────────────────────
 
   defp resolve_package_entry(specifier, module_dirs) do
-    Enum.find_value(module_dirs, :error, fn module_dir ->
+    Enum.reduce_while(module_dirs, :error, fn module_dir, :error ->
       result =
-        with :error <- resolve_from_node_modules(specifier, module_dir) do
-          resolve_from_module_dir(specifier, module_dir)
-        else
-          {:ok, _path} = ok -> ok
+        case resolve_from_node_modules(specifier, module_dir) do
+          :error -> resolve_from_module_dir(specifier, module_dir)
+          result -> result
         end
 
       case result do
-        {:ok, _path} = ok -> ok
-        :error -> nil
+        {:ok, _path} = ok -> {:halt, ok}
+        :exports_denied -> {:halt, :error}
+        :error -> {:cont, :error}
       end
     end)
   end
 
   defp resolve_from_node_modules(specifier, module_dir) do
-    NPM.Resolution.PackageResolver.resolve(specifier, module_dir,
-      extensions: DuskmoonBundler.JS.Extensions.resolvable(),
-      conditions: DuskmoonBundler.JS.Resolution.browser_conditions()
-    )
+    case NPM.Resolution.PackageResolver.resolve(specifier, module_dir,
+           extensions: DuskmoonBundler.JS.Extensions.resolvable(),
+           conditions: DuskmoonBundler.JS.Resolution.browser_conditions()
+         ) do
+      :error ->
+        {package_name, _subpath} = split_specifier(specifier)
+
+        with {:ok, package_dir} <-
+               NPM.Resolution.PackageResolver.package_root(package_name, module_dir),
+             true <- package_exports?(package_dir) do
+          :exports_denied
+        else
+          _ -> :error
+        end
+
+      result ->
+        result
+    end
   end
 
   defp resolve_from_module_dir(specifier, module_dir) do
@@ -1395,11 +1435,24 @@ defmodule DuskmoonBundler.JS.Vendor do
              extensions: extensions,
              conditions: DuskmoonBundler.JS.Resolution.browser_conditions()
            ) do
-        {:ok, _path} = ok -> ok
-        :error -> resolve_module_dir_subpath(package_dir, subpath || ".", extensions)
+        {:ok, _path} = ok ->
+          ok
+
+        :error ->
+          if package_exports?(package_dir),
+            do: :exports_denied,
+            else: resolve_module_dir_subpath(package_dir, subpath || ".", extensions)
       end
     else
       :error
+    end
+  end
+
+  defp package_exports?(package_dir) do
+    with {:ok, package} <- NPM.JSON.read_file(Path.join(package_dir, "package.json")) do
+      not is_nil(NPM.Resolution.Exports.parse(package))
+    else
+      _ -> false
     end
   end
 

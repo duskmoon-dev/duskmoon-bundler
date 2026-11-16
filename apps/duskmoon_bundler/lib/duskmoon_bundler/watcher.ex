@@ -52,6 +52,12 @@ defmodule DuskmoonBundler.Watcher do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
+  @doc "Start a watcher under the application supervisor, restarting it after crashes."
+  def start_supervised(opts) do
+    spec = Supervisor.child_spec({__MODULE__, opts}, id: Keyword.get(opts, :name, __MODULE__))
+    Supervisor.start_child(DuskmoonBundler.Supervisor, spec)
+  end
+
   @impl true
   def init(opts) do
     root = Keyword.fetch!(opts, :root) |> Path.expand()
@@ -186,20 +192,13 @@ defmodule DuskmoonBundler.Watcher do
       state = maybe_schedule_tailwind(state, path)
       ext = Path.extname(path)
 
-      cond do
-        ext in Extensions.css() ->
-          handle_css_change(path, state)
-          {:noreply, state}
-
-        ext in Extensions.watchable_js(state.config[:plugins] || []) ->
-          {:noreply, schedule_rebuild(state, path)}
-
-        DuskmoonBundler.Assets.asset?(path) ->
-          handle_asset_change(path, state)
-          {:noreply, state}
-
-        true ->
-          {:noreply, state}
+      # One save usually produces several events; coalesce them per path.
+      if ext in Extensions.css() or
+           ext in Extensions.watchable_js(state.config[:plugins] || []) or
+           DuskmoonBundler.Assets.asset?(path) do
+        {:noreply, schedule_rebuild(state, path)}
+      else
+        {:noreply, state}
       end
     else
       {:noreply, state}
@@ -208,7 +207,23 @@ defmodule DuskmoonBundler.Watcher do
 
   def handle_info({:rebuild, path}, state) do
     state = %{state | pending: Map.delete(state.pending, path)}
-    handle_js_change(path, state)
+
+    ext = Path.extname(path)
+
+    cond do
+      ext in Extensions.css() ->
+        handle_css_change(path, state)
+
+      ext in Extensions.watchable_js(state.config[:plugins] || []) ->
+        handle_js_change(path, state)
+
+      DuskmoonBundler.Assets.asset?(path) ->
+        handle_asset_change(path, state)
+
+      true ->
+        handle_js_change(path, state)
+    end
+
     {:noreply, state}
   end
 
@@ -224,6 +239,10 @@ defmodule DuskmoonBundler.Watcher do
   end
 
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
+    {:noreply, state}
+  end
+
+  def handle_info(_message, state) do
     {:noreply, state}
   end
 
@@ -296,6 +315,9 @@ defmodule DuskmoonBundler.Watcher do
   defp handle_css_change(path, state) do
     relative = Path.relative_to(path, state.root)
     DuskmoonBundler.Cache.evict_file(path)
+    # Stylesheets inline their `@import`s and the compiler does not report
+    # them, so any stylesheet may embed the edited file.
+    DuskmoonBundler.Cache.evict_extension(".css")
     DuskmoonBundler.HMR.ModuleGraph.invalidate_file(path)
     broadcast(:update, %{path: relative, changes: [:style]})
     broadcast_glob_dependents(path, state.root)
@@ -361,12 +383,23 @@ defmodule DuskmoonBundler.Watcher do
         %{file: path, extension: ext}
       end)
 
-    {css_input, css_base} =
-      case state.config[:tailwind_css] do
-        nil -> {nil, File.cwd!()}
-        path -> {File.read!(path), Path.dirname(path)}
-      end
+    # An editor saving atomically can leave the input missing for an instant.
+    case read_tailwind_input(state.config[:tailwind_css]) do
+      {:ok, css_input, css_base} ->
+        rebuild_tailwind(changed, changed_paths, css_input, css_base, state)
 
+      {:error, reason} ->
+        broadcast(:error, %{path: "tailwind", reason: inspect(reason)})
+    end
+  end
+
+  defp read_tailwind_input(nil), do: {:ok, nil, File.cwd!()}
+
+  defp read_tailwind_input(path) do
+    with {:ok, css} <- File.read(path), do: {:ok, css, Path.dirname(path)}
+  end
+
+  defp rebuild_tailwind(changed, changed_paths, css_input, css_base, state) do
     case DuskmoonBundler.Tailwind.rebuild(changed,
            server: state.tailwind_server,
            css: css_input,

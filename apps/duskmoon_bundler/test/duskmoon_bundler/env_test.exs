@@ -55,6 +55,31 @@ defmodule DuskmoonBundler.EnvTest do
     end
   end
 
+  describe "load_env_files/2 failures" do
+    import ExUnit.CaptureLog
+
+    test "warns about a malformed .env file instead of silently dropping every variable" do
+      File.write!(Path.join(@fixture_dir, ".env"), "DUSKMOON_BUNDLER_OK=1\nBAD LINE=x\n")
+
+      log =
+        capture_log(fn ->
+          assert DuskmoonBundler.Env.load_env_files(@fixture_dir, "production") == %{}
+        end)
+
+      assert log =~ "[DuskmoonBundler] Failed to load .env files"
+      assert log =~ "BAD LINE"
+    end
+
+    test "does not export variables to the system environment" do
+      File.write!(Path.join(@fixture_dir, ".env"), "DUSKMOON_BUNDLER_ENV_SIDE_EFFECT=1\n")
+
+      assert %{"DUSKMOON_BUNDLER_ENV_SIDE_EFFECT" => "1"} =
+               DuskmoonBundler.Env.load_env_files(@fixture_dir, "production")
+
+      assert System.get_env("DUSKMOON_BUNDLER_ENV_SIDE_EFFECT") == nil
+    end
+  end
+
   describe "define/1" do
     test "generates define map with DUSKMOON_BUNDLER_ prefix" do
       File.write!(

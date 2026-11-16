@@ -26,20 +26,25 @@ defmodule DuskmoonBundler.CSS.Modules do
   Compile a CSS Module file.
 
   Returns `{:ok, js_code, scoped_css}` where `js_code` exports the
-  class name mapping and `scoped_css` has LightningCSS-rewritten names.
+  class name mapping and `scoped_css` has LightningCSS-rewritten names,
+  or `{:error, errors}` when the stylesheet cannot be compiled.
   """
-  @spec compile(String.t(), String.t(), keyword()) :: {:ok, String.t(), String.t()}
+  @spec compile(String.t(), String.t(), keyword()) ::
+          {:ok, String.t(), String.t()} | {:error, [String.t()]}
   def compile(source, filename, opts \\ []) do
     minify = Keyword.get(opts, :minify, false)
 
-    {:ok, result} =
-      Vize.CSS.compile(source, minify: minify, css_modules: true, filename: filename)
+    case Vize.CSS.compile(source, minify: minify, css_modules: true, filename: filename) do
+      {:ok, %{errors: [_ | _] = errors}} ->
+        {:error, errors}
 
-    js =
-      OXC.parse!("var _exports = $exports;\nexport default _exports;", "css-module.js")
-      |> OXC.bind(exports: {:literal, result.exports})
-      |> OXC.codegen!()
+      {:ok, result} ->
+        js =
+          OXC.parse!("var _exports = $exports;\nexport default _exports;", "css-module.js")
+          |> OXC.bind(exports: {:literal, result.exports})
+          |> OXC.codegen!()
 
-    {:ok, js, result.code}
+        {:ok, js, result.code}
+    end
   end
 end

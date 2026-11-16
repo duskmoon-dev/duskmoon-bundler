@@ -10,7 +10,7 @@ defmodule DuskmoonBundler.Config do
       config :duskmoon_bundler,
         entry: "assets/js/app.ts",
         target: :es2020,
-        external: ~w(phoenix phoenix_html phoenix_live_view),
+        external: %{"phoenix" => "Phoenix", "phoenix_live_view" => "LiveView"},
         aliases: %{
           "@" => "assets/src",
           "@components" => "assets/src/components"

@@ -85,8 +85,9 @@ defmodule Oxide do
   @doc """
   Full scan — walks filesystem, extracts all candidates.
 
-  Returns a sorted, deduplicated list of candidate strings.
-  Subsequent calls only return candidates from files changed since the last scan.
+  Returns a sorted, deduplicated list of every candidate the scanner knows.
+  Later calls pick up new and changed files and again return the complete list;
+  use `scan_files/2` to get only the candidates that are new.
   """
   @spec scan(reference()) :: [String.t()]
   def scan(scanner) do

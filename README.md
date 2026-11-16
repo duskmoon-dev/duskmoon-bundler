@@ -2,7 +2,7 @@
 
 Independent Elixir toolchain for frontend assets, native JS/CSS compilers, and the QuickBEAM runtime. The nine Hex packages retain their existing names and namespaces: `duskmoon_bundler`, `duskmoon_bundler_runtime`, `duskmoon_oxc`, `duskmoon_oxide`, `duskmoon_vize`, `duskmoon_quickbeam`, `duskmoon_npm`, `duskmoon_hex_solver`, and `duskmoon_hologram`.
 
-The synchronized toolchain version is **10.1.9**. All nine packages and their native artifacts are released from this repository. Earlier packages retain their native downloads from historical UI releases. UI version U is maintained independently in `phoenix-duskmoon-ui`. Toolchain publication requires only this repository's source checks and artifact verification; UI compatibility and adoption are separate downstream operations.
+The synchronized toolchain version is **10.1.10**. All nine packages and their native artifacts are released from this repository. Earlier packages retain their native downloads from historical UI releases. UI version U is maintained independently in `phoenix-duskmoon-ui`. Toolchain publication requires only this repository's source checks and artifact verification; UI compatibility and adoption are separate downstream operations.
 
 ## Hologram sub-application
 
@@ -28,7 +28,11 @@ config :my_app, MyAppWeb.Endpoint,
 
 Use `devenv shell` for the Elixir/OTP, Rust, Zig, Bun and Tailwind toolchains. Development explicitly builds candidate native sources; ordinary consumers use published artifacts.
 
-Rust source builds require Rust 1.99 or later. QuickBEAM uses Zig 0.17.1 and Zigler 0.17. The development environment supplies Rust and Zig from a separately locked nixpkgs input, with Zig's patch release pinned by source hash. Other toolchains retain their stable baseline.
+Rust source builds require Rust 1.99 or later. Source CI, native release jobs and
+optional UI compatibility use Rust 1.99.0; release cross builds use cross v0.2.5.
+QuickBEAM uses Zig 0.17.1 and Zigler 0.17. The development environment supplies
+Rust 1.99.0 and Zig from a separately locked nixpkgs input, with Zig's patch
+release pinned by source hash. Other toolchains retain their stable baseline.
 
 ```sh
 bun install --frozen-lockfile
@@ -52,7 +56,7 @@ Native packages resolve GitHub release redirects with a bounded 64 KiB response-
 ## Package staging
 
 ```sh
-elixir scripts/stage-packages.exs --version 10.1.9 --output /tmp/bundler-packages
+elixir scripts/stage-packages.exs --version 10.1.10 --output /tmp/bundler-packages
 elixir scripts/package-consumer-smoke.exs --stage /tmp/bundler-packages --mode source
 ```
 
@@ -60,4 +64,4 @@ Staging refuses existing output directories and outputs inside this checkout. Ea
 
 Historical assets must remain untouched. Future native URLs use `https://github.com/duskmoon-dev/duskmoon-bundler/releases/download/vB`. Checksum files are generated from final native artifacts by release automation; candidate source staging deliberately does not fabricate them.
 
-See [migration inventory](docs/migration-inventory.md), [progress](docs/extraction-progress.md), and the [release runbook](docs/releasing.md) for publication gates. [Optional UI compatibility and adoption](docs/upgrade-ui.md) run independently of toolchain publication. The UI-only browser hook/chat/form regression stays in the UI repository; generic compiler, HMR, manifest and resolver coverage lives here.
+See [release runbook](docs/releasing.md) for current publication gates. The completed extraction records are retained in the [historical archive](docs/archive/README.md). [Optional UI compatibility and adoption](docs/upgrade-ui.md) run independently of toolchain publication. The UI-only browser hook/chat/form regression stays in the UI repository; generic compiler, HMR, manifest and resolver coverage lives here.

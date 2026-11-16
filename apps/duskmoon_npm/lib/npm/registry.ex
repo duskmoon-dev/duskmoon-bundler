@@ -44,25 +44,35 @@ defmodule NPM.Registry do
     NPM.Config.registry()
   end
 
-  @doc "Fetch the abbreviated packument for a package."
+  @doc """
+  Fetch package metadata, including publication timestamps when age warnings
+  are enabled. With both age thresholds set to zero, request the smaller
+  abbreviated packument instead. Enabling age warnings upgrades abbreviated or
+  legacy cached metadata once; successful full requests retain the normal TTL
+  even when a private registry does not provide publication timestamps.
+  """
   @spec get_packument(String.t()) :: {:ok, packument()} | {:error, term()}
   def get_packument(package) do
-    case NPM.PackumentCache.get(package) do
-      {:ok, packument} ->
-        {:ok, normalize_packument(packument)}
+    registry = NPM.Config.registry_for(package)
+    full? = NPM.Config.package_age_warning_days() > 0 or NPM.Config.version_age_warning_days() > 0
 
-      :miss ->
-        fetch_packument(package)
+    case NPM.PackumentCache.get(package, registry, full: full?) do
+      {:ok, packument} ->
+        {:ok, normalize_packument(packument, package)}
+
+      _missing_metadata ->
+        fetch_packument(package, registry, full?)
     end
   end
 
-  defp fetch_packument(package) do
-    url = "#{registry_url()}/#{encode_package(package)}"
-    headers = auth_headers() ++ [accept: "application/vnd.npm.install-v1+json"]
-    fetch_with_retry(package, url, headers, @max_retries)
+  defp fetch_packument(package, registry, full?) do
+    url = "#{registry}/#{encode_package(package)}"
+    accept = if full?, do: "application/json", else: "application/vnd.npm.install-v1+json"
+    headers = auth_headers(registry) ++ [accept: accept]
+    fetch_with_retry({package, registry, full?}, url, headers, @max_retries)
   end
 
-  defp fetch_with_retry(package, url, headers, retries_left) do
+  defp fetch_with_retry({package, registry, full?} = source, url, headers, retries_left) do
     RegistryPolicy.validate_url!(url)
 
     result =
@@ -80,12 +90,12 @@ defmodule NPM.Registry do
 
     case classify_result(result) do
       {:ok, body} ->
-        packument = body |> decode_body() |> parse_packument()
-        NPM.PackumentCache.put(package, packument)
+        packument = body |> decode_body() |> parse_packument(package)
+        NPM.PackumentCache.put(package, packument, registry, full: full?)
         {:ok, packument}
 
       {:retry, _} when retries_left > 0 ->
-        retry(package, url, headers, retries_left)
+        retry(source, url, headers, retries_left)
 
       {_, error} ->
         error
@@ -104,13 +114,15 @@ defmodule NPM.Registry do
   defp classify_result({:ok, %{status: s}}), do: {:error, {:error, {:http, s}}}
   defp classify_result({:error, reason}), do: {:retry, {:error, reason}}
 
-  defp retry(package, url, headers, retries_left) do
+  defp retry(source, url, headers, retries_left) do
     Process.sleep(1000 * (@max_retries - retries_left + 1))
-    fetch_with_retry(package, url, headers, retries_left - 1)
+    fetch_with_retry(source, url, headers, retries_left - 1)
   end
 
-  defp auth_headers do
-    case NPM.Config.auth_token() do
+  # The token is selected for the registry actually being contacted, so a
+  # scope registry never receives another registry's credentials.
+  defp auth_headers(registry) do
+    case NPM.Config.auth_token(registry) do
       nil -> []
       token -> [authorization: "Bearer #{token}"]
     end
@@ -123,13 +135,14 @@ defmodule NPM.Registry do
   defp decode_body(body) when is_binary(body), do: NPM.JSON.decode!(body)
   defp decode_body(body) when is_map(body), do: body
 
-  defp parse_packument(data) do
+  defp parse_packument(data, package) do
     name = Map.get(data, "name", "")
     times = Map.get(data, "time", %{})
+    policy = tarball_policy(package)
 
     versions =
       for {version_str, info} <- Map.get(data, "versions", %{}), into: %{} do
-        {version_str, parse_version_info(name, version_str, info, times)}
+        {version_str, parse_version_info(name, version_str, info, times, policy)}
       end
 
     %{name: name, versions: versions, dist_tags: parse_dist_tags(data)}
@@ -144,7 +157,7 @@ defmodule NPM.Registry do
 
   defp parse_dist_tags(_data), do: %{}
 
-  defp parse_version_info(name, version, info, times) do
+  defp parse_version_info(name, version, info, times, policy) do
     dist = Map.get(info, "dist", %{})
     tarball = Map.get(dist, "tarball", "")
     integrity = dist_integrity(dist)
@@ -161,9 +174,9 @@ defmodule NPM.Registry do
       has_install_script: Map.get(info, "hasInstallScript", false),
       deprecated: Map.get(info, "deprecated", nil),
       created_at: Map.get(times, "created"),
-      published_at: Map.get(times, Map.get(info, "version", "")),
+      published_at: Map.get(times, version),
       dist: %{
-        tarball: normalized_tarball_url(name, version, tarball, integrity),
+        tarball: normalized_tarball_url(name, version, tarball, integrity, policy),
         integrity: integrity,
         file_count: Map.get(dist, "fileCount"),
         unpacked_size: Map.get(dist, "unpackedSize")
@@ -191,60 +204,73 @@ defmodule NPM.Registry do
   @doc false
   @spec __normalized_tarball_url__(String.t(), String.t(), String.t(), String.t()) :: String.t()
   def __normalized_tarball_url__(name, version, tarball, integrity) do
-    normalized_tarball_url(name, version, tarball, integrity)
+    normalized_tarball_url(name, version, tarball, integrity, tarball_policy(name))
   end
 
-  defp normalize_packument(%{name: name, versions: versions} = packument) when is_map(versions) do
+  defp normalize_packument(%{name: name, versions: versions} = packument, package)
+       when is_map(versions) do
+    policy = tarball_policy(package)
+
     versions =
       Map.new(versions, fn {version, info} ->
-        {version, normalize_version_info(name, version, info)}
+        {version, normalize_version_info(name, version, info, policy)}
       end)
 
     %{packument | versions: versions}
   end
 
-  defp normalize_packument(packument), do: packument
+  defp normalize_packument(packument, _package), do: packument
 
-  defp normalize_version_info(name, version, %{dist: %{tarball: tarball} = dist} = info) do
+  # Registry policy for one requested package, read once rather than once per
+  # version: the allowed origins, and the registry untrusted tarball URLs are
+  # rewritten to (the package's scope registry when configured, else the first
+  # allowed registry).
+  defp tarball_policy(package) do
+    registries = NPM.Config.allowed_registries()
+
+    %{
+      origins: registries |> Enum.map(&RegistryPolicy.origin/1) |> Enum.reject(&is_nil/1),
+      registry: NPM.Config.scope_registry(package) || List.first(registries)
+    }
+  end
+
+  defp normalize_version_info(name, version, %{dist: %{tarball: tarball} = dist} = info, policy) do
     integrity = Map.get(dist, :integrity, "")
-    dist = put_tarball(dist, :tarball, normalized_tarball_url(name, version, tarball, integrity))
-    Map.put(info, :dist, dist)
+    tarball = normalized_tarball_url(name, version, tarball, integrity, policy)
+    Map.put(info, :dist, Map.put(dist, :tarball, tarball))
   end
 
-  defp normalize_version_info(name, version, %{"dist" => %{"tarball" => tarball} = dist} = info) do
+  defp normalize_version_info(
+         name,
+         version,
+         %{"dist" => %{"tarball" => tarball} = dist} = info,
+         policy
+       ) do
     integrity = Map.get(dist, "integrity", "")
-    dist = put_tarball(dist, "tarball", normalized_tarball_url(name, version, tarball, integrity))
-    Map.put(info, "dist", dist)
+    tarball = normalized_tarball_url(name, version, tarball, integrity, policy)
+    Map.put(info, "dist", Map.put(dist, "tarball", tarball))
   end
 
-  defp normalize_version_info(_name, _version, info), do: info
+  defp normalize_version_info(_name, _version, info, _policy), do: info
 
-  defp normalized_tarball_url(_name, _version, tarball, _integrity) when tarball in [nil, ""],
-    do: tarball || ""
+  defp normalized_tarball_url(_name, _version, tarball, _integrity, _policy)
+       when tarball in [nil, ""],
+       do: tarball || ""
 
-  defp normalized_tarball_url(name, version, tarball, integrity) do
-    if RegistryPolicy.origin(tarball) in RegistryPolicy.allowed_origins() do
-      tarball
-    else
-      registry_tarball_url(name, version, tarball, integrity)
-    end
-  end
+  defp normalized_tarball_url(name, version, tarball, integrity, policy) do
+    cond do
+      RegistryPolicy.origin(tarball) in policy.origins ->
+        tarball
 
-  defp registry_tarball_url(_name, _version, tarball, integrity)
-       when integrity in [nil, ""] do
-    tarball
-  end
+      integrity in [nil, ""] ->
+        tarball
 
-  defp registry_tarball_url(name, version, tarball, _integrity) do
-    case NPM.Config.allowed_registries() do
-      [registry | _] ->
-        NPM.Registry.URL.tarball_url(name, version, registry)
+      is_binary(policy.registry) ->
+        NPM.Registry.URL.tarball_url(name, version, policy.registry)
 
-      [] ->
+      true ->
         RegistryPolicy.validate_url!(tarball)
         tarball
     end
   end
-
-  defp put_tarball(dist, key, tarball), do: Map.put(dist, key, tarball)
 end

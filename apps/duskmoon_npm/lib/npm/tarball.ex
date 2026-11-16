@@ -1,4 +1,6 @@
 defmodule NPM.Tarball do
+  alias NPM.Security.RegistryPolicy
+
   @moduledoc """
   Download and extract npm package tarballs.
 
@@ -9,19 +11,32 @@ defmodule NPM.Tarball do
   @connect_timeout 30_000
   @receive_timeout 120_000
 
+  @max_redirects 5
+
   @doc """
   Download a tarball, verify its integrity, and extract to a directory.
 
   Returns `{:ok, file_count}` or `{:error, reason}`.
+
+  The registry auth token is only sent when the tarball URL has the same origin
+  as the registry the package was resolved from (`:registry`, default
+  `NPM.Config.registry/0`). Same-origin redirects are followed. A redirect to
+  another origin is followed, without the `Authorization` header, only when
+  that origin is an allowed registry or `NPM.Config.allow_registry_redirects?/0`
+  is set; otherwise it fails with `{:error, {:redirect_blocked, url}}`.
+
+  Downloads larger than `NPM.Config.max_tarball_bytes/0` fail with
+  `{:error, {:tarball_too_large, limit}}`.
   """
-  @spec fetch_and_extract(String.t(), String.t(), String.t()) ::
+  @spec fetch_and_extract(String.t(), String.t(), String.t(), keyword()) ::
           {:ok, non_neg_integer()} | {:error, term()}
-  def fetch_and_extract(tarball_url, integrity, dest_dir) do
-    fetch_and_extract(tarball_url, integrity, dest_dir, @max_retries)
+  def fetch_and_extract(tarball_url, integrity, dest_dir, opts \\ []) when is_list(opts) do
+    registry = Keyword.get_lazy(opts, :registry, &NPM.Config.registry/0)
+    fetch_and_extract(tarball_url, integrity, dest_dir, registry, @max_retries)
   end
 
-  defp fetch_and_extract(tarball_url, integrity, dest_dir, retries_left) do
-    case fetch(tarball_url) do
+  defp fetch_and_extract(tarball_url, integrity, dest_dir, registry, retries_left) do
+    case fetch(tarball_url, registry) do
       {:ok, %{status: 200, body: body}} ->
         with :ok <- maybe_verify_integrity(body, integrity, tarball_url) do
           extract(body, dest_dir)
@@ -30,38 +45,101 @@ defmodule NPM.Tarball do
       {:ok, %{status: status}} ->
         {:error, {:http, status}}
 
+      {:error, {:permanent, reason}} ->
+        {:error, reason}
+
       {:error, reason} when retries_left > 0 ->
-        retry(tarball_url, integrity, dest_dir, reason, retries_left)
+        retry(tarball_url, integrity, dest_dir, registry, reason, retries_left)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp fetch(tarball_url) do
-    case NPM.HTTPClient.get(tarball_url, request_options()) do
+  defp fetch(tarball_url, registry) do
+    request(tarball_url, auth_headers(tarball_url, registry), @max_redirects)
+  end
+
+  # Credentials belong to the registry a package was resolved from; a tarball
+  # hosted on any other origin is fetched anonymously.
+  defp auth_headers(tarball_url, registry) do
+    with origin when is_binary(origin) <- RegistryPolicy.origin(tarball_url),
+         ^origin <- RegistryPolicy.origin(registry),
+         token when is_binary(token) <- NPM.Config.auth_token(registry) do
+      [authorization: "Bearer #{token}"]
+    else
+      _ -> []
+    end
+  end
+
+  defp request(url, headers, redirects_left) do
+    case NPM.HTTPClient.get(url, [headers: headers] ++ request_options()) do
+      {:ok, %{status: status, headers: response_headers}} = response
+      when status in [301, 302, 303, 307, 308] ->
+        case redirect_target(url, response_headers) do
+          nil -> response
+          target -> follow_redirect(url, target, headers, redirects_left)
+        end
+
       {:ok, %{status: status}} = response when status in 200..499 ->
         response
 
       {:ok, %{status: status}} ->
         {:error, {:http, status}}
 
+      {:error, {:body_too_large, limit}} ->
+        {:error, {:permanent, {:tarball_too_large, limit}}}
+
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp request_options do
-    [decode_body: false, timeout: @receive_timeout, connect_timeout: @connect_timeout]
+  defp redirect_target(url, response_headers) do
+    Enum.find_value(response_headers, fn {name, value} ->
+      if String.downcase(to_string(name)) == "location" and value != "",
+        do: url |> URI.merge(value) |> URI.to_string()
+    end)
   end
 
-  defp retry(tarball_url, integrity, dest_dir, reason, retries_left) do
+  defp follow_redirect(_url, _target, _headers, 0),
+    do: {:error, {:permanent, :too_many_redirects}}
+
+  defp follow_redirect(url, target, headers, redirects_left) do
+    target_origin = RegistryPolicy.origin(target)
+
+    cond do
+      target_origin == nil ->
+        {:error, {:permanent, {:redirect_blocked, target}}}
+
+      target_origin == RegistryPolicy.origin(url) ->
+        request(target, headers, redirects_left - 1)
+
+      NPM.Config.allow_registry_redirects?() or target_origin in RegistryPolicy.allowed_origins() ->
+        request(target, [], redirects_left - 1)
+
+      true ->
+        {:error, {:permanent, {:redirect_blocked, target}}}
+    end
+  end
+
+  defp request_options do
+    [
+      decode_body: false,
+      redirect: false,
+      max_body_bytes: NPM.Config.max_tarball_bytes(),
+      timeout: @receive_timeout,
+      connect_timeout: @connect_timeout
+    ]
+  end
+
+  defp retry(tarball_url, integrity, dest_dir, registry, reason, retries_left) do
     Mix.shell().error(
       "tarball fetch failed for #{tarball_url}, retrying in #{retry_delay_ms(retries_left)}ms: #{inspect(reason)}"
     )
 
     Process.sleep(retry_delay_ms(retries_left))
-    fetch_and_extract(tarball_url, integrity, dest_dir, retries_left - 1)
+    fetch_and_extract(tarball_url, integrity, dest_dir, registry, retries_left - 1)
   end
 
   # npm installs entries without a recorded integrity (old lockfiles, legacy
@@ -155,22 +233,133 @@ defmodule NPM.Tarball do
 
   Strips the single top-level directory used by npm package tarballs.
   Returns `{:ok, file_count}`.
+
+  An archive that unpacks to more than `NPM.Config.max_unpacked_bytes/0` fails
+  with `{:error, {:unpacked_too_large, limit}}` before anything is written.
   """
   @spec extract(binary(), String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
   def extract(tgz_data, dest_dir) do
-    File.mkdir_p!(dest_dir)
+    limit = NPM.Config.max_unpacked_bytes()
 
-    case :erl_tar.extract({:binary, tgz_data}, [:compressed, :memory]) do
-      {:ok, entries} ->
-        modes = extract_modes(tgz_data)
+    with {:ok, tar_data} <- inflate(tgz_data, limit),
+         :ok <- check_tar_sizes(tar_data, limit, 0) do
+      File.mkdir_p!(dest_dir)
 
-        with {:ok, files} <- safe_entries(entries, dest_dir) do
-          write_and_chmod(files, modes)
-          {:ok, length(files)}
+      case extract_entries(tar_data) do
+        {:ok, entries} ->
+          modes = extract_modes(tar_data)
+
+          with {:ok, files} <- safe_entries(entries, dest_dir) do
+            write_and_chmod(files, modes)
+            {:ok, length(files)}
+          end
+
+        {:error, reason} ->
+          {:error, {:extract, reason}}
+      end
+    end
+  end
+
+  defp extract_entries(tar_data) do
+    :erl_tar.extract({:binary, tar_data}, [:memory])
+  rescue
+    # erl_tar returns errors for malformed numeric tar fields, but its PAX
+    # numeric conversions raise instead. Keep invalid archives in this API's
+    # error result without catching filesystem or unrelated exceptions.
+    ArgumentError -> {:error, :invalid_header}
+  end
+
+  # Inflate the gzip stream ourselves so the unpacked size is bounded while
+  # decompressing; `:erl_tar` would inflate the whole archive into memory first.
+  # Raw tar inputs have the same bound. Malformed gzip is never passed to an
+  # unbounded fallback decompressor.
+  defp inflate(<<0x1F, 0x8B, _::binary>> = data, limit) do
+    zstream = :zlib.open()
+
+    try do
+      :zlib.inflateInit(zstream, 31)
+      inflate_chunks(:zlib.safeInflate(zstream, data), zstream, [], 0, limit)
+    rescue
+      ErlangError -> {:error, {:extract, :invalid_gzip}}
+    after
+      :zlib.close(zstream)
+    end
+  end
+
+  defp inflate(data, limit) when byte_size(data) > limit,
+    do: {:error, {:unpacked_too_large, limit}}
+
+  defp inflate(data, _limit), do: {:ok, data}
+
+  defp inflate_chunks({status, output}, zstream, acc, size, limit) do
+    size = size + IO.iodata_length(output)
+
+    cond do
+      size > limit -> {:error, {:unpacked_too_large, limit}}
+      status == :finished -> finish_inflate(zstream, [acc, output])
+      true -> inflate_chunks(:zlib.safeInflate(zstream, []), zstream, [acc, output], size, limit)
+    end
+  end
+
+  # GNU sparse headers describe logical files much larger than their stored
+  # tar data. Both :erl_tar.extract/2 and even :erl_tar.table/2 expand sparse
+  # holes in memory, so check the cumulative logical sizes before either call.
+  # Walk using stored sizes, including GNU's optional sparse-map blocks.
+  defp check_tar_sizes(<<0::size(4096), _::binary>>, _limit, _size), do: :ok
+  defp check_tar_sizes(<<>>, _limit, _size), do: :ok
+
+  defp check_tar_sizes(<<header::binary-size(512), rest::binary>>, limit, size) do
+    type = :binary.at(header, 156)
+
+    with {:ok, stored_size} <- tar_number(binary_part(header, 124, 12)),
+         stored_size = if(type in [?1, ?2, ?5], do: 0, else: stored_size),
+         {:ok, logical_size} <- logical_size(header, type, stored_size) do
+      if size + logical_size > limit do
+        {:error, {:unpacked_too_large, limit}}
+      else
+        with {:ok, rest} <- skip_sparse_maps(header, type, rest),
+             {:ok, tail} <- skip_tar_data(rest, stored_size) do
+          check_tar_sizes(tail, limit, size + logical_size)
         end
+      end
+    end
+  end
 
-      {:error, reason} ->
-        {:error, {:extract, reason}}
+  defp check_tar_sizes(_truncated, _limit, _size), do: {:error, {:extract, :eof}}
+
+  defp logical_size(header, ?S, _stored_size), do: tar_number(binary_part(header, 483, 12))
+  defp logical_size(_header, _type, stored_size), do: {:ok, stored_size}
+
+  # Tar numeric fields use octal ASCII or GNU's signed base-256 encoding.
+  defp tar_number(<<1::1, value::signed-integer-size(95)>>) when value >= 0,
+    do: {:ok, value}
+
+  defp tar_number(field) do
+    value = field |> :binary.split(<<0>>) |> hd() |> String.trim()
+
+    case Integer.parse(if(value == "", do: "0", else: value), 8) do
+      {number, ""} when number >= 0 -> {:ok, number}
+      _ -> {:error, {:extract, :invalid_header}}
+    end
+  end
+
+  defp skip_sparse_maps(header, ?S, rest),
+    do: skip_sparse_maps(rest, :binary.at(header, 482) != 0)
+
+  defp skip_sparse_maps(_header, _type, rest), do: {:ok, rest}
+  defp skip_sparse_maps(rest, false), do: {:ok, rest}
+
+  defp skip_sparse_maps(<<extension::binary-size(512), rest::binary>>, true),
+    do: skip_sparse_maps(rest, :binary.at(extension, 504) != 0)
+
+  defp skip_sparse_maps(_truncated, true), do: {:error, {:extract, :eof}}
+
+  defp skip_tar_data(data, size) do
+    padded = div(size + 511, 512) * 512
+
+    case data do
+      <<_::binary-size(padded), rest::binary>> -> {:ok, rest}
+      _ -> {:error, {:extract, :eof}}
     end
   end
 
@@ -223,8 +412,14 @@ defmodule NPM.Tarball do
     end)
   end
 
-  defp extract_modes(tgz_data) do
-    case :erl_tar.table({:binary, tgz_data}, [:compressed, :verbose]) do
+  # `inflateEnd/1` raises unless the gzip stream ended.
+  defp finish_inflate(zstream, output) do
+    :zlib.inflateEnd(zstream)
+    {:ok, IO.iodata_to_binary(output)}
+  end
+
+  defp extract_modes(tar_data) do
+    case :erl_tar.table({:binary, tar_data}, [:verbose]) do
       {:ok, table_entries} -> Map.new(table_entries, &parse_table_entry/1)
       _ -> %{}
     end

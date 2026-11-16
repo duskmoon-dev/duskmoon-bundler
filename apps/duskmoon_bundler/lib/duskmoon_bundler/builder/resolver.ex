@@ -16,6 +16,12 @@ defmodule DuskmoonBundler.Builder.Resolver do
     end
   end
 
+  @doc "Whether a specifier names an external package or one of its subpaths."
+  def external?(specifier, external) do
+    MapSet.member?(external, specifier) or
+      Enum.any?(external, &String.starts_with?(specifier, &1 <> "/"))
+  end
+
   def absolute?(specifier), do: String.starts_with?(specifier, "/")
 
   defp do_resolve(specifier, importer, ctx, query) do
@@ -113,11 +119,6 @@ defmodule DuskmoonBundler.Builder.Resolver do
       File.exists?(base <> ".d.mts")
   end
 
-  defp external?(specifier, external) do
-    MapSet.member?(external, specifier) or
-      Enum.any?(external, &String.starts_with?(specifier, &1 <> "/"))
-  end
-
   defp resolve_bare(specifier, importer, ctx) do
     {importer_path, _query} = DuskmoonBundler.URL.split_query(importer)
     {package_name, _subpath} = NPM.Resolution.PackageResolver.split_specifier(specifier)
@@ -147,28 +148,39 @@ defmodule DuskmoonBundler.Builder.Resolver do
 
   defp resolve_configured_bare(specifier, node_modules, resolve_dirs, plugins) do
     dirs = if node_modules, do: [node_modules | resolve_dirs], else: resolve_dirs
+    {package_name, _subpath} = NPM.Resolution.PackageResolver.split_specifier(specifier)
 
-    Enum.find_value(dirs, :skip, fn dir ->
-      {package_name, _subpath} = NPM.Resolution.PackageResolver.split_specifier(specifier)
-      package_dir = Path.join(dir, package_name)
+    case Enum.find(dirs, &File.dir?(Path.join(&1, package_name))) do
+      nil ->
+        {:error, {:not_found, specifier}}
 
-      if File.dir?(package_dir) do
-        resolve_in_package(specifier, dir, package_dir, plugins)
-      end
-    end)
+      dir ->
+        resolve_in_package(specifier, dir, Path.join(dir, package_name), plugins) ||
+          {:error, {:not_found, specifier}}
+    end
   end
 
   defp resolve_in_package(specifier, dir, package_dir, plugins) do
     subpath = subpath_for(specifier)
     extensions = DuskmoonBundler.JS.Extensions.resolvable(plugins)
+    manifest? = File.regular?(Path.join(package_dir, "package.json"))
 
+    # A package manifest makes the npm resolver authoritative, including exports
+    # denials and exports that intentionally map a subpath back to the main file.
+    # Keep the legacy direct-path fallback only for directories without a manifest.
     case NPM.Resolution.PackageResolver.resolve_entry(package_dir,
            subpath: subpath,
            extensions: extensions,
            conditions: DuskmoonBundler.JS.Resolution.browser_conditions()
          ) do
+      {:ok, _resolved} = ok when manifest? ->
+        ok
+
       {:ok, resolved} ->
         maybe_try_direct_path(resolved, subpath, dir, specifier, package_dir, extensions)
+
+      :error when manifest? ->
+        nil
 
       :error ->
         case NPM.Resolution.PackageResolver.try_resolve(Path.join(dir, specifier),
