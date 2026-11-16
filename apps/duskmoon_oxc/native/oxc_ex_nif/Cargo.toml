@@ -23,7 +23,7 @@ oxc_sourcemap = "9.0"
 oxc_span = "0.157"
 oxc_str = "0.157"
 oxc_syntax = "0.157"
-oxc_transformer = "0.157"
+oxc_transformer = "0.158"
 oxc_transformer_plugins = "0.157"
 oxc = { version = "0.157", features = ["minifier"] }
 rolldown = "1.3.0"
