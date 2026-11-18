@@ -668,14 +668,22 @@ defmodule QuickBEAM.Core.ConcurrencyTest do
 
     test "OOM doesn't crash runtime" do
       {:ok, rt} = QuickBEAM.start(memory_limit: 2 * 1024 * 1024)
+      {:ok, 42} = QuickBEAM.eval(rt, "globalThis.recoveryValue = 42")
 
-      {:error, _} =
-        QuickBEAM.eval(rt, """
-          const arrays = [];
-          while(true) arrays.push(new Array(10000).fill('x'));
-        """)
+      for _attempt <- 1..3 do
+        assert {:error, %QuickBEAM.JSError{}} =
+                 QuickBEAM.eval(rt, """
+                   (() => {
+                     const arrays = [];
+                     while(true) arrays.push(new Array(100).fill('x'));
+                   })()
+                 """)
 
-      {:ok, 42} = QuickBEAM.eval(rt, "42")
+        assert {:ok, 42} = QuickBEAM.eval(rt, "42")
+        assert {:ok, 42} = QuickBEAM.eval(rt, "globalThis.recoveryValue")
+        assert {:ok, "undefined"} = QuickBEAM.eval(rt, "typeof arrays")
+      end
+
       QuickBEAM.stop(rt)
     end
 
