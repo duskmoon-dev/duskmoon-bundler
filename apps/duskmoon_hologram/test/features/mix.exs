@@ -18,8 +18,8 @@ defmodule HologramFeatureTests.MixProject do
 
   defp deps do
     [
-      {:gaoxy_http, "~> 0.15.0"},
-      {:websock_adapter, "~> 0.15.0", hex: :gaoxy_websock_adapter, override: true},
+      {:gaoxy_http, "~> 0.16.6"},
+      {:websock_adapter, "~> 0.16.6", hex: :gaoxy_websock_adapter, override: true},
       {:credo, "~> 1.0", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.0", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.40", runtime: false, override: true},

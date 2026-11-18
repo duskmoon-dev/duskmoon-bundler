@@ -47,7 +47,7 @@ defmodule DuskmoonBundler.MixProject do
       {:rustler, "~> 0.36 or ~> 0.37 or ~> 0.38", optional: true, runtime: false},
       {:dotenvy, "~> 1.1"},
       {:lazy_html, "~> 0.1.0"},
-      {:plug, "~> 1.16"},
+      {:plug, "~> 1.20.4"},
       {:websock_adapter, "~> 0.5"},
       {:file_system, "~> 1.0"},
       {:jason, "~> 1.4"},
@@ -60,7 +60,7 @@ defmodule DuskmoonBundler.MixProject do
       {:ex_dna, "~> 1.1", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.40", runtime: false, override: true},
       {:makeup_js, "~> 0.1", only: :dev, runtime: false},
-      {:gaoxy_http, "~> 0.15.0", only: :test},
+      {:gaoxy_http, "~> 0.16.6", only: :test},
       {:http_web_socket, "~> 1.0.0-rc.18", only: :test}
     ]
   end
