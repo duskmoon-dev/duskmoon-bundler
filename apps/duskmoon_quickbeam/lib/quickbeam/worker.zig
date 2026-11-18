@@ -907,6 +907,12 @@ pub const WorkerState = struct {
     }
 
     pub fn do_load_addon(self: *WorkerState, path: [:0]const u8, global_name: ?[:0]const u8, allow_reinitialization: bool, result: *Result) void {
+        if (self.rd.restricted) {
+            result.ok = false;
+            result.json = "Native addons are denied in strict sandbox mode";
+            return;
+        }
+
         const canonical_path = sync.realPathAlloc(gpa, path) catch {
             setAddonError(result, "addon_not_found", path);
             return;
@@ -1058,6 +1064,8 @@ pub const WorkerState = struct {
         beam_proxy.initContext(self.ctx);
         self.atoms = atom_cache.AtomCache.init(self.ctx);
         self.dom_data = globals.install_all(self.ctx);
+
+        if (self.rd.restricted) return;
 
         const global = qjs.JS_GetGlobalObject(self.ctx);
         defer qjs.JS_FreeValue(self.ctx, global);

@@ -202,6 +202,7 @@ defmodule QuickBEAM.Native do
       pool_start: 1,
       pool_stop: 1,
       pool_create_context: 5,
+      pool_create_context_with_policy: 6,
       pool_destroy_context: 2,
       pool_eval: 4,
       pool_call_function: 5,

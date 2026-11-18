@@ -13,6 +13,8 @@ pub fn install_all(ctx: *qjs.JSContext) ?*dom.DocumentData {
     defer qjs.JS_FreeValue(ctx, global);
 
     beam_call.install(ctx, global);
+    const state: *@import("worker.zig").WorkerState = @ptrCast(@alignCast(qjs.JS_GetContextOpaque(ctx)));
+    if (state.rd.restricted) return null;
     timers.install(ctx, global);
     console.install(ctx, global);
     text_encoding.install(ctx, global);

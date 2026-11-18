@@ -33,7 +33,7 @@ defmodule QuickBEAM.EventSource do
   @impl true
   def handle_continue(:connect, state) do
     # Native.send_message queues events; it does not acknowledge JS consumption.
-    case HTTP.EventSource.new(state.url, owner: self(), delivery: :legacy) do
+    case HTTP.EventSource.new(state.url, owner: self(), delivery: :push) do
       %HTTP.EventSource{} = source ->
         {:noreply, Map.put(state, :source, source)}
 

@@ -42,7 +42,7 @@ defmodule QuickBEAM.WebSocket do
     case HTTP.WebSocket.new(state.url, state.protocols,
            owner: self(),
            binary_type: :array_buffer,
-           delivery: :legacy
+           delivery: :push
          ) do
       %HTTP.WebSocket{} = socket ->
         {:noreply, Map.put(state, :socket, socket)}

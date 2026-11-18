@@ -61,7 +61,7 @@ defmodule DuskmoonBundler.MixProject do
       {:ex_doc, "~> 0.40", runtime: false, override: true},
       {:makeup_js, "~> 0.1", only: :dev, runtime: false},
       {:gaoxy_http, "~> 0.15.0", only: :test},
-      {:http_web_socket, "~> 1.0.0-rc.4", only: :test}
+      {:http_web_socket, "~> 1.0.0-rc.18", only: :test}
     ]
   end
 

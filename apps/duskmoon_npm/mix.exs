@@ -48,7 +48,7 @@ defmodule DuskmoonNpm.MixProject do
       {:duskmoon_hex_solver, in_umbrella: true},
       {:nimble_parsec, "~> 1.0", runtime: false},
       {:jason, "~> 1.4"},
-      {:http_fetch, "~> 1.0.0-rc.4"},
+      {:http_fetch, "~> 1.0.0-rc.18"},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_slop, "~> 0.4", only: [:dev, :test], runtime: false},

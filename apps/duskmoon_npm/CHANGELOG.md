@@ -1,7 +1,9 @@
 # Changelog
 
-## 10.1.10 - 2026-11-16
+## 10.1.10 - 2026-11-18
 
+- Preserve structured HTTP stream failure reasons without returning partial
+  bodies; require HTTP Fetch RC18 or later (#40).
 - Resolve overlapping wildcard exports by Node's prefix and suffix specificity,
   independent of declaration order, with exact-match priority (#26).
 - Preserve null export exclusions and prevent filesystem fallbacks from

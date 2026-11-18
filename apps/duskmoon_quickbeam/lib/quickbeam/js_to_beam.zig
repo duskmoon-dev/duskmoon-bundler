@@ -27,6 +27,7 @@ const ConvertState = struct {
     limits: ConvertLimits,
     visited: VisitedSet,
     node_count: u32 = 0,
+    restricted: bool = false,
 
     fn budgetExceeded(self: *ConvertState) bool {
         return self.node_count >= self.limits.max_nodes;
@@ -50,6 +51,7 @@ pub fn convert_with_limits(ctx: *qjs.JSContext, val: qjs.JSValue, env: ?*e.ErlNi
         .opts = Env{ .env = env },
         .limits = limits,
         .visited = VisitedSet.init(gpa),
+        .restricted = restricted_context(ctx),
     };
     defer state.visited.deinit();
     return convert_recursive(ctx, val, &state, 0);
@@ -77,6 +79,7 @@ pub fn convert_error_with_limits(ctx: *qjs.JSContext, val: qjs.JSValue, env: ?*e
         .opts = opts,
         .limits = limits,
         .visited = VisitedSet.init(gpa),
+        .restricted = restricted_context(ctx),
     };
     defer state.visited.deinit();
     return beam.make(.{
@@ -118,7 +121,7 @@ fn convert_recursive(ctx: *qjs.JSContext, val: qjs.JSValue, state: *ConvertState
     }
 
     if (qjs.JS_IsSymbol(val)) {
-        return convert_symbol(ctx, val, state.opts);
+        return convert_symbol(ctx, val, state.opts, state.restricted);
     }
 
     if (qjs.JS_IsString(val)) {
@@ -214,16 +217,19 @@ fn convert_array(ctx: *qjs.JSContext, val: qjs.JSValue, state: *ConvertState, de
 }
 
 fn convert_object_to_map(ctx: *qjs.JSContext, val: qjs.JSValue, state: *ConvertState, depth: u32) e.ErlNifTerm {
-    const type_val = qjs.JS_GetPropertyStr(ctx, val, "__beam_type__");
-    if (!qjs.JS_IsUndefined(type_val)) {
-        qjs.JS_FreeValue(ctx, type_val);
-        const data_val = qjs.JS_GetPropertyStr(ctx, val, "__beam_data__");
-        defer qjs.JS_FreeValue(ctx, data_val);
-        if (!qjs.JS_IsUndefined(data_val)) {
-            return decode_beam_term(ctx, data_val, state.opts);
+    // Strict contexts accept ordinary data, never forged external BEAM terms.
+    if (!state.restricted) {
+        const type_val = qjs.JS_GetPropertyStr(ctx, val, "__beam_type__");
+        if (!qjs.JS_IsUndefined(type_val)) {
+            qjs.JS_FreeValue(ctx, type_val);
+            const data_val = qjs.JS_GetPropertyStr(ctx, val, "__beam_data__");
+            defer qjs.JS_FreeValue(ctx, data_val);
+            if (!qjs.JS_IsUndefined(data_val)) {
+                return decode_beam_term(ctx, data_val, state.opts);
+            }
+        } else {
+            qjs.JS_FreeValue(ctx, type_val);
         }
-    } else {
-        qjs.JS_FreeValue(ctx, type_val);
     }
 
     const obj_ptr = obj_identity(val) orelse return empty_map(state.opts);
@@ -312,7 +318,7 @@ fn empty_map(opts: Env) e.ErlNifTerm {
     return result;
 }
 
-fn convert_symbol(ctx: *qjs.JSContext, val: qjs.JSValue, opts: Env) e.ErlNifTerm {
+fn convert_symbol(ctx: *qjs.JSContext, val: qjs.JSValue, opts: Env, restricted: bool) e.ErlNifTerm {
     const desc_val = qjs.JS_GetPropertyStr(ctx, val, "description");
     defer qjs.JS_FreeValue(ctx, desc_val);
 
@@ -320,9 +326,11 @@ fn convert_symbol(ctx: *qjs.JSContext, val: qjs.JSValue, opts: Env) e.ErlNifTerm
         const ptr = qjs.JS_ToCString(ctx, desc_val);
         if (ptr != null) {
             defer qjs.JS_FreeCString(ctx, ptr);
+            if (restricted) return beam.make(std.mem.span(ptr), opts).v;
             return beam.make_into_atom(std.mem.span(ptr), opts).v;
         }
     }
+    if (restricted) return beam.make(@as([]const u8, "symbol"), opts).v;
     return beam.make_into_atom("symbol", opts).v;
 }
 
@@ -358,4 +366,10 @@ fn is_typed_array(ctx: *qjs.JSContext, val: qjs.JSValue) bool {
     }
     qjs.JS_FreeValue(ctx, ab);
     return true;
+}
+
+fn restricted_context(ctx: *qjs.JSContext) bool {
+    const opaque_state = qjs.JS_GetContextOpaque(ctx) orelse return false;
+    const state: *@import("worker.zig").WorkerState = @ptrCast(@alignCast(opaque_state));
+    return state.rd.restricted;
 }

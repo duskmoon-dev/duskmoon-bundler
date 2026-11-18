@@ -5,10 +5,19 @@ defmodule QuickBEAM.Runtime do
   require Logger
 
   @enforce_keys [:resource]
-  defstruct [:resource, handlers: %{}, monitors: %{}, workers: %{}, websockets: %{}, pending: %{}]
+  defstruct [
+    :resource,
+    sandbox: false,
+    handlers: %{},
+    monitors: %{},
+    workers: %{},
+    websockets: %{},
+    pending: %{}
+  ]
 
   @type t :: %__MODULE__{
           resource: reference(),
+          sandbox: false | :strict,
           handlers: map(),
           monitors: map(),
           workers: map(),
@@ -27,6 +36,10 @@ defmodule QuickBEAM.Runtime do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
+    with {:ok, opts} <- QuickBEAM.Sandbox.options(opts), do: start_runtime(opts)
+  end
+
+  defp start_runtime(opts) do
     caller = self()
     opts = Keyword.put(opts, :__caller__, caller)
     ref = make_ref()
@@ -289,9 +302,11 @@ defmodule QuickBEAM.Runtime do
       end
 
     user_handlers = Keyword.get(opts, :handlers, %{})
+    sandbox = Keyword.get(opts, :sandbox, false)
+    base_handlers = if sandbox == :strict, do: %{}, else: @beam_handlers
 
     builtin_handlers =
-      Enum.reduce(apis, @beam_handlers, fn
+      Enum.reduce(apis, base_handlers, fn
         :browser, acc -> Map.merge(acc, @browser_handlers)
         :node, acc -> Map.merge(acc, @node_handlers)
         _, acc -> acc
@@ -315,9 +330,10 @@ defmodule QuickBEAM.Runtime do
         :max_convert_nodes
       ])
       |> Map.new()
+      |> Map.put(:restricted, if(sandbox == :strict, do: 1, else: 0))
 
     resource = QuickBEAM.Native.start_runtime(self(), nif_opts)
-    state = %__MODULE__{resource: resource, handlers: merged_handlers}
+    state = %__MODULE__{resource: resource, handlers: merged_handlers, sandbox: sandbox}
     if QuickBEAM.Cover.enabled?(), do: sync_enable_coverage(resource)
     install_builtins(state, apis)
     install_defines(state, Keyword.get(opts, :define, %{}))
@@ -588,14 +604,17 @@ defmodule QuickBEAM.Runtime do
     {:noreply, state}
   end
 
-  def handle_info({:beam_call, call_id, "__process_monitor", [pid, callback_id]}, state) do
+  def handle_info(
+        {:beam_call, call_id, "__process_monitor", [pid, callback_id]},
+        %{sandbox: false} = state
+      ) do
     ref = Process.monitor(pid)
     monitors = Map.put(state.monitors, ref, callback_id)
     QuickBEAM.Native.resolve_call_term(state.resource, call_id, ref)
     {:noreply, %{state | monitors: monitors}}
   end
 
-  def handle_info({:beam_call, call_id, "__process_demonitor", [ref]}, state) do
+  def handle_info({:beam_call, call_id, "__process_demonitor", [ref]}, %{sandbox: false} = state) do
     {callback_id, monitors} = Map.pop(state.monitors, ref)
     if ref, do: Process.demonitor(ref, [:flush])
     QuickBEAM.Native.resolve_call_term(state.resource, call_id, callback_id)

@@ -103,6 +103,7 @@ pub fn start_runtime(owner_pid: beam.pid, opts: beam.term) !RuntimeResource {
     };
 
     const env = beam.context.env orelse return error.NoEnv;
+    data.restricted = (get_map_uint(env, opts.v, "restricted") orelse 0) != 0;
     if (get_map_uint(env, opts.v, "memory_limit")) |v| {
         data.memory_limit = v;
     }
@@ -656,6 +657,10 @@ pub fn pool_stop(resource: PoolResource) beam.term {
 }
 
 pub fn pool_create_context(resource: PoolResource, context_id: u64, owner_pid: beam.pid, memory_limit: u64, max_reductions: i64) beam.term {
+    return pool_create_context_with_policy(resource, context_id, owner_pid, memory_limit, max_reductions, false);
+}
+
+pub fn pool_create_context_with_policy(resource: PoolResource, context_id: u64, owner_pid: beam.pid, memory_limit: u64, max_reductions: i64, restricted: bool) beam.term {
     const data = resource.unpack();
     const env = beam.context.env orelse return beam.make(.{ .@"error", "no env" }, .{});
 
@@ -671,6 +676,7 @@ pub fn pool_create_context(resource: PoolResource, context_id: u64, owner_pid: b
         .ref_term = ref_term,
         .memory_limit = memory_limit,
         .max_reductions = max_reductions,
+        .restricted = restricted,
     } });
 
     return beam.term{ .v = e.enif_make_copy(env, ref_term) };

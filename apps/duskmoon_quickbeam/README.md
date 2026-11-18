@@ -289,6 +289,37 @@ QuickBEAM.start(apis: [:browser, :node])
 QuickBEAM.start(apis: false)
 ```
 
+### Strict capability mode
+
+For untrusted JavaScript, use `sandbox: :strict` on `QuickBEAM` or
+`QuickBEAM.Context` and supply an explicit handler allowlist:
+
+```elixir
+{:ok, rt} = QuickBEAM.start(
+  sandbox: :strict,
+  handlers: %{"tools.invoke" => &MyApp.invoke_admitted_tool/1},
+  memory_limit: 16 * 1024 * 1024
+)
+QuickBEAM.eval(rt, ~S|await Beam.call("tools.invoke", {name: "lookup"})|, timeout: 1000)
+```
+
+Strict mode installs no implicit handlers or API polyfills. `Beam.call` and
+`Beam.callSync` can invoke only the supplied handlers; native `Beam.self`,
+`Beam.send` and `Beam.onMessage` reject calls. Process lookup, RPC, runtime/worker
+spawning, filesystem, network, environment, subprocesses, native module imports
+and addon loading are unavailable. Restrictions survive reset and are independent
+for contexts sharing a pool. Symbols cross into Elixir as strings, and
+`__beam_type__`/`__beam_data__` objects remain ordinary maps instead of decoding
+external BEAM terms, so JavaScript cannot allocate permanent BEAM atoms.
+Conflicting `:apis` and handler names beginning with `__` are rejected before
+startup. Trusted defaults remain unchanged.
+
+`apis: false` only disables polyfills and retains privileged BEAM handlers;
+it is not a capability boundary. Host handlers and host-supplied modules remain
+trusted: validate their arguments and grant only intended authority. Strict mode
+does not terminate already-started host callback tasks or replace OS isolation,
+CPU deadlines and memory limits for hostile workloads.
+
 ## Node.js compatibility
 
 Like Bun, QuickBEAM implements core Node.js APIs. BEAM-specific
@@ -450,7 +481,7 @@ Upstream `http_fetch` decodes gzip and deflate HTTP content encodings; archive b
 without a Content-Encoding header remain intact.
 EventSource parsing, reconnect delays and Last-Event-ID tracking use the upstream
 client; transient errors leave JavaScript in CONNECTING, while terminal errors close it.
-EventSource and WebSocket use upstream legacy delivery because the native bridge
+EventSource and WebSocket use upstream `:push` delivery because the native bridge
 queues messages without an acknowledgement of JavaScript consumption.
 
 ## Data conversion
@@ -585,7 +616,7 @@ See [`bench/`](https://github.com/elixir-volt/quickbeam/tree/master/bench) for d
 | One-off eval, scripting | `QuickBEAM` (Runtime) | Simple, full isolation |
 | SSR request pool | `QuickBEAM.Pool` | Checkout/checkin with reset |
 | Per-connection state (LiveView) | `QuickBEAM.Context` | Lightweight, thousands concurrent |
-| Sandboxed user code | `QuickBEAM` or `Context` with `apis: false` | Memory limits, reduction limits, timeouts |
+| Sandboxed user code | `QuickBEAM` or `Context` with `sandbox: :strict` | Explicit handlers, memory limits, reduction limits, timeouts |
 
 ## Development
 
@@ -623,7 +654,8 @@ TypeScript lint, duplicate-code checks, and tests.
   and native DOM. Elixir reads the DOM directly — no `renderToString`.
 - [`examples/rule_engine/`](https://github.com/elixir-volt/quickbeam/tree/master/examples/rule_engine) — user-defined business
   rules (pricing, validation, transforms) in sandboxed JS runtimes with
-  `apis: false`, memory limits, timeouts, and hot reload.
+  memory limits, timeouts, and hot reload. Configure `sandbox: :strict`
+  and explicit handlers when adapting it for untrusted code.
 - [`examples/live_dashboard/`](https://github.com/elixir-volt/quickbeam/tree/master/examples/live_dashboard) — Workers (BEAM
   processes) compute metrics in parallel and broadcast results via
   BroadcastChannel (`:pg`). Crash recovery via OTP supervisor.

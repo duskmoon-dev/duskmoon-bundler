@@ -75,11 +75,16 @@ defmodule QuickBEAM do
     * `:name` — register the GenServer under this name
     * `:handlers` — `%{String.t() => function}` map for `Beam.call`/`Beam.callSync`
     * `:script` — path to a JS/TS file to evaluate on startup (auto-bundles imports)
+    * `:sandbox` — `:strict` permits only the explicit `:handlers` allowlist,
+      disables ambient APIs and native process messaging, and denies addon loading.
+      Defaults to `false` for trusted code. Strict mode rejects enabled `:apis`
+      and reserved handler names beginning with `__`.
     * `:apis` — which API surfaces to load (default: `[:browser]`)
       * `:browser` — Web APIs (fetch, DOM, WebSocket, crypto, streams, …)
       * `:node` — Node.js compat (process, path, fs, os)
       * `[:browser, :node]` — both
-      * `false` — bare QuickJS engine, no polyfills
+      * `false` — no polyfills; privileged native/BEAM bridges remain enabled.
+        Use `sandbox: :strict` for untrusted code.
     * `:define` — `%{String.t() => term()}` of globals to inject before the script runs.
       Values are JSON-encoded. Useful for passing config without `Beam.callSync`.
 

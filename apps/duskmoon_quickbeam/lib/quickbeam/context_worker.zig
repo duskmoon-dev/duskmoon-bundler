@@ -223,6 +223,7 @@ fn handle_create_context(
         .queue_tail = null,
         .stopped = false,
         .thread = null,
+        .restricted = p.restricted,
         .max_convert_depth = pd.max_convert_depth,
         .max_convert_nodes = pd.max_convert_nodes,
         .wasm_stack_size = pd.wasm_stack_size,

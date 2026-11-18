@@ -1,6 +1,6 @@
 # Changelog
 
-## 10.1.10 - 2026-11-16
+## 10.1.10 - 2026-11-18
 
 - Respect package export mappings and blocked subpaths in production,
   development stylesheet and Tailwind resolution (#26).

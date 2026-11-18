@@ -43,6 +43,7 @@ pub const CreateContextPayload = struct {
     ref_term: e.ErlNifTerm,
     memory_limit: usize = 0,
     max_reductions: i64 = 0,
+    restricted: bool = false,
 };
 
 pub const DestroyContextPayload = struct {

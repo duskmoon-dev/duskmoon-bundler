@@ -15,6 +15,11 @@ defmodule QuickBEAM.Context do
       {:ok, 3} = QuickBEAM.Context.eval(ctx, "1 + 2")
       QuickBEAM.Context.stop(ctx)
 
+  Use `sandbox: :strict` with an explicit `handlers: %{...}` allowlist for
+  untrusted code. It disables ambient APIs, private builtin handlers and native
+  process messaging for this context only. Enabled `:apis` and handler names
+  beginning with `__` are rejected. `apis: false` alone only disables polyfills.
+
   ## With LiveView
 
       def mount(_params, _session, socket) do
@@ -71,9 +76,10 @@ defmodule QuickBEAM.Context do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    {pool, opts} = Keyword.pop!(opts, :pool)
-
-    GenServer.start_link(__MODULE__, [{:pool, pool} | opts], Keyword.take(opts, [:name]))
+    with {:ok, opts} <- QuickBEAM.Sandbox.options(opts) do
+      {pool, opts} = Keyword.pop!(opts, :pool)
+      GenServer.start_link(__MODULE__, [{:pool, pool} | opts], Keyword.take(opts, [:name]))
+    end
   end
 
   @spec eval(GenServer.server(), String.t(), keyword()) :: {:ok, term()} | {:error, String.t()}
@@ -104,7 +110,12 @@ defmodule QuickBEAM.Context do
   def init(opts) do
     pool = Keyword.fetch!(opts, :pool)
     apis = normalize_apis(Keyword.get(opts, :apis, [:browser]))
-    handlers = build_handlers(apis, Keyword.get(opts, :handlers, %{}))
+
+    handlers =
+      if opts[:sandbox] == :strict,
+        do: Keyword.get(opts, :handlers, %{}),
+        else: build_handlers(apis, Keyword.get(opts, :handlers, %{}))
+
     state = build_state(pool, handlers, opts)
 
     install_builtins(state, apis)
@@ -159,7 +170,8 @@ defmodule QuickBEAM.Context do
     {pool_resource, context_id} =
       QuickBEAM.ContextPool.create_context(pool, self(),
         memory_limit: memory_limit,
-        max_reductions: max_reductions
+        max_reductions: max_reductions,
+        sandbox: Keyword.get(opts, :sandbox, false)
       )
 
     %__MODULE__{

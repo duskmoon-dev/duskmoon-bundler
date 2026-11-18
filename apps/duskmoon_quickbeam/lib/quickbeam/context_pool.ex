@@ -78,12 +78,13 @@ defmodule QuickBEAM.ContextPool do
     max_reductions = Keyword.get(opts, :max_reductions, 0)
 
     ref =
-      QuickBEAM.Native.pool_create_context(
+      QuickBEAM.Native.pool_create_context_with_policy(
         resource,
         context_id,
         owner_pid,
         memory_limit,
-        max_reductions
+        max_reductions,
+        opts[:sandbox] == :strict
       )
 
     receive do

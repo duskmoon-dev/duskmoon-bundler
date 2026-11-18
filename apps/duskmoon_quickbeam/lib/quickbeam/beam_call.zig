@@ -156,6 +156,9 @@ fn beam_send_impl(
     argc: c_int,
     argv: [*c]qjs.JSValue,
 ) callconv(.c) qjs.JSValue {
+    const policy: *worker.WorkerState = @ptrCast(@alignCast(qjs.JS_GetContextOpaque(ctx)));
+    if (policy.rd.restricted) return qjs.JS_ThrowTypeError(ctx, "Beam.send is denied in strict sandbox mode");
+
     if (argc < 2) return qjs.JS_ThrowTypeError(ctx, "Beam.send requires a pid and a message");
 
     // First arg must be a PID (passed as an opaque atom/term from beam.self or received via message)
@@ -181,6 +184,8 @@ fn beam_self_impl(
     _: [*c]qjs.JSValue,
 ) callconv(.c) qjs.JSValue {
     const self: *worker.WorkerState = @ptrCast(@alignCast(qjs.JS_GetContextOpaque(ctx)));
+    if (self.rd.restricted) return qjs.JS_ThrowTypeError(ctx, "Beam.self is denied in strict sandbox mode");
+
     // Return the owner PID as an opaque JS value via beam_to_js
     const term_env = beam.alloc_env();
     const pid_term = beam.make(self.owner_pid, .{ .env = term_env });
@@ -196,6 +201,8 @@ fn process_on_message_impl(
     argv: [*c]qjs.JSValue,
 ) callconv(.c) qjs.JSValue {
     const self: *worker.WorkerState = @ptrCast(@alignCast(qjs.JS_GetContextOpaque(ctx)));
+
+    if (self.rd.restricted) return qjs.JS_ThrowTypeError(ctx, "Beam.onMessage is denied in strict sandbox mode");
 
     if (argc < 1 or !qjs.JS_IsFunction(ctx, argv[0]))
         return qjs.JS_ThrowTypeError(ctx, "Beam.onMessage requires a function argument");

@@ -1,5 +1,13 @@
 # Changelog
 
+## 10.1.10 - 2026-11-18
+
+- Add `sandbox: :strict` for runtimes and pooled contexts. Only explicitly
+  supplied handlers are installed; native process messaging, privileged handlers,
+  ambient APIs and native addon loading are denied, including after reset (#41).
+- Support HTTP RC14+ push delivery, typed stream errors and request deadlines;
+  require the coordinated HTTP family at RC18 or later (#40).
+
 ## Unreleased
 
 - Synchronize [QuickBEAM 0.11.3](https://github.com/elixir-volt/quickbeam/releases/tag/v0.11.3), including QuickJS-NG 0.15.1, isolated BEAM execution with explicit program pinning, and grapheme-only Intl.Segmenter support. Programs must be recompiled after an incompatible QuickJS bytecode or ABI upgrade.

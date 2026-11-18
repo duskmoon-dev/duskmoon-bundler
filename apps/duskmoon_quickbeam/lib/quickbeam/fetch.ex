@@ -47,7 +47,7 @@ defmodule QuickBEAM.Fetch do
             "redirected" => response.redirected
           }
 
-        {:error, :request_timeout} ->
+        {:error, reason} when reason in [:timeout, :request_timeout] ->
           raise "fetch timed out"
 
         {:error, reason} ->

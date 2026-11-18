@@ -84,6 +84,7 @@ defmodule NPM.HTTPClient do
   defp read_body(response) do
     {:ok, HTTP.Response.read_all(response)}
   rescue
+    error in HTTP.ResponseError -> {:error, error.reason}
     error in RuntimeError -> {:error, error}
   end
 

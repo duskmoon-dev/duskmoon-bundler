@@ -120,7 +120,8 @@ defmodule NPM.HTTPClientTest do
     assert {:error, {:invalid_content_encoding, "gzip"}} =
              NPM.HTTPClient.get(url <> "/invalid-gzip", decode_body: false)
 
-    assert {:error, %RuntimeError{}} = NPM.HTTPClient.get(url <> "/invalid-gzip-chunked")
+    assert {:error, {:invalid_content_encoding, "gzip"}} =
+             NPM.HTTPClient.get(url <> "/invalid-gzip-chunked")
   end
 
   test "sends JSON and authorization headers", %{url: url} do

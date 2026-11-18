@@ -43,6 +43,7 @@ pub const RuntimeData = struct {
     lifecycle_mutex: sync.Mutex = .{},
     lifecycle_cond: sync.Condition = .{},
     lifecycle: LifecycleState = .running,
+    restricted: bool = false,
     memory_limit: usize = 256 * 1024 * 1024,
     max_stack_size: usize = 8 * 1024 * 1024,
     // WASM operand stack / heap for the JS `WebAssembly.instantiate` path

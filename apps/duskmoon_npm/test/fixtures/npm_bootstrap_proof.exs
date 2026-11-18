@@ -12,6 +12,11 @@ case System.argv() do
     # already-started application and lazy OTP path restoration regression.
     {:ok, _} = Application.ensure_all_started(:ssl)
     {:ok, _} = Application.ensure_all_started(:http_fetch)
+    # HTTP startup warms the OS trust cache. Reset it before forcing the lazy
+    # module load so the fixture's certificate and OTP path restoration are used.
+    :public_key.cacerts_clear()
+    :code.purge(:public_key)
+    :code.delete(:public_key)
     false = :code.is_loaded(:public_key)
     paths = :code.get_path()
 

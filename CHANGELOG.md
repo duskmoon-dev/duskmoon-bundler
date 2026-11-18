@@ -1,6 +1,6 @@
 # Changelog
 
-## 10.1.10 - 2026-11-16
+## 10.1.10 - 2026-11-18
 
 - Resolve overlapping npm export patterns using Node's specificity rules,
   preserving exact matches and explicit export exclusions across production,
@@ -9,11 +9,10 @@
   exclude stylesheet entries from JavaScript vendor discovery (#27).
 - Verify cold startup, mixed JavaScript/CSS entries, isolated preview styles,
   repeated browser navigation, and production CSS emission.
-
-## Unreleased
-
-- Resolve overlapping npm export patterns by Node's specificity rules, retaining
-  exact matches and explicit blocked exports (#26).
+- Add opt-in strict QuickBEAM capability controls with explicit host handlers,
+  native messaging restrictions and no ambient APIs or addon loading (#41).
+- Update the coordinated HTTP family to RC19, use push delivery for JavaScript
+  EventSource/WebSocket, and handle typed stream failures and deadlines (#40).
 - Rebase imported CSS asset URLs, detect HMR boundaries in Vue/Svelte scripts,
   supervise development watchers, and compile each production module only once.
 - Cache resolved development configuration with content-based invalidation and

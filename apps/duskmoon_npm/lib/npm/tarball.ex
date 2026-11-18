@@ -358,7 +358,7 @@ defmodule NPM.Tarball do
     padded = div(size + 511, 512) * 512
 
     case data do
-      <<_::binary-size(padded), rest::binary>> -> {:ok, rest}
+      <<_::binary-size(^padded), rest::binary>> -> {:ok, rest}
       _ -> {:error, {:extract, :eof}}
     end
   end

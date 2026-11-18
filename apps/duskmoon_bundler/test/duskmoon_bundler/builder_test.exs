@@ -2250,6 +2250,24 @@ defmodule DuskmoonBundler.BuilderTest do
     end
 
     test "loaders option enables JSX in .js files" do
+      node_modules = Path.join(@fixture_dir, "node_modules")
+      react = Path.join(node_modules, "react")
+      File.mkdir_p!(react)
+
+      File.write!(
+        Path.join(react, "package.json"),
+        JSON.encode!(%{
+          "name" => "react",
+          "type" => "module",
+          "exports" => %{"./jsx-runtime" => "./jsx-runtime.js"}
+        })
+      )
+
+      File.write!(Path.join(react, "jsx-runtime.js"), """
+      export function jsx(type, props) { return { type, props }; }
+      export const jsxs = jsx;
+      """)
+
       File.write!(Path.join(@fixture_dir, "src/jsx_app.js"), """
       const App = () => <div>Hello</div>
       export default App
@@ -2261,11 +2279,14 @@ defmodule DuskmoonBundler.BuilderTest do
           outdir: @outdir,
           minify: false,
           sourcemap: false,
-          loaders: %{".js" => "jsx"}
+          loaders: %{".js" => "jsx"},
+          node_modules: node_modules
         )
 
       js = File.read!(result.js.path)
       assert js =~ "Hello"
+      assert js =~ "function jsx"
+      assert {:ok, []} = OXC.select(js, "jsx_app.js", :import_specifiers)
     end
 
     test "collects CJS require() as imports" do
