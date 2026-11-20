@@ -2,6 +2,7 @@ defmodule DuskmoonBundler.Builder.Externals do
   @moduledoc "Rewrite external imports into global variable access for production builds."
 
   alias DuskmoonBundler.Builder.Resolver
+  alias DuskmoonBundler.JS.Patch
 
   @identifier_path ~r/^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*$/
   @default_interop "((m) => m && m.__esModule ? m.default : m)"
@@ -32,7 +33,7 @@ defmodule DuskmoonBundler.Builder.Externals do
                 names = Enum.map(specifiers, &classify_specifier/1)
                 global = Map.get(external_globals, spec, derive_global(spec))
                 replacement = emit_global_access(global_access(global), names)
-                patch = DuskmoonBundler.JS.Patch.new(start_pos, end_pos, replacement)
+                patch = Patch.new(start_pos, end_pos, replacement)
                 {node, [patch | patches]}
               else
                 {node, patches}
@@ -42,7 +43,7 @@ defmodule DuskmoonBundler.Builder.Externals do
               {node, patches}
           end)
 
-        DuskmoonBundler.JS.Patch.apply(code, patches)
+        Patch.apply(code, patches)
 
       {:error, _} ->
         code

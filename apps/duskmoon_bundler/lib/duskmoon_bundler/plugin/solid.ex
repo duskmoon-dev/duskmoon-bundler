@@ -9,6 +9,11 @@ defmodule DuskmoonBundler.Plugin.Solid do
   files are also used by React and generic JSX builds.
   """
 
+  alias DuskmoonBundler.JS.{Extensions, ImportExtractor}
+  alias DuskmoonBundler.JS.PrebundleEntry.Export
+  alias DuskmoonBundler.Plugin.Helpers
+  alias DuskmoonBundler.Plugin.Solid.CompilerOptions
+
   @behaviour DuskmoonBundler.Plugin
 
   @runtime_packages %{
@@ -53,8 +58,8 @@ defmodule DuskmoonBundler.Plugin.Solid do
   def prebundle_entry("solid-js") do
     {:proxy, "solid-js.js",
      exports: [
-       DuskmoonBundler.JS.PrebundleEntry.Export.all_from("solid-js"),
-       DuskmoonBundler.JS.PrebundleEntry.Export.all_from("solid-js/web")
+       Export.all_from("solid-js"),
+       Export.all_from("solid-js/web")
      ]}
   end
 
@@ -65,7 +70,7 @@ defmodule DuskmoonBundler.Plugin.Solid do
   defp do_compile(source, filename, opts, plugin_opts) do
     compile_options =
       filename
-      |> DuskmoonBundler.Plugin.Solid.CompilerOptions.new(opts, plugin_opts)
+      |> CompilerOptions.new(opts, plugin_opts)
       |> Jason.encode!()
 
     case DuskmoonBundler.JS.Runtime.ensure_and_call(runtime_opts(), "compileSolid", [
@@ -136,7 +141,7 @@ defmodule DuskmoonBundler.Plugin.Solid do
   defp compile_filename(path, opts) do
     path
     |> Path.basename()
-    |> DuskmoonBundler.JS.Extensions.apply_loader(Keyword.get(opts, :loaders, %{}))
+    |> Extensions.apply_loader(Keyword.get(opts, :loaders, %{}))
   end
 
   defp solid_file?(filename), do: Path.extname(filename) in @jsx_exts
@@ -148,7 +153,7 @@ defmodule DuskmoonBundler.Plugin.Solid do
   end
 
   defp extract_typed_imports(source, filename) do
-    DuskmoonBundler.JS.ImportExtractor.extract_typed(source, filename,
+    ImportExtractor.extract_typed(source, filename,
       ignore_type_only: true,
       include_require: true
     )
@@ -159,5 +164,5 @@ defmodule DuskmoonBundler.Plugin.Solid do
   defp encode_sourcemap(map, false) when is_map(map), do: Jason.encode!(map)
   defp encode_sourcemap(value, false) when is_binary(value), do: value
 
-  defp hash(value), do: DuskmoonBundler.Plugin.Helpers.cache_hash(value)
+  defp hash(value), do: Helpers.cache_hash(value)
 end

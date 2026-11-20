@@ -1,6 +1,8 @@
 defmodule DuskmoonBundler.JSONModulesTest do
   use ExUnit.Case, async: false
 
+  alias DuskmoonBundler.JS.Runtime.Bundler, as: RuntimeBundler
+
   defmodule TransformJSON do
     @behaviour DuskmoonBundler.Plugin
     def name, do: "transform-json"
@@ -150,7 +152,7 @@ defmodule DuskmoonBundler.JSONModulesTest do
       """)
 
       {:ok, bundled} =
-        DuskmoonBundler.JS.Runtime.Bundler.bundle_file(consumer, format: :iife)
+        RuntimeBundler.bundle_file(consumer, format: :iife)
 
       assert {:ok, _} = QuickBEAM.eval(ctx.runtime, bundled)
 

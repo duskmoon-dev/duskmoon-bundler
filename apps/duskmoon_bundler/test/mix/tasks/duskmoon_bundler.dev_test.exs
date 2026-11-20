@@ -1,6 +1,8 @@
 defmodule Mix.Tasks.DuskmoonBundler.DevTest do
   use ExUnit.Case, async: false
 
+  alias Mix.Tasks.DuskmoonBundler.Dev
+
   @moduletag :tmp_dir
 
   for {profile, source_mode} <- [
@@ -31,7 +33,7 @@ defmodule Mix.Tasks.DuskmoonBundler.DevTest do
         server: [watch_dirs: []]
       )
 
-      runner = spawn(fn -> Mix.Tasks.DuskmoonBundler.Dev.run([Atom.to_string(@profile)]) end)
+      runner = spawn(fn -> Dev.run([Atom.to_string(@profile)]) end)
 
       name =
         Module.concat(DuskmoonBundler.Watcher, @profile |> Atom.to_string() |> Macro.camelize())
@@ -86,7 +88,7 @@ defmodule Mix.Tasks.DuskmoonBundler.DevTest do
       server: [watch_dirs: []]
     )
 
-    runner = spawn(fn -> Mix.Tasks.DuskmoonBundler.Dev.run([Atom.to_string(profile)]) end)
+    runner = spawn(fn -> Dev.run([Atom.to_string(profile)]) end)
     name = DuskmoonBundler.Watcher.DevCompileOptionsTest
 
     on_exit(fn ->

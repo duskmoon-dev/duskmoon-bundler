@@ -16,6 +16,10 @@ defmodule DuskmoonBundler.JS.Vendor do
 
   require Logger
 
+  alias DuskmoonBundler.JS.{Extensions, PrebundleEntry, Resolution}
+  alias DuskmoonBundler.JS.PrebundleEntry.{CommonJS, Export, Import}
+  alias DuskmoonBundler.JS.Transforms.Imports
+  alias NPM.Resolution.{Exports, PackageResolver}
   alias OXC.Bundle
 
   @prebundles :duskmoon_bundler_vendor_prebundles
@@ -99,7 +103,7 @@ defmodule DuskmoonBundler.JS.Vendor do
   defp prebundle_with_inputs(opts) do
     root = Keyword.fetch!(opts, :root)
     force = Keyword.get(opts, :force, false)
-    node_modules = opts[:node_modules] || NPM.Resolution.PackageResolver.find_node_modules(root)
+    node_modules = opts[:node_modules] || PackageResolver.find_node_modules(root)
     module_dirs = module_dirs(node_modules, Keyword.get(opts, :resolve_dirs, []))
 
     plugins = Keyword.get(opts, :plugins, [])
@@ -537,7 +541,7 @@ defmodule DuskmoonBundler.JS.Vendor do
 
     with true <- request_specifier?(specifier),
          {:ok, path} <- resolve_package_entry(specifier, dirs),
-         true <- Path.extname(path) in DuskmoonBundler.JS.Extensions.css() do
+         true <- Path.extname(path) in Extensions.css() do
       {:ok, path}
     else
       _ -> :error
@@ -555,7 +559,7 @@ defmodule DuskmoonBundler.JS.Vendor do
     case opts[:entry] do
       nil ->
         for dir <- [root, Path.join(root, "js"), Path.join(root, "src")],
-            ext <- DuskmoonBundler.JS.Extensions.scannable(plugins),
+            ext <- Extensions.scannable(plugins),
             path = Path.join(dir, "app" <> ext),
             File.regular?(path),
             do: path
@@ -565,7 +569,7 @@ defmodule DuskmoonBundler.JS.Vendor do
     end
     |> Enum.reject(fn path ->
       {file, _query} = DuskmoonBundler.URL.split_query(path)
-      Path.extname(file) in DuskmoonBundler.JS.Extensions.css()
+      Path.extname(file) in Extensions.css()
     end)
   end
 
@@ -573,8 +577,7 @@ defmodule DuskmoonBundler.JS.Vendor do
     ctx = %DuskmoonBundler.Builder.Context{
       plugins: plugins,
       aliases: Keyword.get(opts, :aliases, %{}),
-      node_modules:
-        opts[:node_modules] || NPM.Resolution.PackageResolver.find_node_modules(opts[:root]),
+      node_modules: opts[:node_modules] || PackageResolver.find_node_modules(opts[:root]),
       resolve_dirs: Keyword.get(opts, :resolve_dirs, [])
     }
 
@@ -590,7 +593,7 @@ defmodule DuskmoonBundler.JS.Vendor do
       scan_source_files(rest, ctx, seen, specifiers)
     else
       with {:ok, source} <- File.read(file),
-           {:ok, imports} <- extract_imports(source, file, ctx.plugins, :static),
+           {:ok, imports} <- extract_static_imports(source, file, ctx.plugins),
            {:ok, files, specifiers} <- scan_imports(imports, file, ctx, specifiers) do
         hash = :crypto.hash(:sha256, source) |> Base.encode16(case: :lower)
         scan_source_files(files ++ rest, ctx, Map.put(seen, file, hash), specifiers)
@@ -604,7 +607,7 @@ defmodule DuskmoonBundler.JS.Vendor do
     Enum.reduce_while(imports, {:ok, [], specifiers}, fn specifier, {:ok, files, specs} ->
       {path_specifier, _query} = DuskmoonBundler.URL.split_query(specifier)
 
-      if NPM.Resolution.PackageResolver.bare?(path_specifier) and
+      if PackageResolver.bare?(path_specifier) and
            DuskmoonBundler.JS.Resolver.resolve(path_specifier, ctx.aliases) == :pass do
         case stylesheet_path(path_specifier,
                node_modules: ctx.node_modules,
@@ -619,7 +622,7 @@ defmodule DuskmoonBundler.JS.Vendor do
             {path, _query} = DuskmoonBundler.URL.split_query(resolved)
 
             files =
-              if Path.extname(path) in DuskmoonBundler.JS.Extensions.scannable(ctx.plugins),
+              if Path.extname(path) in Extensions.scannable(ctx.plugins),
                 do: [resolved | files],
                 else: files
 
@@ -635,12 +638,12 @@ defmodule DuskmoonBundler.JS.Vendor do
     end)
   end
 
-  defp extract_imports(source, path, plugins, mode) do
+  defp extract_static_imports(source, path, plugins) do
     case DuskmoonBundler.PluginRunner.extract_imports(plugins, path, source, []) do
       {:ok, %{imports: imports}} ->
-        {:ok, for({type, spec} <- imports, mode == :all or type == :static, do: spec)}
+        {:ok, for({:static, spec} <- imports, do: spec)}
 
-      nil when mode == :static ->
+      nil ->
         with {:ok, ast} <- OXC.parse(source, Path.basename(path)) do
           {:ok,
            for(
@@ -649,9 +652,6 @@ defmodule DuskmoonBundler.JS.Vendor do
              do: specifier
            )}
         end
-
-      nil ->
-        OXC.select(source, Path.basename(path), :import_specifiers)
 
       {:error, _} = error ->
         error
@@ -807,7 +807,7 @@ defmodule DuskmoonBundler.JS.Vendor do
       |> Bundle.outdir(cache_dir())
       |> Bundle.format(:esm)
       |> Bundle.resolve(
-        conditions: DuskmoonBundler.JS.Resolution.browser_conditions(),
+        conditions: Resolution.browser_conditions(),
         modules: ["node_modules" | module_dirs]
       )
       |> Bundle.transform(
@@ -926,20 +926,20 @@ defmodule DuskmoonBundler.JS.Vendor do
       nil ->
         case resolve_package_entry(specifier, module_dirs) do
           {:ok, entry_path} ->
-            names = DuskmoonBundler.JS.PrebundleEntry.CommonJS.exports(entry_path)
+            names = CommonJS.exports(entry_path)
 
             if names == [] do
               {:ok, specifier, %{name: encode_specifier(specifier), import: entry_path}}
             else
               source =
-                DuskmoonBundler.JS.PrebundleEntry.source(
+                PrebundleEntry.source(
                   {:proxy, "entry.js",
                    imports: [
-                     DuskmoonBundler.JS.PrebundleEntry.Import.default("entry", from: entry_path)
+                     Import.default("entry", from: entry_path)
                    ],
                    exports: [
-                     DuskmoonBundler.JS.PrebundleEntry.Export.default("entry"),
-                     DuskmoonBundler.JS.PrebundleEntry.Export.named_from(entry_path, names)
+                     Export.default("entry"),
+                     Export.named_from(entry_path, names)
                    ]}
                 )
 
@@ -964,13 +964,13 @@ defmodule DuskmoonBundler.JS.Vendor do
         case export do
           %{all_from: specifier} when is_binary(specifier) ->
             with {:ok, path} <- resolve_package_entry(specifier, module_dirs),
-                 [_ | _] = names <- DuskmoonBundler.JS.PrebundleEntry.CommonJS.exports(path) do
+                 [_ | _] = names <- CommonJS.exports(path) do
               names = Enum.reject(names, &MapSet.member?(seen, &1))
 
               next =
                 if names == [],
                   do: [],
-                  else: [DuskmoonBundler.JS.PrebundleEntry.Export.named_from(specifier, names)]
+                  else: [Export.named_from(specifier, names)]
 
               {exports ++ next, MapSet.union(seen, MapSet.new(names))}
             else
@@ -982,9 +982,7 @@ defmodule DuskmoonBundler.JS.Vendor do
         end
       end)
 
-    DuskmoonBundler.JS.PrebundleEntry.source(
-      {:proxy, filename, Keyword.put(opts, :exports, exports)}
-    )
+    PrebundleEntry.source({:proxy, filename, Keyword.put(opts, :exports, exports)})
   end
 
   defp bundle_vendor(
@@ -1055,7 +1053,7 @@ defmodule DuskmoonBundler.JS.Vendor do
           {:proxy, _, opts} = entry ->
             {:ok, imports} =
               OXC.select(
-                DuskmoonBundler.JS.PrebundleEntry.source(entry),
+                PrebundleEntry.source(entry),
                 "entry.js",
                 :import_specifiers
               )
@@ -1081,7 +1079,7 @@ defmodule DuskmoonBundler.JS.Vendor do
                    ),
                  default:
                    default_export? and reference == known and
-                     DuskmoonBundler.JS.PrebundleEntry.CommonJS.common_js?(path)
+                     CommonJS.common_js?(path)
                }}
             ]
 
@@ -1203,7 +1201,7 @@ defmodule DuskmoonBundler.JS.Vendor do
           |> Bundle.outdir(cache_dir())
           |> Bundle.format(:esm)
           |> Bundle.resolve(
-            conditions: DuskmoonBundler.JS.Resolution.browser_conditions(),
+            conditions: Resolution.browser_conditions(),
             modules: ["node_modules" | module_dirs],
             external: Map.keys(externals)
           )
@@ -1311,7 +1309,7 @@ defmodule DuskmoonBundler.JS.Vendor do
              source_specifiers
            ),
          {:ok, code} <-
-           DuskmoonBundler.JS.Transforms.Imports.rewrite(
+           Imports.rewrite(
              source,
              Path.basename(entry_path),
              &rewrite_source_import(
@@ -1350,7 +1348,7 @@ defmodule DuskmoonBundler.JS.Vendor do
         synthetic_prebundle_entry(
           specifier,
           filename,
-          DuskmoonBundler.JS.PrebundleEntry.source(entry),
+          PrebundleEntry.source(entry),
           module_dirs
         )
 
@@ -1377,7 +1375,7 @@ defmodule DuskmoonBundler.JS.Vendor do
   defp package_project_root(entry_path, module_dirs) do
     entry_path
     |> Path.dirname()
-    |> NPM.Resolution.PackageResolver.nearest_package()
+    |> PackageResolver.nearest_package()
     |> case do
       {:ok, package_dir, _package} -> Path.dirname(package_dir)
       :error -> project_root(module_dirs)
@@ -1403,15 +1401,15 @@ defmodule DuskmoonBundler.JS.Vendor do
   end
 
   defp resolve_from_node_modules(specifier, module_dir) do
-    case NPM.Resolution.PackageResolver.resolve(specifier, module_dir,
-           extensions: DuskmoonBundler.JS.Extensions.resolvable(),
-           conditions: DuskmoonBundler.JS.Resolution.browser_conditions()
+    case PackageResolver.resolve(specifier, module_dir,
+           extensions: Extensions.resolvable(),
+           conditions: Resolution.browser_conditions()
          ) do
       :error ->
         {package_name, _subpath} = split_specifier(specifier)
 
         with {:ok, package_dir} <-
-               NPM.Resolution.PackageResolver.package_root(package_name, module_dir),
+               PackageResolver.package_root(package_name, module_dir),
              true <- package_exports?(package_dir) do
           :exports_denied
         else
@@ -1428,12 +1426,12 @@ defmodule DuskmoonBundler.JS.Vendor do
     package_dir = Path.join(module_dir, package_name)
 
     if File.dir?(package_dir) do
-      extensions = DuskmoonBundler.JS.Extensions.resolvable()
+      extensions = Extensions.resolvable()
 
-      case NPM.Resolution.PackageResolver.resolve_entry(package_dir,
+      case PackageResolver.resolve_entry(package_dir,
              subpath: subpath || ".",
              extensions: extensions,
-             conditions: DuskmoonBundler.JS.Resolution.browser_conditions()
+             conditions: Resolution.browser_conditions()
            ) do
         {:ok, _path} = ok ->
           ok
@@ -1450,7 +1448,7 @@ defmodule DuskmoonBundler.JS.Vendor do
 
   defp package_exports?(package_dir) do
     with {:ok, package} <- NPM.JSON.read_file(Path.join(package_dir, "package.json")) do
-      not is_nil(NPM.Resolution.Exports.parse(package))
+      not is_nil(Exports.parse(package))
     else
       _ -> false
     end
@@ -1528,10 +1526,10 @@ defmodule DuskmoonBundler.JS.Vendor do
          browser_token
        ) do
     cond do
-      NPM.Resolution.PackageResolver.node_builtin?(specifier) ->
+      PackageResolver.node_builtin?(specifier) ->
         :keep
 
-      NPM.Resolution.PackageResolver.bare?(specifier) ->
+      PackageResolver.bare?(specifier) ->
         specifier = DuskmoonBundler.PluginRunner.prebundle_alias(plugins, specifier)
 
         {:rewrite,
@@ -1973,7 +1971,7 @@ defmodule DuskmoonBundler.JS.Vendor do
   defp package_json_signature(entry_path) do
     entry_path
     |> Path.dirname()
-    |> NPM.Resolution.PackageResolver.nearest_package()
+    |> PackageResolver.nearest_package()
     |> case do
       {:ok, package_dir, _package} -> file_signature(Path.join(package_dir, "package.json"))
       :error -> nil

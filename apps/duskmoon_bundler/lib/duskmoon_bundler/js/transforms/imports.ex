@@ -8,6 +8,8 @@ defmodule DuskmoonBundler.JS.Transforms.Imports do
   at exact byte offsets — no regex, no reformatting.
   """
 
+  alias DuskmoonBundler.JS.{AST, Patch}
+
   @doc """
   Rewrite import specifiers in JavaScript source code.
 
@@ -29,7 +31,7 @@ defmodule DuskmoonBundler.JS.Transforms.Imports do
     case OXC.parse(source, filename) do
       {:ok, ast} ->
         patches = collect_import_patches(ast, rewrite_fn)
-        {:ok, DuskmoonBundler.JS.Patch.apply(source, patches)}
+        {:ok, Patch.apply(source, patches)}
 
       {:error, _} = error ->
         error
@@ -97,15 +99,15 @@ defmodule DuskmoonBundler.JS.Transforms.Imports do
   end
 
   defp maybe_patch(source_node, rewrite_fn, patches) do
-    case DuskmoonBundler.JS.AST.string_literal_span(source_node) do
+    case AST.string_literal_span(source_node) do
       {:ok, specifier, s, e} ->
         case rewrite_fn.(specifier) do
           {:rewrite, new_specifier} ->
             [
-              DuskmoonBundler.JS.Patch.new(
+              Patch.new(
                 s,
                 e,
-                DuskmoonBundler.JS.AST.string_literal(new_specifier)
+                AST.string_literal(new_specifier)
               )
               | patches
             ]

@@ -1,6 +1,8 @@
 defmodule DuskmoonBundler.JS.TSConfigTest do
   use ExUnit.Case, async: true
 
+  alias DuskmoonBundler.JS.TSConfig
+
   @fixture_dir Path.expand("fixtures/tsconfig", __DIR__)
 
   setup do
@@ -24,7 +26,7 @@ defmodule DuskmoonBundler.JS.TSConfigTest do
         }
       })
 
-      paths = DuskmoonBundler.JS.TSConfig.read_paths(tsconfig_path())
+      paths = TSConfig.read_paths(tsconfig_path())
       assert paths["@"] =~ "src"
       assert paths["@components"] =~ "src/components"
     end
@@ -39,7 +41,7 @@ defmodule DuskmoonBundler.JS.TSConfigTest do
         }
       })
 
-      paths = DuskmoonBundler.JS.TSConfig.read_paths(tsconfig_path())
+      paths = TSConfig.read_paths(tsconfig_path())
       assert paths["@"] =~ "frontend/lib"
     end
 
@@ -50,11 +52,11 @@ defmodule DuskmoonBundler.JS.TSConfigTest do
         }
       })
 
-      assert %{} = DuskmoonBundler.JS.TSConfig.read_paths(tsconfig_path())
+      assert %{} = TSConfig.read_paths(tsconfig_path())
     end
 
     test "returns empty map when file doesn't exist" do
-      assert %{} = DuskmoonBundler.JS.TSConfig.read_paths(Path.join(@fixture_dir, "missing.json"))
+      assert %{} = TSConfig.read_paths(Path.join(@fixture_dir, "missing.json"))
     end
 
     test "handles exact paths without globs" do
@@ -66,7 +68,7 @@ defmodule DuskmoonBundler.JS.TSConfigTest do
         }
       })
 
-      paths = DuskmoonBundler.JS.TSConfig.read_paths(tsconfig_path())
+      paths = TSConfig.read_paths(tsconfig_path())
       assert paths["~utils"] =~ "src/utils"
     end
   end

@@ -26,18 +26,22 @@ defmodule Vize.NativePolicy do
         forced != [] or configured
 
       "precompiled" ->
-        if forced != [] or configured do
-          raise "DUSKMOON_NATIVE_MODE=precompiled conflicts with native source flags: #{inspect(forced)} / #{backend} force_build configuration for #{app}"
-        end
-
-        if "dev" in Version.parse!(version).pre do
-          raise "DUSKMOON_NATIVE_MODE=precompiled rejects -dev artifact versions that force source compilation"
-        end
-
-        false
+        precompiled!(forced, configured, version, backend, app)
 
       other ->
         raise "Invalid DUSKMOON_NATIVE_MODE=#{inspect(other)}; expected source or precompiled"
     end
+  end
+
+  defp precompiled!(forced, configured, version, backend, app) do
+    if forced != [] or configured do
+      raise "DUSKMOON_NATIVE_MODE=precompiled conflicts with native source flags: #{inspect(forced)} / #{backend} force_build configuration for #{app}"
+    end
+
+    if "dev" in Version.parse!(version).pre do
+      raise "DUSKMOON_NATIVE_MODE=precompiled rejects -dev artifact versions that force source compilation"
+    end
+
+    false
   end
 end

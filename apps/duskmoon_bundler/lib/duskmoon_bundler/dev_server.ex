@@ -43,8 +43,14 @@ defmodule DuskmoonBundler.DevServer do
 
   require Logger
 
-  alias DuskmoonBundler.HMR.CompileErrors
+  alias DuskmoonBundler.Assets.Query
+  alias DuskmoonBundler.CSS.{AssetURLRewriter, Modules}
+  alias DuskmoonBundler.Dev.ConsoleForwarder
+  alias DuskmoonBundler.DevServer.ConfigCache
+  alias DuskmoonBundler.HMR.{Boundary, CompileErrors, GlobGraph, ImportGraph, ModuleGraph}
+  alias DuskmoonBundler.JS.{Asset, Extensions, Resolution, Resolver, Vendor}
   alias DuskmoonBundler.URL
+  alias NPM.Resolution.PackageResolver
   alias Plug.Conn
 
   @behaviour Plug
@@ -57,7 +63,7 @@ defmodule DuskmoonBundler.DevServer do
     build_opts = Keyword.delete(opts, :profile)
 
     {config, server_config, define} =
-      DuskmoonBundler.DevServer.ConfigCache.fetch(opts, fn ->
+      ConfigCache.fetch(opts, fn ->
         config = DuskmoonBundler.Config.build(profile, build_opts)
         server_config = DuskmoonBundler.Config.server(profile, build_opts)
 
@@ -87,7 +93,7 @@ defmodule DuskmoonBundler.DevServer do
            do: configured_entries
       end
 
-    node_modules = NPM.Resolution.PackageResolver.find_node_modules(expanded_root)
+    node_modules = PackageResolver.find_node_modules(expanded_root)
     plugins = config.plugins
 
     module_types = config.module_types
@@ -155,7 +161,7 @@ defmodule DuskmoonBundler.DevServer do
 
   def call(%Conn{request_path: "/@duskmoon_bundler/client.js"} = conn, config) do
     heartbeat_interval = max(div(config.hmr_timeout, 2), 1_000)
-    client = DuskmoonBundler.JS.Asset.compiled!("dev/hmr-client.ts")
+    client = Asset.compiled!("dev/hmr-client.ts")
     bootstrap = "globalThis.__DUSKMOON_BUNDLER_HEARTBEAT__ = #{heartbeat_interval};\n"
 
     conn
@@ -169,7 +175,7 @@ defmodule DuskmoonBundler.DevServer do
     if allowed_origin?(conn, config) do
       case Conn.read_body(conn, length: @console_body_limit) do
         {:ok, body, conn} ->
-          DuskmoonBundler.Dev.ConsoleForwarder.log(body)
+          ConsoleForwarder.log(body)
           conn |> Conn.send_resp(204, "") |> Conn.halt()
 
         {:more, _partial, conn} ->
@@ -189,9 +195,9 @@ defmodule DuskmoonBundler.DevServer do
     specifier =
       specifier_js
       |> String.replace_suffix(".js", "")
-      |> DuskmoonBundler.JS.Vendor.decode_specifier()
+      |> Vendor.decode_specifier()
 
-    case DuskmoonBundler.JS.Vendor.stylesheet_path(specifier, vendor_opts(config)) do
+    case Vendor.stylesheet_path(specifier, vendor_opts(config)) do
       {:ok, path} ->
         serve_compiled(conn, path, config, true)
 
@@ -319,7 +325,7 @@ defmodule DuskmoonBundler.DevServer do
   end
 
   defp compilable?(path, config),
-    do: Path.extname(path) in DuskmoonBundler.JS.Extensions.compilable(config.plugins)
+    do: Path.extname(path) in Extensions.compilable(config.plugins)
 
   defp serve_compiled(conn, file_path, config, force_css_import? \\ false) do
     query = URL.decode_query(conn.query_string)
@@ -348,7 +354,7 @@ defmodule DuskmoonBundler.DevServer do
     vendor_snapshot =
       %{config | vendor_hash: inherited_hash}
       |> vendor_opts()
-      |> DuskmoonBundler.JS.Vendor.snapshot()
+      |> Vendor.snapshot()
 
     config = %{config | vendor_hash: vendor_snapshot[:browser_hash], vendor_entry: entry}
     # Validate cached output against the exact source it was compiled from:
@@ -400,8 +406,8 @@ defmodule DuskmoonBundler.DevServer do
 
     case DuskmoonBundler.Pipeline.compile(file_path, source, pipeline_opts) do
       {:ok, result} ->
-        DuskmoonBundler.HMR.GlobGraph.update_from_source(file_path, source)
-        DuskmoonBundler.HMR.ImportGraph.update_from_compiled(file_path, result.code)
+        GlobGraph.update_from_source(file_path, source)
+        ImportGraph.update_from_compiled(file_path, result.code)
 
         result = rewrite_dev_css_urls(result, file_path, config)
         mod_url = conn.request_path
@@ -444,9 +450,9 @@ defmodule DuskmoonBundler.DevServer do
         {:error, _} -> []
       end
 
-    DuskmoonBundler.HMR.ModuleGraph.update_module(mod_url, cache_key, file_path, imports,
+    ModuleGraph.update_module(mod_url, cache_key, file_path, imports,
       type: module_graph_type(content_type),
-      self_accepting: DuskmoonBundler.HMR.Boundary.self_accepting?(source, file_path)
+      self_accepting: Boundary.self_accepting?(source, file_path)
     )
   end
 
@@ -510,7 +516,7 @@ defmodule DuskmoonBundler.DevServer do
   end
 
   defp serve_asset_module(conn, file_path, relative, config) do
-    query = DuskmoonBundler.Assets.Query.decode(conn.query_string)
+    query = Query.decode(conn.query_string)
     url_path = DuskmoonBundler.URL.join(config.prefix, relative)
     prefix = Path.dirname(url_path)
 
@@ -548,11 +554,11 @@ defmodule DuskmoonBundler.DevServer do
 
   defp css_import_request?(conn, file_path) do
     Path.extname(file_path) == ".css" and
-      (DuskmoonBundler.CSS.Modules.css_module?(file_path) or import_query?(conn.query_string))
+      (Modules.css_module?(file_path) or import_query?(conn.query_string))
   end
 
   defp asset_import_request?(conn) do
-    DuskmoonBundler.Assets.Query.module_request?(conn.query_string) or
+    Query.module_request?(conn.query_string) or
       Enum.member?(Conn.get_req_header(conn, "sec-fetch-dest"), "script")
   end
 
@@ -576,7 +582,7 @@ defmodule DuskmoonBundler.DevServer do
   defp maybe_append_css_import_cache_key(file_path, false), do: file_path
 
   defp rewrite_dev_css_urls(%{type: :css, code: code} = result, file_path, config) do
-    case DuskmoonBundler.CSS.AssetURLRewriter.rewrite_dev(
+    case AssetURLRewriter.rewrite_dev(
            code,
            file_path,
            config.root,
@@ -588,7 +594,7 @@ defmodule DuskmoonBundler.DevServer do
   end
 
   defp rewrite_dev_css_urls(%{css: css} = result, file_path, config) when is_binary(css) do
-    case DuskmoonBundler.CSS.AssetURLRewriter.rewrite_dev(
+    case AssetURLRewriter.rewrite_dev(
            css,
            file_path,
            config.root,
@@ -624,7 +630,7 @@ defmodule DuskmoonBundler.DevServer do
 
   defp css_update_module(mod_url, css, exports) do
     [
-      DuskmoonBundler.JS.Asset.compiled_template!("dev/css-update.ts", id: mod_url, css: css),
+      Asset.compiled_template!("dev/css-update.ts", id: mod_url, css: css),
       "\n",
       exports
     ]
@@ -635,17 +641,17 @@ defmodule DuskmoonBundler.DevServer do
 
   defp rewrite_dev_specifier(specifier, importer, config) do
     cond do
-      NPM.Resolution.PackageResolver.node_builtin?(specifier) ->
+      PackageResolver.node_builtin?(specifier) ->
         :keep
 
       String.starts_with?(specifier, "#") ->
         rewrite_package_import(specifier, importer, config)
 
-      NPM.Resolution.PackageResolver.relative?(specifier) ->
+      PackageResolver.relative?(specifier) ->
         rewrite_relative(specifier, importer, config)
 
       true ->
-        case DuskmoonBundler.JS.Resolver.resolve(specifier, config.aliases) do
+        case Resolver.resolve(specifier, config.aliases) do
           {:ok, resolved} -> rewrite_resolved_path(resolved, config)
           :pass -> rewrite_bare(specifier, config)
         end
@@ -653,9 +659,9 @@ defmodule DuskmoonBundler.DevServer do
   end
 
   defp rewrite_package_import(specifier, importer, config) do
-    case NPM.Resolution.PackageResolver.resolve(specifier, Path.dirname(importer),
-           extensions: DuskmoonBundler.JS.Extensions.resolvable(config.plugins),
-           conditions: DuskmoonBundler.JS.Resolution.browser_conditions()
+    case PackageResolver.resolve(specifier, Path.dirname(importer),
+           extensions: Extensions.resolvable(config.plugins),
+           conditions: Resolution.browser_conditions()
          ) do
       {:ok, resolved} -> rewrite_resolved_path(resolved, config)
       _ -> :keep
@@ -708,7 +714,7 @@ defmodule DuskmoonBundler.DevServer do
   defp rewrite_bare(specifier, config) do
     specifier = DuskmoonBundler.PluginRunner.prebundle_alias(config.plugins, specifier)
 
-    {:rewrite, DuskmoonBundler.JS.Vendor.vendor_url(specifier, vendor_opts(config))}
+    {:rewrite, Vendor.vendor_url(specifier, vendor_opts(config))}
   end
 
   defp dev_url_for(prefix, relative, resolved, query) do
@@ -726,8 +732,8 @@ defmodule DuskmoonBundler.DevServer do
     if Path.extname(path) != "" and File.regular?(path) do
       path
     else
-      case NPM.Resolution.PackageResolver.try_resolve(path,
-             extensions: DuskmoonBundler.JS.Extensions.resolvable(plugins)
+      case PackageResolver.try_resolve(path,
+             extensions: Extensions.resolvable(plugins)
            ) do
         {:ok, resolved} -> resolved
         :error -> path
@@ -744,7 +750,7 @@ defmodule DuskmoonBundler.DevServer do
   defp maybe_inject_hmr_preamble(code, _relative, _content_type), do: code
 
   defp hmr_preamble(mod_url) do
-    DuskmoonBundler.JS.Asset.compiled_template!("dev/hmr-preamble.ts", mod_url: mod_url)
+    Asset.compiled_template!("dev/hmr-preamble.ts", mod_url: mod_url)
   end
 
   # ── Vendor pre-bundling ───────────────────────────────────────────
@@ -783,7 +789,7 @@ defmodule DuskmoonBundler.DevServer do
   end
 
   defp prebundle_vendor(opts) do
-    case DuskmoonBundler.JS.Vendor.prebundle_once(opts) do
+    case Vendor.prebundle_once(opts) do
       :cached ->
         :ok
 
@@ -800,7 +806,7 @@ defmodule DuskmoonBundler.DevServer do
   end
 
   defp serve_vendor(specifier, config, browser_hash, browser_token) do
-    if DuskmoonBundler.JS.Vendor.request_specifier?(specifier) do
+    if Vendor.request_specifier?(specifier) do
       inherited_hash =
         if valid_vendor_hash?(browser_hash) and same_server_vendor_token?(browser_token, config),
           do: browser_hash
@@ -810,7 +816,7 @@ defmodule DuskmoonBundler.DevServer do
         |> vendor_opts()
 
       if current_vendor_request?(browser_hash, browser_token, config, opts) do
-        read_or_bundle_vendor(specifier, config, DuskmoonBundler.JS.Vendor.snapshot(opts))
+        read_or_bundle_vendor(specifier, config, Vendor.snapshot(opts))
       else
         {:error, :outdated}
       end
@@ -820,7 +826,7 @@ defmodule DuskmoonBundler.DevServer do
   end
 
   defp current_vendor_request?(browser_hash, browser_token, config, vendor_opts) do
-    DuskmoonBundler.JS.Vendor.current_browser_hash?(browser_hash, vendor_opts) or
+    Vendor.current_browser_hash?(browser_hash, vendor_opts) or
       (valid_vendor_hash?(browser_hash) and same_server_vendor_token?(browser_token, config))
   end
 
@@ -861,12 +867,12 @@ defmodule DuskmoonBundler.DevServer do
   defp same_server_vendor_token?(_token, _config), do: false
 
   defp read_or_bundle_vendor(specifier, config, vendor_opts) do
-    case DuskmoonBundler.JS.Vendor.read(specifier, vendor_opts) do
+    case Vendor.read(specifier, vendor_opts) do
       {:ok, _} = ok ->
         ok
 
       {:error, :not_found} ->
-        DuskmoonBundler.JS.Vendor.bundle_on_demand(specifier, config.node_modules, vendor_opts)
+        Vendor.bundle_on_demand(specifier, config.node_modules, vendor_opts)
     end
   end
 
@@ -889,7 +895,7 @@ defmodule DuskmoonBundler.DevServer do
   defp vendor_hash(config), do: current_vendor_hash(config)
 
   defp current_vendor_hash(config) do
-    DuskmoonBundler.JS.Vendor.browser_hash(
+    Vendor.browser_hash(
       node_modules: config.node_modules,
       plugins: config.plugins,
       resolve_dirs: config.resolve_dirs,
@@ -930,7 +936,7 @@ defmodule DuskmoonBundler.DevServer do
   # ── Helpers ───────────────────────────────────────────────────────
 
   defp maybe_inject_dev_console_forwarder(code, "application/javascript") do
-    DuskmoonBundler.Dev.ConsoleForwarder.inject(code)
+    ConsoleForwarder.inject(code)
   end
 
   defp maybe_inject_dev_console_forwarder(code, _content_type), do: code
@@ -946,10 +952,10 @@ defmodule DuskmoonBundler.DevServer do
   end
 
   defp error_overlay(msg) do
-    overlay = DuskmoonBundler.JS.Asset.compiled!("dev/error-overlay.ts")
+    overlay = Asset.compiled!("dev/error-overlay.ts")
 
     invocation =
-      DuskmoonBundler.JS.Asset.compiled_template!("dev/error-overlay-invocation.ts", message: msg)
+      Asset.compiled_template!("dev/error-overlay-invocation.ts", message: msg)
 
     # Throwing keeps importers from evaluating against a module with no exports.
     failure =

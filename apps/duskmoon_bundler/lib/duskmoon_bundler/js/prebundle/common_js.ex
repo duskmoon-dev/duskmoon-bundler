@@ -1,6 +1,9 @@
 defmodule DuskmoonBundler.JS.PrebundleEntry.CommonJS do
   @moduledoc false
 
+  alias DuskmoonBundler.JS.{AST, Resolution}
+  alias NPM.Resolution.PackageResolver
+
   # Discover literal CommonJS exports without evaluating package code. Conditional
   # module.exports = require(...) entrypoints share the exports of their targets.
   def exports(path), do: collect([path], MapSet.new(), MapSet.new())
@@ -32,7 +35,7 @@ defmodule DuskmoonBundler.JS.PrebundleEntry.CommonJS do
       )
 
     package_module =
-      case NPM.Resolution.PackageResolver.nearest_package(Path.dirname(path)) do
+      case PackageResolver.nearest_package(Path.dirname(path)) do
         {:ok, _, %{"type" => "module"}} -> true
         _ -> false
       end
@@ -74,8 +77,8 @@ defmodule DuskmoonBundler.JS.PrebundleEntry.CommonJS do
                else: {paths, names}
 
           {:require, specifier}, {paths, names} ->
-            case NPM.Resolution.PackageResolver.resolve(specifier, Path.dirname(path),
-                   conditions: DuskmoonBundler.JS.Resolution.browser_conditions()
+            case PackageResolver.resolve(specifier, Path.dirname(path),
+                   conditions: Resolution.browser_conditions()
                  ) do
               {:ok, resolved} -> {[resolved | paths], names}
               _ -> {paths, names}
@@ -107,7 +110,7 @@ defmodule DuskmoonBundler.JS.PrebundleEntry.CommonJS do
   end
 
   defp entries(%{type: :call_expression, callee: callee, arguments: [target, key | _]}) do
-    if DuskmoonBundler.JS.AST.member_expression?(callee, "Object", "defineProperty") and
+    if AST.member_expression?(callee, "Object", "defineProperty") and
          exports_object?(target) and is_binary(property_name(key, true)),
        do: [{:name, property_name(key, true)}],
        else: []
@@ -137,7 +140,7 @@ defmodule DuskmoonBundler.JS.PrebundleEntry.CommonJS do
   defp exports_object?(%{type: :identifier, name: "exports"}), do: true
 
   defp exports_object?(node),
-    do: DuskmoonBundler.JS.AST.member_expression?(node, "module", "exports")
+    do: AST.member_expression?(node, "module", "exports")
 
   defp name(%{name: name}), do: name
   defp name(%{value: value}) when is_binary(value), do: value

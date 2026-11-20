@@ -1,6 +1,8 @@
 defmodule Mix.Tasks.DuskmoonBundler.BuildTest do
   use ExUnit.Case, async: false
 
+  alias Mix.Tasks.DuskmoonBundler.Build
+
   setup do
     previous_shell = Mix.shell()
     Mix.shell(Mix.Shell.Process)
@@ -37,7 +39,7 @@ defmodule Mix.Tasks.DuskmoonBundler.BuildTest do
     console.log(used())
     """)
 
-    Mix.Tasks.DuskmoonBundler.Build.run([
+    Build.run([
       "--entry",
       entry,
       "--outdir",
@@ -67,7 +69,7 @@ defmodule Mix.Tasks.DuskmoonBundler.BuildTest do
     console.log(logo)
     """)
 
-    Mix.Tasks.DuskmoonBundler.Build.run([
+    Build.run([
       "--entry",
       entry,
       "--outdir",
@@ -93,7 +95,7 @@ defmodule Mix.Tasks.DuskmoonBundler.BuildTest do
 
     File.write!(entry, "console.log('app')")
 
-    Mix.Tasks.DuskmoonBundler.Build.run([
+    Build.run([
       "--entry",
       entry,
       "--outdir",
@@ -143,7 +145,7 @@ defmodule Mix.Tasks.DuskmoonBundler.BuildTest do
     File.write!(entry, "console.log('app')")
     File.write!(css_path, "@import \"tailwindcss\" source(none);\n")
 
-    Mix.Tasks.DuskmoonBundler.Build.run(["--tailwind"])
+    Build.run(["--tailwind"])
 
     css_manifest =
       outdir
@@ -216,7 +218,7 @@ defmodule Mix.Tasks.DuskmoonBundler.BuildTest do
     File.write!(entry, "console.log('app')")
     File.write!(css_path, "@import \"phoenix_duskmoon/components\";\n")
 
-    Mix.Tasks.DuskmoonBundler.Build.run(["issue_89", "--tailwind"])
+    Build.run(["issue_89", "--tailwind"])
 
     css = File.read!(Path.join([outdir, "css", "app.css"]))
     assert css =~ ".from-resolve-dir"

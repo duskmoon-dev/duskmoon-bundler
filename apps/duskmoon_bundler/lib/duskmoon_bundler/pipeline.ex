@@ -9,6 +9,18 @@ defmodule DuskmoonBundler.Pipeline do
   `import.meta.env`, and worker/import specifier rewriting behave consistently.
   """
 
+  alias DuskmoonBundler.CSS.Modules
+  alias DuskmoonBundler.JS.Extensions
+
+  alias DuskmoonBundler.JS.Transforms.{
+    AssetURLs,
+    DynamicImports,
+    GlobImports,
+    ImportMetaEnv,
+    Imports,
+    Workers
+  }
+
   @type rewrite_fn :: (String.t() -> {:rewrite, String.t()} | :keep)
 
   @type compiled :: DuskmoonBundler.Pipeline.Result.t()
@@ -59,10 +71,10 @@ defmodule DuskmoonBundler.Pipeline do
         content_type in ~w(application/javascript text/javascript) ->
           compile_js(path, source, opts)
 
-        ext in DuskmoonBundler.JS.Extensions.js() ->
+        ext in Extensions.js() ->
           compile_js(path, source, opts)
 
-        DuskmoonBundler.CSS.Modules.css_module?(path) ->
+        Modules.css_module?(path) ->
           compile_css_module(path, source, opts)
 
         ext in @css_exts ->
@@ -122,13 +134,13 @@ defmodule DuskmoonBundler.Pipeline do
 
     code =
       compiled.code
-      |> DuskmoonBundler.JS.Transforms.AssetURLs.rewrite(filename)
-      |> DuskmoonBundler.JS.Transforms.DynamicImports.transform(filename)
-      |> DuskmoonBundler.JS.Transforms.GlobImports.transform(Path.dirname(path), filename)
+      |> AssetURLs.rewrite(filename)
+      |> DynamicImports.transform(filename)
+      |> GlobImports.transform(Path.dirname(path), filename)
 
     with {:ok, code} <- apply_defines(code, filename, Keyword.get(opts, :define, %{})),
          {:ok, code} <-
-           DuskmoonBundler.JS.Transforms.ImportMetaEnv.inject(
+           ImportMetaEnv.inject(
              code,
              filename,
              Keyword.get(opts, :define, %{})
@@ -156,9 +168,9 @@ defmodule DuskmoonBundler.Pipeline do
     filename = Path.basename(path)
 
     with {:ok, imports_rewritten} <-
-           DuskmoonBundler.JS.Transforms.Imports.rewrite(compiled.code, filename, rewrite_fn),
+           Imports.rewrite(compiled.code, filename, rewrite_fn),
          {:ok, workers_rewritten} <-
-           DuskmoonBundler.JS.Transforms.Workers.rewrite(imports_rewritten, filename, rewrite_fn) do
+           Workers.rewrite(imports_rewritten, filename, rewrite_fn) do
       {:ok, put_code(compiled, workers_rewritten)}
     else
       {:error, _} -> {:ok, compiled}
@@ -177,7 +189,7 @@ defmodule DuskmoonBundler.Pipeline do
       |> maybe_put(:import_source, Keyword.get(opts, :import_source))
 
     filename =
-      DuskmoonBundler.JS.Extensions.apply_loader(
+      Extensions.apply_loader(
         Path.basename(path),
         Keyword.get(opts, :loaders, %{})
       )
@@ -217,7 +229,7 @@ defmodule DuskmoonBundler.Pipeline do
     minify = Keyword.get(opts, :minify, false)
 
     with {:ok, js, scoped_css} <-
-           DuskmoonBundler.CSS.Modules.compile(source, Path.basename(path), minify: minify) do
+           Modules.compile(source, Path.basename(path), minify: minify) do
       {:ok, compiled(js, css: scoped_css)}
     end
   end

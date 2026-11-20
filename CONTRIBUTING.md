@@ -17,7 +17,10 @@ JavaScript formatting and linting use `mix duskmoon_bundler.js.format` and
 `mix duskmoon_bundler.js.check`, backed by OXC. There is no separate Biome
 configuration. CI also checks actionlint, native helper copies and Rust Clippy.
 The scheduled/manual quality workflow runs dependency audits, Credo and
-Dialyzer; it reports existing failures without suppressing diagnostics.
+Dialyzer. The root Credo policy disables module-documentation, TODO-tag,
+function-arity, parameter-pattern position, predicate-naming, implicit-try and
+conditional-form style checks. These checks conflict with compiler specimens
+and fixed native interfaces; the other checks remain enabled.
 
 Record user-visible changes in the root and affected app's `Unreleased`
 CHANGELOG sections. Package staging copies the cohort history into each

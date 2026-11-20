@@ -2,6 +2,8 @@ defmodule DuskmoonBundler.Builder.Rewriter do
   @moduledoc "Rewrites production bundle imports, workers, externals, and chunk references."
 
   alias DuskmoonBundler.Builder.Externals
+  alias DuskmoonBundler.JS.{Asset, AST, Patch}
+  alias DuskmoonBundler.JS.Transforms.Workers
 
   @dynamic_import_keyword "import"
   @dynamic_import_placeholder_prefix "__duskmoon_bundler_dynamic_import__"
@@ -44,7 +46,7 @@ defmodule DuskmoonBundler.Builder.Rewriter do
         patches = collect_import_patches(ast, chunk_import_map, chunk_url_map)
         worker_patches = collect_worker_patches(code, chunk_import_map, chunk_url_map)
         all_patches = patches ++ worker_patches
-        if all_patches == [], do: code, else: DuskmoonBundler.JS.Patch.apply(code, all_patches)
+        if all_patches == [], do: code, else: Patch.apply(code, all_patches)
 
       {:error, _} ->
         code
@@ -66,7 +68,7 @@ defmodule DuskmoonBundler.Builder.Rewriter do
               []
           end)
 
-        if patches == [], do: code, else: DuskmoonBundler.JS.Patch.apply(code, patches)
+        if patches == [], do: code, else: Patch.apply(code, patches)
 
       {:error, _} ->
         code
@@ -106,7 +108,7 @@ defmodule DuskmoonBundler.Builder.Rewriter do
         end)
 
       [
-        DuskmoonBundler.JS.Patch.new(
+        Patch.new(
           node.start,
           node.source.start,
           "import { #{bindings} } from "
@@ -122,7 +124,7 @@ defmodule DuskmoonBundler.Builder.Rewriter do
       case Map.fetch(names, binding_name(specifier.local)) do
         {:ok, name} ->
           replacement = name <> " as " <> source_span(code, specifier.exported)
-          [DuskmoonBundler.JS.Patch.replace_selector(specifier, replacement)]
+          [Patch.replace_selector(specifier, replacement)]
 
         :error ->
           []
@@ -164,7 +166,7 @@ defmodule DuskmoonBundler.Builder.Rewriter do
         specifiers = Map.get(workers, label_to_path[label], %{})
 
         rewritten =
-          DuskmoonBundler.JS.Transforms.Workers.rewrite(code, label, fn specifier ->
+          Workers.rewrite(code, label, fn specifier ->
             case Map.fetch(specifiers, specifier) do
               {:ok, {unique_specifier, _resolved_path}} -> {:rewrite, unique_specifier}
               :error -> :keep
@@ -206,7 +208,7 @@ defmodule DuskmoonBundler.Builder.Rewriter do
         if patches == [] do
           code
         else
-          preload_helper() <> DuskmoonBundler.JS.Patch.apply(code, patches)
+          preload_helper() <> Patch.apply(code, patches)
         end
 
       {:error, _} ->
@@ -217,7 +219,7 @@ defmodule DuskmoonBundler.Builder.Rewriter do
   def rewrite_worker_urls(code, worker_map, _filename) when worker_map == %{}, do: code
 
   def rewrite_worker_urls(code, worker_map, filename) do
-    case DuskmoonBundler.JS.Transforms.Workers.rewrite(code, to_string(filename), fn specifier ->
+    case Workers.rewrite(code, to_string(filename), fn specifier ->
            case Map.fetch(worker_map, specifier) do
              {:ok, worker_filename} -> {:rewrite, "./#{worker_filename}"}
              :error -> :keep
@@ -233,7 +235,7 @@ defmodule DuskmoonBundler.Builder.Rewriter do
       OXC.postwalk(ast, [], fn
         %{type: :import_expression, source: source, start: start, end: finish} = node, patches
         when is_integer(start) and is_integer(finish) ->
-          case DuskmoonBundler.JS.AST.string_literal_span(source) do
+          case AST.string_literal_span(source) do
             {:ok, specifier, _s, _e} ->
               case Map.get(preload_map, specifier) do
                 deps when is_list(deps) and deps != [] ->
@@ -247,7 +249,7 @@ defmodule DuskmoonBundler.Builder.Rewriter do
                     ")"
                   ]
 
-                  {node, [DuskmoonBundler.JS.Patch.new(start, finish, replacement) | patches]}
+                  {node, [Patch.new(start, finish, replacement) | patches]}
 
                 _ ->
                   {node, patches}
@@ -265,7 +267,7 @@ defmodule DuskmoonBundler.Builder.Rewriter do
   end
 
   defp preload_helper do
-    DuskmoonBundler.JS.Asset.compiled!("runtime/preload.ts") <> "\n"
+    Asset.compiled!("runtime/preload.ts") <> "\n"
   end
 
   defp worker_filename_map(worker_specs, ctx) do
@@ -328,7 +330,7 @@ defmodule DuskmoonBundler.Builder.Rewriter do
     case OXC.parse(code, "chunk.js") do
       {:ok, ast} ->
         patches = collect_dynamic_import_protection_patches(ast, placeholder)
-        if patches == [], do: code, else: DuskmoonBundler.JS.Patch.apply(code, patches)
+        if patches == [], do: code, else: Patch.apply(code, patches)
 
       {:error, _} ->
         code
@@ -349,7 +351,7 @@ defmodule DuskmoonBundler.Builder.Rewriter do
   end
 
   defp dynamic_import_protection_patch(start, placeholder) do
-    DuskmoonBundler.JS.Patch.new(start, start + byte_size(@dynamic_import_keyword), placeholder)
+    Patch.new(start, start + byte_size(@dynamic_import_keyword), placeholder)
   end
 
   defp collect_import_patches(ast, chunk_import_map, chunk_url_map) do
@@ -387,7 +389,7 @@ defmodule DuskmoonBundler.Builder.Rewriter do
     case OXC.select(code, "chunk.js", :workers) do
       {:ok, workers} ->
         Enum.reduce(workers, [], fn worker, patches ->
-          spec = DuskmoonBundler.JS.Patch.selector_specifier(worker)
+          spec = Patch.selector_specifier(worker)
           maybe_patch_selector(worker, patches, spec, chunk_import_map, chunk_url_map)
         end)
 
@@ -399,14 +401,14 @@ defmodule DuskmoonBundler.Builder.Rewriter do
   defp maybe_patch_selector(selector, patches, spec, chunk_import_map, chunk_url_map) do
     with {:ok, chunk_id} <- Map.fetch(chunk_import_map, spec),
          url when is_binary(url) <- chunk_url_map[chunk_id] do
-      [DuskmoonBundler.JS.Patch.replace_selector(selector, "'./#{url}'") | patches]
+      [Patch.replace_selector(selector, "'./#{url}'") | patches]
     else
       _ -> patches
     end
   end
 
   defp maybe_patch_source(node, patches, source, chunk_import_map, chunk_url_map) do
-    case DuskmoonBundler.JS.AST.string_literal_span(source) do
+    case AST.string_literal_span(source) do
       {:ok, spec, s, e} ->
         maybe_patch_specifier(node, patches, spec, s, e, chunk_import_map, chunk_url_map)
 
@@ -422,7 +424,7 @@ defmodule DuskmoonBundler.Builder.Rewriter do
   defp maybe_patch_specifier(patches, spec, s, e, chunk_import_map, chunk_url_map) do
     with {:ok, chunk_id} <- Map.fetch(chunk_import_map, spec),
          url when is_binary(url) <- chunk_url_map[chunk_id] do
-      [DuskmoonBundler.JS.Patch.new(s, e, "'./#{url}'") | patches]
+      [Patch.new(s, e, "'./#{url}'") | patches]
     else
       _ -> patches
     end

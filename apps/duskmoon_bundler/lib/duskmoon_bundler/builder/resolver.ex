@@ -1,6 +1,10 @@
 defmodule DuskmoonBundler.Builder.Resolver do
   @moduledoc "Resolve import specifiers to absolute file paths for the build graph."
 
+  alias DuskmoonBundler.JS.{Extensions, Resolution}
+  alias DuskmoonBundler.JS.Resolver, as: JSResolver
+  alias NPM.Resolution.PackageResolver
+
   @doc """
   Resolve an import specifier to an absolute file path.
 
@@ -32,15 +36,15 @@ defmodule DuskmoonBundler.Builder.Resolver do
   end
 
   defp resolve_specifier(specifier, importer, ctx, query) do
-    case DuskmoonBundler.JS.Resolver.resolve(specifier, ctx.aliases) do
+    case JSResolver.resolve(specifier, ctx.aliases) do
       {:ok, aliased} -> append_query(resolve_aliased(aliased, ctx), query)
       :pass -> append_query(resolve_by_type(specifier, importer, ctx), query)
     end
   end
 
   defp resolve_aliased(aliased, ctx) do
-    case NPM.Resolution.PackageResolver.try_resolve(Path.expand(aliased),
-           extensions: DuskmoonBundler.JS.Extensions.resolvable(ctx.plugins)
+    case PackageResolver.try_resolve(Path.expand(aliased),
+           extensions: Extensions.resolvable(ctx.plugins)
          ) do
       {:ok, _} = ok -> ok
       :error -> {:error, {:not_found, aliased}}
@@ -52,13 +56,13 @@ defmodule DuskmoonBundler.Builder.Resolver do
 
   defp resolve_by_type(specifier, importer, ctx) do
     cond do
-      NPM.Resolution.PackageResolver.node_builtin?(specifier) ->
+      PackageResolver.node_builtin?(specifier) ->
         :skip
 
       String.starts_with?(specifier, "#") ->
         resolve_package_import(specifier, importer, ctx)
 
-      NPM.Resolution.PackageResolver.relative?(specifier) ->
+      PackageResolver.relative?(specifier) ->
         resolve_relative(specifier, importer, ctx)
 
       true ->
@@ -71,9 +75,9 @@ defmodule DuskmoonBundler.Builder.Resolver do
   defp resolve_package_import(specifier, importer, ctx) do
     {importer_path, _query} = DuskmoonBundler.URL.split_query(importer)
 
-    case NPM.Resolution.PackageResolver.resolve(specifier, Path.dirname(importer_path),
-           extensions: DuskmoonBundler.JS.Extensions.resolvable(ctx.plugins),
-           conditions: DuskmoonBundler.JS.Resolution.browser_conditions()
+    case PackageResolver.resolve(specifier, Path.dirname(importer_path),
+           extensions: Extensions.resolvable(ctx.plugins),
+           conditions: Resolution.browser_conditions()
          ) do
       {:ok, _} = ok -> ok
       :error -> {:error, {:not_found, specifier}}
@@ -85,8 +89,8 @@ defmodule DuskmoonBundler.Builder.Resolver do
     {importer_path, _query} = DuskmoonBundler.URL.split_query(importer)
     base = Path.expand(specifier, Path.dirname(importer_path))
 
-    case NPM.Resolution.PackageResolver.try_resolve(base,
-           extensions: DuskmoonBundler.JS.Extensions.resolvable(ctx.plugins)
+    case PackageResolver.try_resolve(base,
+           extensions: Extensions.resolvable(ctx.plugins)
          ) do
       {:ok, _} = ok ->
         ok
@@ -121,7 +125,7 @@ defmodule DuskmoonBundler.Builder.Resolver do
 
   defp resolve_bare(specifier, importer, ctx) do
     {importer_path, _query} = DuskmoonBundler.URL.split_query(importer)
-    {package_name, _subpath} = NPM.Resolution.PackageResolver.split_specifier(specifier)
+    {package_name, _subpath} = PackageResolver.split_specifier(specifier)
 
     dir =
       importer_path
@@ -148,7 +152,7 @@ defmodule DuskmoonBundler.Builder.Resolver do
 
   defp resolve_configured_bare(specifier, node_modules, resolve_dirs, plugins) do
     dirs = if node_modules, do: [node_modules | resolve_dirs], else: resolve_dirs
-    {package_name, _subpath} = NPM.Resolution.PackageResolver.split_specifier(specifier)
+    {package_name, _subpath} = PackageResolver.split_specifier(specifier)
 
     case Enum.find(dirs, &File.dir?(Path.join(&1, package_name))) do
       nil ->
@@ -162,16 +166,16 @@ defmodule DuskmoonBundler.Builder.Resolver do
 
   defp resolve_in_package(specifier, dir, package_dir, plugins) do
     subpath = subpath_for(specifier)
-    extensions = DuskmoonBundler.JS.Extensions.resolvable(plugins)
+    extensions = Extensions.resolvable(plugins)
     manifest? = File.regular?(Path.join(package_dir, "package.json"))
 
     # A package manifest makes the npm resolver authoritative, including exports
     # denials and exports that intentionally map a subpath back to the main file.
     # Keep the legacy direct-path fallback only for directories without a manifest.
-    case NPM.Resolution.PackageResolver.resolve_entry(package_dir,
+    case PackageResolver.resolve_entry(package_dir,
            subpath: subpath,
            extensions: extensions,
-           conditions: DuskmoonBundler.JS.Resolution.browser_conditions()
+           conditions: Resolution.browser_conditions()
          ) do
       {:ok, _resolved} = ok when manifest? ->
         ok
@@ -183,7 +187,7 @@ defmodule DuskmoonBundler.Builder.Resolver do
         nil
 
       :error ->
-        case NPM.Resolution.PackageResolver.try_resolve(Path.join(dir, specifier),
+        case PackageResolver.try_resolve(Path.join(dir, specifier),
                extensions: extensions
              ) do
           {:ok, _} = ok -> ok
@@ -199,7 +203,7 @@ defmodule DuskmoonBundler.Builder.Resolver do
     main = resolve_main(package_dir, extensions)
 
     if resolved == main do
-      case NPM.Resolution.PackageResolver.try_resolve(Path.join(dir, specifier),
+      case PackageResolver.try_resolve(Path.join(dir, specifier),
              extensions: extensions
            ) do
         {:ok, _} = ok -> ok
@@ -211,10 +215,10 @@ defmodule DuskmoonBundler.Builder.Resolver do
   end
 
   defp resolve_main(package_dir, extensions) do
-    case NPM.Resolution.PackageResolver.resolve_entry(package_dir,
+    case PackageResolver.resolve_entry(package_dir,
            subpath: ".",
            extensions: extensions,
-           conditions: DuskmoonBundler.JS.Resolution.browser_conditions()
+           conditions: Resolution.browser_conditions()
          ) do
       {:ok, path} -> path
       :error -> nil
@@ -222,7 +226,7 @@ defmodule DuskmoonBundler.Builder.Resolver do
   end
 
   defp subpath_for(specifier) do
-    case NPM.Resolution.PackageResolver.split_specifier(specifier) do
+    case PackageResolver.split_specifier(specifier) do
       {_, nil} -> "."
       {_, subpath} -> subpath
     end

@@ -10,72 +10,19 @@ defmodule HexSolver.Term do
 
   def relation(left, right, opts \\ []) do
     if Keyword.get(opts, :optionals, true) do
-      case do_relation(left, right) do
-        :disjoint -> if left.optional and not right.optional, do: :overlapping, else: :disjoint
-        other -> if left.optional and right.optional, do: :disjoint, else: other
-      end
+      optional_relation(do_relation(left, right), left.optional, right.optional)
     else
       do_relation(left, right)
     end
   end
 
   def do_relation(%Term{} = left, %Term{} = right) do
-    left_constraint = constraint(left)
-    right_constraint = constraint(right)
-
-    cond do
-      right.positive and left.positive ->
-        cond do
-          not compatible_package?(left, right) -> :disjoint
-          Constraint.allows_all?(right_constraint, left_constraint) -> :subset
-          not Constraint.allows_any?(left_constraint, right_constraint) -> :disjoint
-          true -> :overlapping
-        end
-
-      right.positive and not left.positive ->
-        cond do
-          not compatible_package?(left, right) -> :overlapping
-          Constraint.allows_all?(left_constraint, right_constraint) -> :disjoint
-          true -> :overlapping
-        end
-
-      not right.positive and left.positive ->
-        cond do
-          not compatible_package?(left, right) -> :subset
-          not Constraint.allows_any?(right_constraint, left_constraint) -> :subset
-          Constraint.allows_all?(right_constraint, left_constraint) -> :disjoint
-          true -> :overlapping
-        end
-
-      not right.positive and not left.positive ->
-        cond do
-          not compatible_package?(left, right) -> :overlapping
-          Constraint.allows_all?(left_constraint, right_constraint) -> :subset
-          true -> :overlapping
-        end
-    end
+    relation_constraints(left, right, constraint(left), constraint(right))
   end
 
   def intersect(%Term{} = left, %Term{} = right) do
     if compatible_package?(left, right) do
-      optional = left.optional and right.optional
-
-      cond do
-        left.positive != right.positive ->
-          positive = if left.positive, do: left, else: right
-          negative = if left.positive, do: right, else: left
-
-          constraint = Constraint.difference(constraint(positive), constraint(negative))
-          non_empty_term(left, constraint, optional, true)
-
-        left.positive and right.positive ->
-          constraint = Constraint.intersect(constraint(left), constraint(right))
-          non_empty_term(left, constraint, optional, true)
-
-        not left.positive and not right.positive ->
-          constraint = Constraint.union(constraint(left), constraint(right))
-          non_empty_term(left, constraint, optional, false)
-      end
+      intersect_constraints(left, right, left.optional and right.optional)
     else
       nil
     end
@@ -103,6 +50,93 @@ defmodule HexSolver.Term do
 
   def compatible_package?(%Term{package_range: left}, %Term{package_range: right}) do
     {left.repo, left.name} == {right.repo, right.name}
+  end
+
+  defp optional_relation(:disjoint, left_optional, right_optional) do
+    if left_optional and not right_optional, do: :overlapping, else: :disjoint
+  end
+
+  defp optional_relation(relation, left_optional, right_optional) do
+    if left_optional and right_optional, do: :disjoint, else: relation
+  end
+
+  defp relation_constraints(
+         %Term{positive: true} = left,
+         %Term{positive: true} = right,
+         left_constraint,
+         right_constraint
+       ) do
+    cond do
+      not compatible_package?(left, right) -> :disjoint
+      Constraint.allows_all?(right_constraint, left_constraint) -> :subset
+      not Constraint.allows_any?(left_constraint, right_constraint) -> :disjoint
+      true -> :overlapping
+    end
+  end
+
+  defp relation_constraints(
+         %Term{positive: false} = left,
+         %Term{positive: true} = right,
+         left_constraint,
+         right_constraint
+       ) do
+    cond do
+      not compatible_package?(left, right) -> :overlapping
+      Constraint.allows_all?(left_constraint, right_constraint) -> :disjoint
+      true -> :overlapping
+    end
+  end
+
+  defp relation_constraints(
+         %Term{positive: true} = left,
+         %Term{positive: false} = right,
+         left_constraint,
+         right_constraint
+       ) do
+    cond do
+      not compatible_package?(left, right) -> :subset
+      not Constraint.allows_any?(right_constraint, left_constraint) -> :subset
+      Constraint.allows_all?(right_constraint, left_constraint) -> :disjoint
+      true -> :overlapping
+    end
+  end
+
+  defp relation_constraints(
+         %Term{positive: false} = left,
+         %Term{positive: false} = right,
+         left_constraint,
+         right_constraint
+       ) do
+    cond do
+      not compatible_package?(left, right) -> :overlapping
+      Constraint.allows_all?(left_constraint, right_constraint) -> :subset
+      true -> :overlapping
+    end
+  end
+
+  defp intersect_constraints(
+         %Term{positive: true} = left,
+         %Term{positive: true} = right,
+         optional
+       ) do
+    constraint = Constraint.intersect(constraint(left), constraint(right))
+    non_empty_term(left, constraint, optional, true)
+  end
+
+  defp intersect_constraints(
+         %Term{positive: false} = left,
+         %Term{positive: false} = right,
+         optional
+       ) do
+    constraint = Constraint.union(constraint(left), constraint(right))
+    non_empty_term(left, constraint, optional, false)
+  end
+
+  defp intersect_constraints(left, right, optional) do
+    positive = if left.positive, do: left, else: right
+    negative = if left.positive, do: right, else: left
+    constraint = Constraint.difference(constraint(positive), constraint(negative))
+    non_empty_term(left, constraint, optional, true)
   end
 
   defp constraint(%Term{package_range: %PackageRange{constraint: constraint}}) do

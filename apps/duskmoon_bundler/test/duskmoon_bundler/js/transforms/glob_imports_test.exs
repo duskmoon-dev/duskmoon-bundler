@@ -1,6 +1,8 @@
 defmodule DuskmoonBundler.JS.Transforms.GlobImportsTest do
   use ExUnit.Case, async: true
 
+  alias DuskmoonBundler.JS.Transforms.GlobImports
+
   @fixture_dir Path.expand("fixtures/glob", __DIR__)
   @parent_fixture_dir Path.expand("fixtures/glob_parent", __DIR__)
 
@@ -24,16 +26,14 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImportsTest do
     test "extracts glob patterns without transforming source" do
       source = "const modules = import.meta.glob(['./pages/*.ts', '!./pages/about.ts'])"
 
-      assert DuskmoonBundler.JS.Transforms.GlobImports.patterns(source, "app.ts") == [
+      assert GlobImports.patterns(source, "app.ts") == [
                "./pages/*.ts",
                "!./pages/about.ts"
              ]
     end
 
     test "does not treat arbitrary .glob calls as import.meta.glob" do
-      assert DuskmoonBundler.JS.Transforms.GlobImports.patterns(
-               "const modules = meta.glob('./pages/*.ts')"
-             ) ==
+      assert GlobImports.patterns("const modules = meta.glob('./pages/*.ts')") ==
                []
     end
   end
@@ -41,7 +41,7 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImportsTest do
   describe "transform/2 lazy" do
     test "expands glob into lazy import map" do
       source = "const modules = import.meta.glob('./pages/*.ts')"
-      result = DuskmoonBundler.JS.Transforms.GlobImports.transform(source, @fixture_dir)
+      result = GlobImports.transform(source, @fixture_dir)
 
       assert result =~ "\"./pages/about.ts\":"
       assert result =~ "\"./pages/home.ts\":"
@@ -53,7 +53,7 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImportsTest do
       source =
         "const modules = import.meta.glob(['../glob_parent/*.ts', '!../glob_parent/about.ts'])"
 
-      result = DuskmoonBundler.JS.Transforms.GlobImports.transform(source, @fixture_dir)
+      result = GlobImports.transform(source, @fixture_dir)
 
       assert result =~ ~S("../glob_parent/home.ts":)
       assert result =~ ~S|import("../glob_parent/home.ts")|
@@ -64,7 +64,7 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImportsTest do
   describe "transform/2 eager" do
     test "expands glob into eager imports" do
       source = "const modules = import.meta.glob('./pages/*.ts', { eager: true })"
-      result = DuskmoonBundler.JS.Transforms.GlobImports.transform(source, @fixture_dir)
+      result = GlobImports.transform(source, @fixture_dir)
 
       assert result =~ "import * as __glob_"
       assert result =~ "\"./pages/home.ts\":"
@@ -76,7 +76,7 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImportsTest do
       source =
         "const modules = import.meta.glob(['./pages/*.ts', '!./pages/about.ts'], { eager: true })"
 
-      result = DuskmoonBundler.JS.Transforms.GlobImports.transform(source, @fixture_dir)
+      result = GlobImports.transform(source, @fixture_dir)
 
       assert result =~ "./pages/home.ts"
       refute result =~ "./pages/about.ts"
@@ -86,7 +86,7 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImportsTest do
       source =
         "const modules = import.meta.glob(['../glob_parent/*.ts', '!../glob_parent/about.ts'], { eager: true })"
 
-      result = DuskmoonBundler.JS.Transforms.GlobImports.transform(source, @fixture_dir)
+      result = GlobImports.transform(source, @fixture_dir)
 
       assert result =~ ~S(from "../glob_parent/home.ts")
       assert result =~ ~S("../glob_parent/home.ts":)
@@ -95,7 +95,7 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImportsTest do
 
     test "supports eager named imports" do
       source = "const modules = import.meta.glob('./pages/*.ts', { eager: true, import: 'name' })"
-      result = DuskmoonBundler.JS.Transforms.GlobImports.transform(source, @fixture_dir)
+      result = GlobImports.transform(source, @fixture_dir)
 
       assert result =~ "import { name as __glob_"
       assert result =~ "\"./pages/home.ts\":"
@@ -103,7 +103,7 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImportsTest do
 
     test "supports query option" do
       source = "const modules = import.meta.glob('./pages/*.ts', { eager: true, query: '?raw' })"
-      result = DuskmoonBundler.JS.Transforms.GlobImports.transform(source, @fixture_dir)
+      result = GlobImports.transform(source, @fixture_dir)
 
       assert result =~ "./pages/home.ts?raw"
     end
@@ -112,7 +112,7 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImportsTest do
       source =
         "const modules = import.meta.glob('./pages/*.ts', { eager: true, query: { raw: true, lang: 'ts' } })"
 
-      result = DuskmoonBundler.JS.Transforms.GlobImports.transform(source, @fixture_dir)
+      result = GlobImports.transform(source, @fixture_dir)
 
       assert result =~ "./pages/home.ts?raw=true&lang=ts"
     end
@@ -121,7 +121,7 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImportsTest do
       source =
         "const modules = import.meta.glob('./pages/*.ts', { eager: true, base: './pages' })"
 
-      result = DuskmoonBundler.JS.Transforms.GlobImports.transform(source, @fixture_dir)
+      result = GlobImports.transform(source, @fixture_dir)
 
       assert result =~ ~S("./home.ts":)
       assert result =~ ~S(from "./pages/home.ts")
@@ -129,7 +129,7 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImportsTest do
 
     test "supports TypeScript generic syntax" do
       source = "const modules = import.meta.glob<Module>('./pages/*.ts')"
-      result = DuskmoonBundler.JS.Transforms.GlobImports.transform(source, @fixture_dir)
+      result = GlobImports.transform(source, @fixture_dir)
 
       assert result =~ "./pages/home.ts"
       refute result =~ "import.meta.glob"
@@ -147,7 +147,7 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImportsTest do
       const pages = import.meta.glob('./pages/*.ts', { eager: true })
       """
 
-      result = DuskmoonBundler.JS.Transforms.GlobImports.transform(source, @fixture_dir, "app.ts")
+      result = GlobImports.transform(source, @fixture_dir, "app.ts")
 
       identifiers =
         Regex.scan(~r/^import \* as (__glob_\d+) from/m, result, capture: :all_but_first)
@@ -160,7 +160,7 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImportsTest do
       File.mkdir_p!(Path.join(@fixture_dir, "pages/nested"))
       source = "const modules = import.meta.glob('./pages/*')"
 
-      result = DuskmoonBundler.JS.Transforms.GlobImports.transform(source, @fixture_dir, "app.ts")
+      result = GlobImports.transform(source, @fixture_dir, "app.ts")
 
       assert result =~ ~s("./pages/home.ts")
       refute result =~ "./pages/nested"
@@ -170,7 +170,7 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImportsTest do
       source = "const modules = import.meta.glob('./*.ts', { eager: true })"
 
       result =
-        DuskmoonBundler.JS.Transforms.GlobImports.transform(
+        GlobImports.transform(
           source,
           Path.join(@fixture_dir, "pages"),
           "home.ts"
@@ -182,7 +182,7 @@ defmodule DuskmoonBundler.JS.Transforms.GlobImportsTest do
 
     test "passes through code without glob" do
       source = "const x = 42"
-      assert DuskmoonBundler.JS.Transforms.GlobImports.transform(source, @fixture_dir) == source
+      assert GlobImports.transform(source, @fixture_dir) == source
     end
   end
 end

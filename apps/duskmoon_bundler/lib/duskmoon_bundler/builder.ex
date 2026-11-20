@@ -11,8 +11,11 @@ defmodule DuskmoonBundler.Builder do
   manifest.
   """
 
-  alias DuskmoonBundler.Builder.{Collector, Output}
+  alias DuskmoonBundler.Builder.{Collector, Output, Rewriter, Writer}
+  alias DuskmoonBundler.CSS.Modules
+  alias DuskmoonBundler.JS.{AST, Patch}
   alias DuskmoonBundler.Paths
+  alias NPM.Resolution.PackageResolver
 
   @css_exts DuskmoonBundler.JS.Extensions.css()
   @css_import_noop "data:text/javascript,export{}"
@@ -86,7 +89,7 @@ defmodule DuskmoonBundler.Builder do
 
     node_modules =
       Keyword.get(opts, :node_modules) ||
-        NPM.Resolution.PackageResolver.find_node_modules(Path.dirname(first_entry))
+        PackageResolver.find_node_modules(Path.dirname(first_entry))
 
     resolve_dirs = Keyword.get(opts, :resolve_dirs, []) |> Enum.map(&Path.expand/1)
     loaders = Keyword.get(opts, :loaders, %{})
@@ -161,7 +164,7 @@ defmodule DuskmoonBundler.Builder do
         end)
 
       with {:ok, result} <- finalize_build_results(results) do
-        DuskmoonBundler.Builder.Writer.write_manifest(outdir, result.manifest)
+        Writer.write_manifest(outdir, result.manifest)
         {:ok, result}
       end
     end
@@ -191,7 +194,7 @@ defmodule DuskmoonBundler.Builder do
         rewrite_nonlocal_labels(compiled, specifier_labels, path_labels)
 
       {js_files, workers} =
-        DuskmoonBundler.Builder.Rewriter.disambiguate_workers(js_files, workers, path_labels)
+        Rewriter.disambiguate_workers(js_files, workers, path_labels)
 
       compiled = {js_files, css_parts, assets}
 
@@ -251,7 +254,7 @@ defmodule DuskmoonBundler.Builder do
     with {:ok, source} <- File.read(entry),
          {:ok, compiled} <-
            DuskmoonBundler.Pipeline.compile(entry, source, minify: bundle_opts[:minify] || false) do
-      DuskmoonBundler.Builder.Writer.build_style_entry(
+      Writer.build_style_entry(
         name,
         compiled.code,
         outdir,
@@ -378,7 +381,7 @@ defmodule DuskmoonBundler.Builder do
     {path, query} = DuskmoonBundler.URL.split_query(module_id)
 
     cond do
-      Path.extname(path) in @css_exts and not DuskmoonBundler.CSS.Modules.css_module?(path) ->
+      Path.extname(path) in @css_exts and not Modules.css_module?(path) ->
         {:ok, "export default undefined;", compiled.code, []}
 
       DuskmoonBundler.Assets.asset?(path) ->
@@ -448,7 +451,7 @@ defmodule DuskmoonBundler.Builder do
     case OXC.parse(code, "module.js") do
       {:ok, ast} ->
         patches = collect_import_label_patches(ast, label_map, from_label, global_map)
-        if patches == [], do: code, else: DuskmoonBundler.JS.Patch.apply(code, patches)
+        if patches == [], do: code, else: Patch.apply(code, patches)
 
       {:error, _} ->
         code
@@ -485,7 +488,7 @@ defmodule DuskmoonBundler.Builder do
           {node, maybe_rewrite_import_source(source, patches, label_map, from_label, global_map)}
 
         node, patches ->
-          case DuskmoonBundler.JS.AST.call_arguments(node, "require") do
+          case AST.call_arguments(node, "require") do
             {:ok, [source | _]} ->
               {node,
                maybe_rewrite_import_source(source, patches, label_map, from_label, global_map)}
@@ -509,7 +512,7 @@ defmodule DuskmoonBundler.Builder do
          global_map
        ) do
     if Path.extname(spec) in @css_exts do
-      {node, [DuskmoonBundler.JS.Patch.new(start, finish, @dynamic_css_import_noop) | patches]}
+      {node, [Patch.new(start, finish, @dynamic_css_import_noop) | patches]}
     else
       {node,
        maybe_rewrite_specifier(spec, node.source, patches, label_map, from_label, global_map)}
@@ -517,7 +520,7 @@ defmodule DuskmoonBundler.Builder do
   end
 
   defp maybe_rewrite_import_source(source, patches, label_map, from_label, global_map) do
-    case DuskmoonBundler.JS.AST.string_literal_span(source) do
+    case AST.string_literal_span(source) do
       {:ok, specifier, _start_pos, _end_pos} ->
         maybe_rewrite_specifier(specifier, source, patches, label_map, from_label, global_map)
 
@@ -530,9 +533,9 @@ defmodule DuskmoonBundler.Builder do
     case rewrite_specifier(specifier, label_map, from_label, global_map) do
       {:rewrite, replacement} ->
         [
-          DuskmoonBundler.JS.Patch.replace_selector(
+          Patch.replace_selector(
             source,
-            DuskmoonBundler.JS.AST.string_literal(replacement)
+            AST.string_literal(replacement)
           )
           | patches
         ]
@@ -544,7 +547,7 @@ defmodule DuskmoonBundler.Builder do
 
   defp rewrite_specifier(specifier, label_map, from_label, global_map) do
     if Path.extname(specifier) in @css_exts and
-         not DuskmoonBundler.CSS.Modules.css_module?(specifier) do
+         not Modules.css_module?(specifier) do
       {:rewrite, @css_import_noop}
     else
       case Map.fetch(label_map, specifier) do

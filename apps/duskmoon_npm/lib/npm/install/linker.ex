@@ -143,33 +143,39 @@ defmodule NPM.Install.Linker do
   end
 
   defp link_nested_entry(location, entry, nm_dir, flat_skipped, skipped_locations) do
-    with {:ok, name} <- NPM.Lockfile.nested_package_name(location) do
-      cond do
-        nested_under_skipped?(location, flat_skipped, skipped_locations) ->
-          {:ok, {:skip, location}}
+    case NPM.Lockfile.nested_package_name(location) do
+      {:ok, name} ->
+        cond do
+          nested_under_skipped?(location, flat_skipped, skipped_locations) ->
+            {:ok, {:skip, location}}
 
-        Map.get(entry, :optional, false) and not platform_compatible?(name, entry) ->
-          {:ok, {:skip, location}}
+          Map.get(entry, :optional, false) and not platform_compatible?(name, entry) ->
+            {:ok, {:skip, location}}
 
-        true ->
-          case NPM.Cache.ensure(name, entry.version, entry.tarball, entry.integrity,
-                 optional?: Map.get(entry, :optional, false)
-               ) do
-            {:ok, :missing_optional} ->
-              {:ok, {:skip, location}}
+          true ->
+            link_cached_nested_entry(name, entry, nm_dir, location)
+        end
 
-            {:ok, _cache_result} ->
-              cache_path = NPM.Cache.package_dir(name, entry.version)
-              target = nested_target(nm_dir, location)
-              :ok = link_package(cache_path, target, :copy)
-              {:ok, :linked}
+      :error ->
+        {:error, {:invalid_nested_package_location, location}}
+    end
+  end
 
-            {:error, reason} ->
-              {:error, reason}
-          end
-      end
-    else
-      :error -> {:error, {:invalid_nested_package_location, location}}
+  defp link_cached_nested_entry(name, entry, nm_dir, location) do
+    case NPM.Cache.ensure(name, entry.version, entry.tarball, entry.integrity,
+           optional?: Map.get(entry, :optional, false)
+         ) do
+      {:ok, :missing_optional} ->
+        {:ok, {:skip, location}}
+
+      {:ok, _cache_result} ->
+        cache_path = NPM.Cache.package_dir(name, entry.version)
+        target = nested_target(nm_dir, location)
+        :ok = link_package(cache_path, target, :copy)
+        {:ok, :linked}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -494,11 +500,13 @@ defmodule NPM.Install.Linker do
   defp symlink?(path), do: match?({:ok, %File.Stat{type: :symlink}}, File.lstat(path))
 
   defp cache_symlink?(pkg_dir) do
-    with {:ok, target} <- File.read_link(pkg_dir) do
-      cache_root = Path.expand(NPM.Cache.dir()) <> "/"
-      String.starts_with?(Path.expand(target, Path.dirname(pkg_dir)), cache_root)
-    else
-      _ -> false
+    case File.read_link(pkg_dir) do
+      {:ok, target} ->
+        cache_root = Path.expand(NPM.Cache.dir()) <> "/"
+        String.starts_with?(Path.expand(target, Path.dirname(pkg_dir)), cache_root)
+
+      _ ->
+        false
     end
   end
 

@@ -9,6 +9,9 @@ defmodule DuskmoonBundler.HMR.Boundary do
   reload.
   """
 
+  alias DuskmoonBundler.HMR.{ImportGraph, ModuleGraph}
+  alias DuskmoonBundler.JS.{AST, Extensions}
+
   @default_filename "hmr-boundary.js"
 
   @doc """
@@ -81,7 +84,7 @@ defmodule DuskmoonBundler.HMR.Boundary do
   # Only script extensions select a parser dialect; anything else keeps the
   # plain JavaScript default.
   defp parse_filename(path) do
-    if Path.extname(path) in DuskmoonBundler.JS.Extensions.bundleable(),
+    if Path.extname(path) in Extensions.bundleable(),
       do: Path.basename(path),
       else: @default_filename
   end
@@ -118,7 +121,7 @@ defmodule DuskmoonBundler.HMR.Boundary do
 
   defp accept_call?(node) when is_map(node) do
     result =
-      DuskmoonBundler.JS.AST.call_member_arguments(
+      AST.call_member_arguments(
         node,
         {:meta_property, "import", "meta", "hot"},
         "accept"
@@ -159,7 +162,7 @@ defmodule DuskmoonBundler.HMR.Boundary do
   end
 
   defp dependency_accept_specifiers_from_node(node) when is_map(node) do
-    case DuskmoonBundler.JS.AST.call_member_arguments(
+    case AST.call_member_arguments(
            node,
            {:meta_property, "import", "meta", "hot"},
            "accept"
@@ -187,7 +190,7 @@ defmodule DuskmoonBundler.HMR.Boundary do
   end
 
   defp find_graph_boundaries(changed_path, read_source) do
-    case DuskmoonBundler.HMR.ModuleGraph.get_by_file(changed_path) do
+    case ModuleGraph.get_by_file(changed_path) do
       [] ->
         nil
 
@@ -204,7 +207,7 @@ defmodule DuskmoonBundler.HMR.Boundary do
   end
 
   defp graph_importers(node) do
-    Enum.flat_map(node.importers, &List.wrap(DuskmoonBundler.HMR.ModuleGraph.get_by_id(&1)))
+    Enum.flat_map(node.importers, &List.wrap(ModuleGraph.get_by_id(&1)))
   end
 
   defp graph_accepts_update?(node, changed_path, read_source) do
@@ -261,7 +264,7 @@ defmodule DuskmoonBundler.HMR.Boundary do
   end
 
   defp find_importers(path) do
-    DuskmoonBundler.HMR.ImportGraph.dependents_matching(fn importer, specifier ->
+    ImportGraph.dependents_matching(fn importer, specifier ->
       relative_specifier_resolves_to?(specifier, importer, path)
     end)
   end

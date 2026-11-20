@@ -27,6 +27,7 @@ defmodule DuskmoonBundler.Watcher do
   use GenServer
   require Logger
 
+  alias DuskmoonBundler.HMR.{Boundary, GlobGraph, ImportGraph, ModuleGraph}
   alias DuskmoonBundler.JS.Extensions
 
   @dialyzer {:nowarn_function, detect_changes: 2}
@@ -283,14 +284,14 @@ defmodule DuskmoonBundler.Watcher do
 
     old_entry = DuskmoonBundler.Cache.get_file(path)
     DuskmoonBundler.Cache.evict_file(path)
-    DuskmoonBundler.HMR.ModuleGraph.invalidate_file(path)
+    ModuleGraph.invalidate_file(path)
 
     case File.read(path) do
       {:ok, source} ->
         case DuskmoonBundler.Pipeline.compile(path, source, Map.to_list(state.config)) do
           {:ok, result} ->
-            DuskmoonBundler.HMR.GlobGraph.update_from_source(path, source)
-            DuskmoonBundler.HMR.ImportGraph.update_from_compiled(path, result.code)
+            GlobGraph.update_from_source(path, source)
+            ImportGraph.update_from_compiled(path, result.code)
 
             changes = detect_changes(old_entry, result)
             broadcast_change(path, relative, changes, state.root)
@@ -301,9 +302,9 @@ defmodule DuskmoonBundler.Watcher do
         end
 
       {:error, reason} when reason in [:enoent, :eacces, :eperm] ->
-        DuskmoonBundler.HMR.ImportGraph.remove(path)
-        DuskmoonBundler.HMR.GlobGraph.remove(path)
-        DuskmoonBundler.HMR.ModuleGraph.remove_file(path)
+        ImportGraph.remove(path)
+        GlobGraph.remove(path)
+        ModuleGraph.remove_file(path)
         broadcast(:remove, %{path: relative})
         broadcast_glob_dependents(path, state.root)
 
@@ -318,7 +319,7 @@ defmodule DuskmoonBundler.Watcher do
     # Stylesheets inline their `@import`s and the compiler does not report
     # them, so any stylesheet may embed the edited file.
     DuskmoonBundler.Cache.evict_extension(".css")
-    DuskmoonBundler.HMR.ModuleGraph.invalidate_file(path)
+    ModuleGraph.invalidate_file(path)
     broadcast(:update, %{path: relative, changes: [:style]})
     broadcast_glob_dependents(path, state.root)
   end
@@ -326,14 +327,14 @@ defmodule DuskmoonBundler.Watcher do
   defp handle_asset_change(path, state) do
     relative = Path.relative_to(path, state.root)
     DuskmoonBundler.Cache.evict_file(path)
-    DuskmoonBundler.HMR.ModuleGraph.invalidate_file(path)
+    ModuleGraph.invalidate_file(path)
     broadcast(:update, %{path: relative, changes: [:full]})
     broadcast_glob_dependents(path, state.root)
   end
 
   defp broadcast_glob_dependents(path, root) do
     path
-    |> DuskmoonBundler.HMR.GlobGraph.dependents()
+    |> GlobGraph.dependents()
     |> Enum.reject(&(&1 == path))
     |> Enum.each(fn importer ->
       DuskmoonBundler.Cache.evict_file(importer)
@@ -358,7 +359,7 @@ defmodule DuskmoonBundler.Watcher do
           end
         end
 
-        case DuskmoonBundler.HMR.Boundary.find_boundary(path, read_source) do
+        case Boundary.find_boundary(path, read_source) do
           {:ok, boundary_path} ->
             timestamp = System.system_time(:millisecond)
             boundary_relative = Path.relative_to(boundary_path, root)

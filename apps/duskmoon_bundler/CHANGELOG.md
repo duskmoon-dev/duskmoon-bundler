@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Keep hashed split chunk imports, preload URLs and manifest entries consistent
+  when shared chunks form cycles; verify deterministic output and invalidation
+  when dependencies change (#42).
+- Document runtime-down call results accurately and extract only static imports
+  when building the initial vendor graph.
+
 ## 10.1.10 - 2026-11-18
 
 - Respect package export mappings and blocked subpaths in production,

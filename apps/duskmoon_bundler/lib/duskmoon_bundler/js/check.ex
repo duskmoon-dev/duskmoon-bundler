@@ -1,6 +1,8 @@
 defmodule DuskmoonBundler.JS.Check do
   @moduledoc "Runs JavaScript/TypeScript formatting and lint checks."
 
+  alias DuskmoonBundler.JS.Extensions
+
   def check_formatting(files, opts \\ DuskmoonBundler.JS.Format.load_config()) do
     Enum.reduce(files, {[], []}, fn file, {unformatted, errors} ->
       source = File.read!(file)
@@ -122,7 +124,7 @@ defmodule DuskmoonBundler.JS.Check do
   end
 
   defp type_aware_file?(file),
-    do: Path.extname(file) in DuskmoonBundler.JS.Extensions.bundleable()
+    do: Path.extname(file) in Extensions.bundleable()
 
   defp embedded_modules(file, plugins) do
     DuskmoonBundler.PluginRunner.embedded_modules(plugins, file, File.read!(file), [])

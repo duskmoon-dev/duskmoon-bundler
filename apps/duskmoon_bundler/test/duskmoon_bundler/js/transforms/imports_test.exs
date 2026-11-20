@@ -1,14 +1,16 @@
 defmodule DuskmoonBundler.JS.Transforms.ImportsTest do
   use ExUnit.Case, async: true
 
-  doctest DuskmoonBundler.JS.Transforms.Imports
+  alias DuskmoonBundler.JS.Transforms.Imports
+
+  doctest Imports
 
   describe "rewrite/3" do
     test "rewrites matching bare imports" do
       source = "import { ref } from 'vue'\nimport a from './local'"
 
       {:ok, result} =
-        DuskmoonBundler.JS.Transforms.Imports.rewrite(source, "test.ts", fn
+        Imports.rewrite(source, "test.ts", fn
           "vue" -> {:rewrite, "/@vendor/vue.js"}
           _ -> :keep
         end)
@@ -21,7 +23,7 @@ defmodule DuskmoonBundler.JS.Transforms.ImportsTest do
       source = "import { ref } from 'vue'\nimport { h } from 'preact'"
 
       {:ok, result} =
-        DuskmoonBundler.JS.Transforms.Imports.rewrite(source, "test.ts", fn
+        Imports.rewrite(source, "test.ts", fn
           "vue" -> {:rewrite, "/@vendor/vue.js"}
           "preact" -> {:rewrite, "/@vendor/preact.js"}
           _ -> :keep
@@ -35,7 +37,7 @@ defmodule DuskmoonBundler.JS.Transforms.ImportsTest do
       source = "export { foo } from 'bar'"
 
       {:ok, result} =
-        DuskmoonBundler.JS.Transforms.Imports.rewrite(source, "test.ts", fn
+        Imports.rewrite(source, "test.ts", fn
           "bar" -> {:rewrite, "./bar.js"}
           _ -> :keep
         end)
@@ -47,7 +49,7 @@ defmodule DuskmoonBundler.JS.Transforms.ImportsTest do
       source = "export * from 'utils'"
 
       {:ok, result} =
-        DuskmoonBundler.JS.Transforms.Imports.rewrite(source, "test.ts", fn
+        Imports.rewrite(source, "test.ts", fn
           "utils" -> {:rewrite, "./utils.js"}
           _ -> :keep
         end)
@@ -59,7 +61,7 @@ defmodule DuskmoonBundler.JS.Transforms.ImportsTest do
       source = "const m = import('lodash')"
 
       {:ok, result} =
-        DuskmoonBundler.JS.Transforms.Imports.rewrite(source, "test.js", fn
+        Imports.rewrite(source, "test.js", fn
           "lodash" -> {:rewrite, "/@vendor/lodash.js"}
           _ -> :keep
         end)
@@ -71,7 +73,7 @@ defmodule DuskmoonBundler.JS.Transforms.ImportsTest do
       source = "import x from 'pkg'"
 
       {:ok, result} =
-        DuskmoonBundler.JS.Transforms.Imports.rewrite(source, "test.ts", fn
+        Imports.rewrite(source, "test.ts", fn
           "pkg" -> {:rewrite, "./has'quote\\file.js"}
           _ -> :keep
         end)
@@ -84,14 +86,14 @@ defmodule DuskmoonBundler.JS.Transforms.ImportsTest do
       source = "import { ref } from 'vue'"
 
       {:ok, result} =
-        DuskmoonBundler.JS.Transforms.Imports.rewrite(source, "test.ts", fn _ -> :keep end)
+        Imports.rewrite(source, "test.ts", fn _ -> :keep end)
 
       assert result == source
     end
 
     test "returns parse errors" do
       {:error, errors} =
-        DuskmoonBundler.JS.Transforms.Imports.rewrite("const = ;", "bad.js", fn _ -> :keep end)
+        Imports.rewrite("const = ;", "bad.js", fn _ -> :keep end)
 
       assert is_list(errors)
     end
@@ -102,7 +104,7 @@ defmodule DuskmoonBundler.JS.Transforms.ImportsTest do
       source = "import { ref } from 'vue'\nimport { h } from 'preact'"
 
       {:ok, result} =
-        DuskmoonBundler.JS.Transforms.Imports.rewrite_map(source, "test.ts", %{
+        Imports.rewrite_map(source, "test.ts", %{
           "vue" => "/@vendor/vue.js",
           "preact" => "/@vendor/preact.js"
         })
@@ -115,7 +117,7 @@ defmodule DuskmoonBundler.JS.Transforms.ImportsTest do
       source = "import a from './local'"
 
       {:ok, result} =
-        DuskmoonBundler.JS.Transforms.Imports.rewrite_map(source, "test.ts", %{"vue" => "/v.js"})
+        Imports.rewrite_map(source, "test.ts", %{"vue" => "/v.js"})
 
       assert result == source
     end
@@ -124,7 +126,7 @@ defmodule DuskmoonBundler.JS.Transforms.ImportsTest do
   describe "rewrite!/3" do
     test "returns string on success" do
       result =
-        DuskmoonBundler.JS.Transforms.Imports.rewrite!("import a from 'x'", "test.ts", fn
+        Imports.rewrite!("import a from 'x'", "test.ts", fn
           "x" -> {:rewrite, "y"}
           _ -> :keep
         end)
@@ -134,7 +136,7 @@ defmodule DuskmoonBundler.JS.Transforms.ImportsTest do
 
     test "raises on parse error" do
       assert_raise RuntimeError, fn ->
-        DuskmoonBundler.JS.Transforms.Imports.rewrite!("const = ;", "bad.js", fn _ -> :keep end)
+        Imports.rewrite!("const = ;", "bad.js", fn _ -> :keep end)
       end
     end
   end

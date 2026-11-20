@@ -1,4 +1,5 @@
 defmodule NPM.Cache do
+  alias NPM.Registry.URL
   alias NPM.Security.RegistryPolicy
 
   @complete_marker ".npm-ex-cache-complete"
@@ -245,7 +246,7 @@ defmodule NPM.Cache do
         if RegistryPolicy.origin(registry) == original_origin do
           tarball_url
         else
-          NPM.Registry.URL.tarball_url(name, version, registry)
+          URL.tarball_url(name, version, registry)
         end
       end)
       |> Enum.reject(&(&1 in [nil, ""]))

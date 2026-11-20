@@ -1,9 +1,24 @@
 defmodule DuskmoonBundler.JS.VendorTest do
   use ExUnit.Case, async: false
 
+  alias DuskmoonBundler.JS.ImportExtractor.Result
+  alias DuskmoonBundler.JS.PrebundleEntry.CommonJS
+  alias DuskmoonBundler.JS.Vendor
+
   @fixture_dir Path.expand("fixtures/vendor", __DIR__)
   @node_modules Path.join(@fixture_dir, "node_modules")
   @deps_dir Path.join(@fixture_dir, "deps")
+
+  defmodule StaticImportPlugin do
+    @moduledoc false
+    @behaviour DuskmoonBundler.Plugin
+
+    def name, do: "static-import-test"
+
+    def extract_imports(_path, _source, _opts) do
+      {:ok, %Result{imports: [{:static, "fake-lib"}, {:dynamic, "missing-dynamic-vendor"}]}}
+    end
+  end
 
   setup do
     File.mkdir_p!(Path.join(@fixture_dir, "src"))
@@ -38,15 +53,15 @@ defmodule DuskmoonBundler.JS.VendorTest do
       )
 
       assert {:ok, vendors} =
-               DuskmoonBundler.JS.Vendor.prebundle(
+               Vendor.prebundle(
                  root: Path.join(@fixture_dir, "src"),
                  node_modules: @node_modules
                )
 
       assert Map.keys(vendors) == ["fake-lib"]
-      assert {:ok, code} = DuskmoonBundler.JS.Vendor.read("fake-lib")
+      assert {:ok, code} = Vendor.read("fake-lib")
       assert code =~ "greet"
-      assert {:error, :not_found} = DuskmoonBundler.JS.Vendor.read("bun:test")
+      assert {:error, :not_found} = Vendor.read("bun:test")
     end
 
     test "lazy initialization ignores unreferenced Bun tests" do
@@ -56,12 +71,12 @@ defmodule DuskmoonBundler.JS.VendorTest do
       )
 
       assert {:ok, code} =
-               DuskmoonBundler.JS.Vendor.bundle_on_demand("fake-lib", @node_modules,
+               Vendor.bundle_on_demand("fake-lib", @node_modules,
                  root: Path.join(@fixture_dir, "src")
                )
 
       assert code =~ "greet"
-      assert {:error, :not_found} = DuskmoonBundler.JS.Vendor.read("bun:test")
+      assert {:error, :not_found} = Vendor.read("bun:test")
     end
 
     test "reachable Bun imports remain actionable dependency errors" do
@@ -69,10 +84,10 @@ defmodule DuskmoonBundler.JS.VendorTest do
       File.write!(Path.join(@fixture_dir, "src/reachable_test.js"), "import 'bun:test';")
       opts = [root: Path.join(@fixture_dir, "src"), node_modules: @node_modules]
 
-      assert {:error, {:not_found, "bun:test"}} = DuskmoonBundler.JS.Vendor.prebundle(opts)
+      assert {:error, {:not_found, "bun:test"}} = Vendor.prebundle(opts)
 
       assert {:error, {:not_found, "bun:test"}} =
-               DuskmoonBundler.JS.Vendor.bundle_on_demand("fake-lib", @node_modules, opts)
+               Vendor.bundle_on_demand("fake-lib", @node_modules, opts)
     end
 
     test "uses cwd-relative explicit entry strings and lists instead of conventional app files" do
@@ -85,7 +100,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
       other = Path.relative_to_cwd(Path.join(@fixture_dir, "src/other.ts"))
 
       assert {:ok, vendors} =
-               DuskmoonBundler.JS.Vendor.prebundle(
+               Vendor.prebundle(
                  root: Path.join(@fixture_dir, "src"),
                  entry: entry,
                  node_modules: @node_modules
@@ -95,7 +110,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
       File.rm_rf!(vendor_cache_dir())
 
       assert {:ok, vendors} =
-               DuskmoonBundler.JS.Vendor.prebundle(
+               Vendor.prebundle(
                  root: Path.join(@fixture_dir, "src"),
                  entry: [entry, other],
                  node_modules: @node_modules
@@ -123,7 +138,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
       )
 
       assert {:ok, vendors} =
-               DuskmoonBundler.JS.Vendor.prebundle(
+               Vendor.prebundle(
                  root: Path.join(@fixture_dir, "src"),
                  aliases: %{"@" => Path.join(@fixture_dir, "src")},
                  node_modules: @node_modules
@@ -146,16 +161,27 @@ defmodule DuskmoonBundler.JS.VendorTest do
 
         case initialize do
           :prebundle ->
-            assert {:ok, %{"fake-lib" => _}} = DuskmoonBundler.JS.Vendor.prebundle(opts)
+            assert {:ok, %{"fake-lib" => _}} = Vendor.prebundle(opts)
 
           :on_demand ->
             assert {:ok, _} =
-                     DuskmoonBundler.JS.Vendor.bundle_on_demand("fake-lib", @node_modules, opts)
+                     Vendor.bundle_on_demand("fake-lib", @node_modules, opts)
         end
 
-        assert {:error, :not_found} = DuskmoonBundler.JS.Vendor.read("bun:test")
-        assert {:error, :not_found} = DuskmoonBundler.JS.Vendor.read("missing-dynamic-vendor")
+        assert {:error, :not_found} = Vendor.read("bun:test")
+        assert {:error, :not_found} = Vendor.read("missing-dynamic-vendor")
       end
+    end
+
+    test "plugin extraction leaves dynamic vendor imports on demand" do
+      assert {:ok, %{"fake-lib" => _}} =
+               Vendor.prebundle(
+                 root: Path.join(@fixture_dir, "src"),
+                 node_modules: @node_modules,
+                 plugins: [StaticImportPlugin]
+               )
+
+      assert {:error, :not_found} = Vendor.read("missing-dynamic-vendor")
     end
 
     test "reports local imports missing from a reachable application module" do
@@ -166,11 +192,11 @@ defmodule DuskmoonBundler.JS.VendorTest do
 
       opts = [root: Path.join(@fixture_dir, "src"), node_modules: @node_modules]
 
-      assert {:error, reason} = DuskmoonBundler.JS.Vendor.prebundle(opts)
+      assert {:error, reason} = Vendor.prebundle(opts)
       assert inspect(reason) =~ "missing-local.js"
 
       assert {:error, reason} =
-               DuskmoonBundler.JS.Vendor.bundle_on_demand("fake-lib", @node_modules, opts)
+               Vendor.bundle_on_demand("fake-lib", @node_modules, opts)
 
       assert inspect(reason) =~ "missing-local.js"
     end
@@ -182,30 +208,30 @@ defmodule DuskmoonBundler.JS.VendorTest do
       File.write!(Path.join(@fixture_dir, "src/app.ts"), "\nimport './broken.js';", [:append])
 
       assert {:error, _} =
-               DuskmoonBundler.JS.Vendor.bundle_on_demand("fake-lib", @node_modules,
+               Vendor.bundle_on_demand("fake-lib", @node_modules,
                  root: Path.join(@fixture_dir, "src")
                )
 
-      assert {:error, :not_found} = DuskmoonBundler.JS.Vendor.read("fake-lib")
-      assert {:error, :not_found} = DuskmoonBundler.JS.Vendor.read("broken-initial-vendor")
+      assert {:error, :not_found} = Vendor.read("fake-lib")
+      assert {:error, :not_found} = Vendor.read("broken-initial-vendor")
     end
 
     test "discovering unchanged dependencies preserves existing runtime URLs and cached entries" do
       write_package("later-vendor", "1.0.0", %{"." => "./index.js"})
       File.write!(Path.join(@node_modules, "later-vendor/index.js"), "export const later = true;")
       opts = [node_modules: @node_modules]
-      initial_hash = DuskmoonBundler.JS.Vendor.browser_hash(opts)
+      initial_hash = Vendor.browser_hash(opts)
 
-      assert {:ok, first} = DuskmoonBundler.JS.Vendor.bundle_on_demand("fake-lib", @node_modules)
-      assert DuskmoonBundler.JS.Vendor.browser_hash(opts) == initial_hash
-      assert {:ok, _} = DuskmoonBundler.JS.Vendor.bundle_on_demand("later-vendor", @node_modules)
-      assert DuskmoonBundler.JS.Vendor.browser_hash(opts) == initial_hash
-      assert {:ok, ^first} = DuskmoonBundler.JS.Vendor.read("fake-lib", opts)
+      assert {:ok, first} = Vendor.bundle_on_demand("fake-lib", @node_modules)
+      assert Vendor.browser_hash(opts) == initial_hash
+      assert {:ok, _} = Vendor.bundle_on_demand("later-vendor", @node_modules)
+      assert Vendor.browser_hash(opts) == initial_hash
+      assert {:ok, ^first} = Vendor.read("fake-lib", opts)
     end
 
     test "detects bare imports and bundles them" do
       {:ok, vendor_map} =
-        DuskmoonBundler.JS.Vendor.prebundle(
+        Vendor.prebundle(
           root: Path.join(@fixture_dir, "src"),
           node_modules: @node_modules
         )
@@ -214,7 +240,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
     end
 
     test "caches bundled files on disk" do
-      DuskmoonBundler.JS.Vendor.prebundle(
+      Vendor.prebundle(
         root: Path.join(@fixture_dir, "src"),
         node_modules: @node_modules
       )
@@ -240,7 +266,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
 
       # Scan the whole fixture, which contains both src/ and node_modules/.
       {:ok, vendor_map} =
-        DuskmoonBundler.JS.Vendor.prebundle(root: @fixture_dir, node_modules: @node_modules)
+        Vendor.prebundle(root: @fixture_dir, node_modules: @node_modules)
 
       # The app's own bare import is still detected...
       assert Map.has_key?(vendor_map, "fake-lib")
@@ -290,7 +316,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
       )
 
       {:ok, vendor_map} =
-        DuskmoonBundler.JS.Vendor.prebundle(
+        Vendor.prebundle(
           root: Path.join(@fixture_dir, "src"),
           node_modules: @node_modules
         )
@@ -298,8 +324,8 @@ defmodule DuskmoonBundler.JS.VendorTest do
       assert Map.has_key?(vendor_map, "editor-a")
       assert Map.has_key?(vendor_map, "editor-b")
 
-      {:ok, editor_a} = DuskmoonBundler.JS.Vendor.read("editor-a")
-      {:ok, editor_b} = DuskmoonBundler.JS.Vendor.read("editor-b")
+      {:ok, editor_a} = Vendor.read("editor-a")
+      {:ok, editor_b} = Vendor.read("editor-b")
 
       assert [chunk] =
                [editor_a, editor_b]
@@ -308,7 +334,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
                |> Enum.uniq()
 
       chunk_specifier = chunk |> String.trim_leading("./") |> String.trim_trailing(".js")
-      {:ok, shared_chunk} = DuskmoonBundler.JS.Vendor.read(chunk_specifier)
+      {:ok, shared_chunk} = Vendor.read(chunk_specifier)
       assert shared_chunk =~ "singleton"
     end
 
@@ -321,7 +347,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
       )
 
       {:ok, vendor_map} =
-        DuskmoonBundler.JS.Vendor.prebundle(
+        Vendor.prebundle(
           root: Path.join(@fixture_dir, "src"),
           node_modules: @node_modules
         )
@@ -350,16 +376,14 @@ defmodule DuskmoonBundler.JS.VendorTest do
       end
 
       {:ok, stable} =
-        DuskmoonBundler.JS.Vendor.bundle_on_demand("unstable-lib", @node_modules,
-          plugins: [StableSyntheticVendor]
-        )
+        Vendor.bundle_on_demand("unstable-lib", @node_modules, plugins: [StableSyntheticVendor])
 
       assert {:error, _} =
-               DuskmoonBundler.JS.Vendor.bundle_on_demand("unstable-lib", @node_modules,
+               Vendor.bundle_on_demand("unstable-lib", @node_modules,
                  plugins: [BrokenSyntheticVendor]
                )
 
-      assert {:ok, ^stable} = DuskmoonBundler.JS.Vendor.read("unstable-lib")
+      assert {:ok, ^stable} = Vendor.read("unstable-lib")
     end
 
     test "rebuilds cached synthetic entries when plugin prebundle source changes" do
@@ -386,26 +410,22 @@ defmodule DuskmoonBundler.JS.VendorTest do
       end
 
       {:ok, one} =
-        DuskmoonBundler.JS.Vendor.bundle_on_demand("synthetic-lib", @node_modules,
-          plugins: [SyntheticVendorOne]
-        )
+        Vendor.bundle_on_demand("synthetic-lib", @node_modules, plugins: [SyntheticVendorOne])
 
       {:ok, two} =
-        DuskmoonBundler.JS.Vendor.bundle_on_demand("synthetic-lib", @node_modules,
-          plugins: [SyntheticVendorTwo]
-        )
+        Vendor.bundle_on_demand("synthetic-lib", @node_modules, plugins: [SyntheticVendorTwo])
 
       assert one =~ "one"
       assert two =~ "two"
     end
 
     test "outputs valid ESM (export, no module.exports)" do
-      DuskmoonBundler.JS.Vendor.prebundle(
+      Vendor.prebundle(
         root: Path.join(@fixture_dir, "src"),
         node_modules: @node_modules
       )
 
-      {:ok, code} = DuskmoonBundler.JS.Vendor.read("fake-lib")
+      {:ok, code} = Vendor.read("fake-lib")
       assert code =~ "greet"
       refute code =~ "module.exports"
     end
@@ -419,14 +439,14 @@ defmodule DuskmoonBundler.JS.VendorTest do
       )
 
       {:ok, vendor_map} =
-        DuskmoonBundler.JS.Vendor.prebundle(
+        Vendor.prebundle(
           root: Path.join(@fixture_dir, "src"),
           node_modules: @node_modules,
           plugins: [DuskmoonBundler.Plugin.React]
         )
 
       assert Map.has_key?(vendor_map, "react")
-      {:ok, react_proxy} = DuskmoonBundler.JS.Vendor.read("react")
+      {:ok, react_proxy} = Vendor.read("react")
       assert react_proxy =~ ~r/export \{[^}]*act/s
     end
 
@@ -450,7 +470,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
       )
 
       {:ok, vendor_map} =
-        DuskmoonBundler.JS.Vendor.prebundle(
+        Vendor.prebundle(
           root: Path.join(@fixture_dir, "src"),
           node_modules: @node_modules,
           plugins: [DuskmoonBundler.Plugin.React]
@@ -459,8 +479,8 @@ defmodule DuskmoonBundler.JS.VendorTest do
       assert Map.has_key?(vendor_map, "react")
       assert Map.has_key?(vendor_map, "react-using-dom")
 
-      {:ok, react_proxy} = DuskmoonBundler.JS.Vendor.read("react")
-      {:ok, react_using_dom} = DuskmoonBundler.JS.Vendor.read("react-using-dom")
+      {:ok, react_proxy} = Vendor.read("react")
+      {:ok, react_using_dom} = Vendor.read("react-using-dom")
 
       assert [shared_chunk] =
                [react_proxy, react_using_dom]
@@ -469,7 +489,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
                |> Enum.uniq()
 
       chunk_specifier = shared_chunk |> String.trim_leading("./") |> String.trim_trailing(".js")
-      {:ok, shared_code} = DuskmoonBundler.JS.Vendor.read(chunk_specifier)
+      {:ok, shared_code} = Vendor.read(chunk_specifier)
 
       assert react_using_dom =~ "flushSync"
       assert shared_code =~ "domSingleton"
@@ -486,14 +506,14 @@ defmodule DuskmoonBundler.JS.VendorTest do
       )
 
       {:ok, vendor_map} =
-        DuskmoonBundler.JS.Vendor.prebundle(
+        Vendor.prebundle(
           root: Path.join(@fixture_dir, "src"),
           node_modules: @node_modules,
           plugins: [DuskmoonBundler.Plugin.React]
         )
 
       assert Map.has_key?(vendor_map, "react-dom")
-      {:ok, react_dom_proxy} = DuskmoonBundler.JS.Vendor.read("react-dom")
+      {:ok, react_dom_proxy} = Vendor.read("react-dom")
       assert react_dom_proxy =~ ~r/export \{[^}]*flushSync/s
     end
   end
@@ -526,13 +546,13 @@ defmodule DuskmoonBundler.JS.VendorTest do
 
     test "multi-entry bundling uses the importer's nested version" do
       assert {:ok, vendors} =
-               DuskmoonBundler.JS.Vendor.prebundle(
+               Vendor.prebundle(
                  root: Path.join(@fixture_dir, "src"),
                  node_modules: @node_modules
                )
 
       assert Enum.sort(Map.keys(vendors)) == ["@vendor/pin", "fake-lib"]
-      assert {:ok, code} = DuskmoonBundler.JS.Vendor.read("@vendor/pin")
+      assert {:ok, code} = Vendor.read("@vendor/pin")
       assert code =~ "nested-one"
     end
 
@@ -548,47 +568,47 @@ defmodule DuskmoonBundler.JS.VendorTest do
       File.write!(Path.join(@fixture_dir, "src/app.ts"), "\nimport './broken';", [:append])
 
       assert {:error, _} =
-               DuskmoonBundler.JS.Vendor.prebundle(
+               Vendor.prebundle(
                  root: Path.join(@fixture_dir, "src"),
                  node_modules: @node_modules
                )
 
-      assert {:ok, code} = DuskmoonBundler.JS.Vendor.read("@vendor/pin")
+      assert {:ok, code} = Vendor.read("@vendor/pin")
       assert code =~ "nested-one"
     end
 
     test "on-demand bundling uses the importer's nested version" do
       assert {:ok, code} =
-               DuskmoonBundler.JS.Vendor.bundle_on_demand("@vendor/pin", @node_modules)
+               Vendor.bundle_on_demand("@vendor/pin", @node_modules)
 
       assert code =~ "nested-one"
     end
 
     test "nested dependency changes invalidate caches and browser hashes without a lockfile" do
       opts = [node_modules: @node_modules]
-      assert {:ok, _} = DuskmoonBundler.JS.Vendor.bundle_on_demand("@vendor/pin", @node_modules)
-      assert {:ok, _} = DuskmoonBundler.JS.Vendor.read("@vendor/pin", opts)
-      first = DuskmoonBundler.JS.Vendor.browser_hash(opts)
+      assert {:ok, _} = Vendor.bundle_on_demand("@vendor/pin", @node_modules)
+      assert {:ok, _} = Vendor.read("@vendor/pin", opts)
+      first = Vendor.browser_hash(opts)
 
       File.write!(nested_pin_path(), "export const value = 'nested-two';")
 
-      refute DuskmoonBundler.JS.Vendor.current_browser_hash?(first, opts)
-      assert {:error, :not_found} = DuskmoonBundler.JS.Vendor.read("@vendor/pin", opts)
+      refute Vendor.current_browser_hash?(first, opts)
+      assert {:error, :not_found} = Vendor.read("@vendor/pin", opts)
 
       assert {:ok, code} =
-               DuskmoonBundler.JS.Vendor.bundle_on_demand("@vendor/pin", @node_modules)
+               Vendor.bundle_on_demand("@vendor/pin", @node_modules)
 
       assert code =~ "nested-two"
       refute code =~ "nested-one"
 
-      second = DuskmoonBundler.JS.Vendor.browser_hash(opts)
+      second = Vendor.browser_hash(opts)
 
       write_package("@vendor/pin/node_modules/@vendor/core", "1.0.1", %{
         "./pin" => "./pin.js"
       })
 
-      refute DuskmoonBundler.JS.Vendor.browser_hash(opts) == second
-      assert {:error, :not_found} = DuskmoonBundler.JS.Vendor.read("@vendor/pin", opts)
+      refute Vendor.browser_hash(opts) == second
+      assert {:error, :not_found} = Vendor.read("@vendor/pin", opts)
 
       write_package("@vendor/pin/node_modules/@vendor/core", "1.0.1", %{
         "./pin" => "./next.js"
@@ -600,20 +620,20 @@ defmodule DuskmoonBundler.JS.VendorTest do
       )
 
       assert {:ok, _} =
-               DuskmoonBundler.JS.Vendor.prebundle(
+               Vendor.prebundle(
                  root: Path.join(@fixture_dir, "src"),
                  node_modules: @node_modules
                )
 
-      assert {:ok, code} = DuskmoonBundler.JS.Vendor.read("@vendor/pin", opts)
+      assert {:ok, code} = Vendor.read("@vendor/pin", opts)
       assert code =~ "nested-next"
       refute code =~ "nested-two"
 
       File.rm_rf!(Path.dirname(nested_pin_path()))
-      assert {:error, :not_found} = DuskmoonBundler.JS.Vendor.read("@vendor/pin", opts)
+      assert {:error, :not_found} = Vendor.read("@vendor/pin", opts)
 
       assert {:error, _} =
-               DuskmoonBundler.JS.Vendor.bundle_on_demand("@vendor/pin", @node_modules)
+               Vendor.bundle_on_demand("@vendor/pin", @node_modules)
     end
 
     test "prebundling does not silently omit an unresolved required entry" do
@@ -621,7 +641,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
       File.write!(Path.join(@fixture_dir, "src/app.ts"), "\nimport './missing';", [:append])
 
       assert {:error, {:not_found, "missing-vendor"}} =
-               DuskmoonBundler.JS.Vendor.prebundle(
+               Vendor.prebundle(
                  root: Path.join(@fixture_dir, "src"),
                  node_modules: @node_modules
                )
@@ -632,7 +652,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
       File.write!(Path.join(@fixture_dir, "src/app.ts"), "\nimport './missing';", [:append])
 
       assert {:error, {:not_found, "missing-source-vendor"}} =
-               DuskmoonBundler.JS.Vendor.prebundle(
+               Vendor.prebundle(
                  root: Path.join(@fixture_dir, "src"),
                  node_modules: @node_modules,
                  vendor_source: ["missing-source-vendor"]
@@ -652,10 +672,10 @@ defmodule DuskmoonBundler.JS.VendorTest do
         end
 
         assert {:ok, root} =
-                 DuskmoonBundler.JS.Vendor.bundle_on_demand("@vendor/pin", @node_modules)
+                 Vendor.bundle_on_demand("@vendor/pin", @node_modules)
 
         assert root =~ "root"
-        previous = DuskmoonBundler.JS.Vendor.browser_hash(opts)
+        previous = Vendor.browser_hash(opts)
 
         write_package("@vendor/pin/node_modules/@vendor/core", "1.0.0", %{
           "./pin" => "./pin.js"
@@ -663,11 +683,11 @@ defmodule DuskmoonBundler.JS.VendorTest do
 
         File.write!(nested_pin_path(), "export const value = 'new-nearer';")
 
-        refute DuskmoonBundler.JS.Vendor.current_browser_hash?(previous, opts)
-        assert {:error, :not_found} = DuskmoonBundler.JS.Vendor.read("@vendor/pin", opts)
+        refute Vendor.current_browser_hash?(previous, opts)
+        assert {:error, :not_found} = Vendor.read("@vendor/pin", opts)
 
         assert {:ok, nearer} =
-                 DuskmoonBundler.JS.Vendor.bundle_on_demand("@vendor/pin", @node_modules)
+                 Vendor.bundle_on_demand("@vendor/pin", @node_modules)
 
         assert nearer =~ "new-nearer"
       end
@@ -694,15 +714,15 @@ defmodule DuskmoonBundler.JS.VendorTest do
         "export { value as pin } from '@vendor/transitive';"
       )
 
-      assert {:ok, _} = DuskmoonBundler.JS.Vendor.bundle_on_demand("@vendor/pin", @node_modules)
-      previous = DuskmoonBundler.JS.Vendor.browser_hash(opts)
+      assert {:ok, _} = Vendor.bundle_on_demand("@vendor/pin", @node_modules)
+      previous = Vendor.browser_hash(opts)
       File.write!(leaf, "export const value = 'leaf-two';")
 
-      refute DuskmoonBundler.JS.Vendor.current_browser_hash?(previous, opts)
-      assert {:error, :not_found} = DuskmoonBundler.JS.Vendor.read("@vendor/pin", opts)
+      refute Vendor.current_browser_hash?(previous, opts)
+      assert {:error, :not_found} = Vendor.read("@vendor/pin", opts)
 
       assert {:ok, updated} =
-               DuskmoonBundler.JS.Vendor.bundle_on_demand("@vendor/pin", @node_modules)
+               Vendor.bundle_on_demand("@vendor/pin", @node_modules)
 
       assert updated =~ "leaf-two"
     end
@@ -720,17 +740,17 @@ defmodule DuskmoonBundler.JS.VendorTest do
       )
 
       assert {:ok, before} =
-               DuskmoonBundler.JS.Vendor.bundle_on_demand("@vendor/pin", @node_modules)
+               Vendor.bundle_on_demand("@vendor/pin", @node_modules)
 
       refute before =~ "visible"
-      previous = DuskmoonBundler.JS.Vendor.browser_hash(opts)
+      previous = Vendor.browser_hash(opts)
       File.write!(path, replacement)
 
-      refute DuskmoonBundler.JS.Vendor.current_browser_hash?(previous, opts)
-      assert {:error, :not_found} = DuskmoonBundler.JS.Vendor.read("@vendor/pin", opts)
+      refute Vendor.current_browser_hash?(previous, opts)
+      assert {:error, :not_found} = Vendor.read("@vendor/pin", opts)
 
       assert {:ok, after_change} =
-               DuskmoonBundler.JS.Vendor.bundle_on_demand("@vendor/pin", @node_modules)
+               Vendor.bundle_on_demand("@vendor/pin", @node_modules)
 
       assert after_change =~ "visible"
     end
@@ -793,14 +813,14 @@ defmodule DuskmoonBundler.JS.VendorTest do
 
     test "converts CJS require/exports to valid ESM" do
       {:ok, vendor_map} =
-        DuskmoonBundler.JS.Vendor.prebundle(
+        Vendor.prebundle(
           root: Path.join(@fixture_dir, "src"),
           node_modules: @node_modules
         )
 
       assert Map.has_key?(vendor_map, "cjs-lib")
 
-      {:ok, code} = DuskmoonBundler.JS.Vendor.read("cjs-lib")
+      {:ok, code} = Vendor.read("cjs-lib")
       assert code =~ "export"
       refute String.starts_with?(code, "\"use strict\";(function()")
     end
@@ -845,12 +865,12 @@ defmodule DuskmoonBundler.JS.VendorTest do
       ])
 
       {:ok, _} =
-        DuskmoonBundler.JS.Vendor.prebundle(
+        Vendor.prebundle(
           root: Path.join(@fixture_dir, "src"),
           node_modules: @node_modules
         )
 
-      {:ok, code} = DuskmoonBundler.JS.Vendor.read("conditional-lib")
+      {:ok, code} = Vendor.read("conditional-lib")
       assert code =~ "development"
     end
 
@@ -890,12 +910,12 @@ defmodule DuskmoonBundler.JS.VendorTest do
       File.write!(Path.join(@fixture_dir, "src/app.ts"), "\nimport './use-cross-dep';", [:append])
 
       {:ok, _} =
-        DuskmoonBundler.JS.Vendor.prebundle(
+        Vendor.prebundle(
           root: Path.join(@fixture_dir, "src"),
           node_modules: @node_modules
         )
 
-      {:ok, code} = DuskmoonBundler.JS.Vendor.read("dep-b")
+      {:ok, code} = Vendor.read("dep-b")
       assert code =~ "require_dep_a"
       assert code =~ "exports.b = require_dep_a().a + 1"
     end
@@ -925,20 +945,20 @@ defmodule DuskmoonBundler.JS.VendorTest do
       )
 
       {:ok, vendor_map} =
-        DuskmoonBundler.JS.Vendor.prebundle(
+        Vendor.prebundle(
           root: Path.join(@fixture_dir, "src"),
           node_modules: nil,
           resolve_dirs: [@deps_dir]
         )
 
       assert Map.has_key?(vendor_map, "hex-lib")
-      {:ok, code} = DuskmoonBundler.JS.Vendor.read("hex-lib")
+      {:ok, code} = Vendor.read("hex-lib")
       assert code =~ "from deps"
     end
 
     test "bundles on demand from additional resolve directories" do
       {:ok, code} =
-        DuskmoonBundler.JS.Vendor.bundle_on_demand("hex-lib", nil, resolve_dirs: [@deps_dir])
+        Vendor.bundle_on_demand("hex-lib", nil, resolve_dirs: [@deps_dir])
 
       assert code =~ "from deps"
     end
@@ -966,14 +986,14 @@ defmodule DuskmoonBundler.JS.VendorTest do
       )
 
       {:ok, vendor_map} =
-        DuskmoonBundler.JS.Vendor.prebundle(
+        Vendor.prebundle(
           root: Path.join(@fixture_dir, "src"),
           node_modules: nil,
           resolve_dirs: [@deps_dir]
         )
 
       assert Map.has_key?(vendor_map, "phoenix-colocated/my_app")
-      {:ok, code} = DuskmoonBundler.JS.Vendor.read("phoenix-colocated/my_app")
+      {:ok, code} = Vendor.read("phoenix-colocated/my_app")
       assert code =~ "MyAppWeb.DemoLive.Sortable"
       assert code =~ "colocated hook mounted"
     end
@@ -994,9 +1014,9 @@ defmodule DuskmoonBundler.JS.VendorTest do
         browser_token: "retained-vendor-server"
       ]
 
-      old_snapshot = DuskmoonBundler.JS.Vendor.snapshot(opts)
+      old_snapshot = Vendor.snapshot(opts)
       old_hash = old_snapshot[:browser_hash]
-      assert {:ok, original} = DuskmoonBundler.JS.Vendor.read("fake-lib", old_snapshot)
+      assert {:ok, original} = Vendor.read("fake-lib", old_snapshot)
       assert original =~ "Hello"
 
       File.write!(
@@ -1004,24 +1024,24 @@ defmodule DuskmoonBundler.JS.VendorTest do
         "export const greet = (name) => `Updated, ${name}!`;"
       )
 
-      current = DuskmoonBundler.JS.Vendor.snapshot(opts)
+      current = Vendor.snapshot(opts)
       refute current[:browser_hash] == old_hash
-      assert {:ok, current_code} = DuskmoonBundler.JS.Vendor.read("fake-lib", current)
+      assert {:ok, current_code} = Vendor.read("fake-lib", current)
       assert current_code =~ "Updated"
       assert File.read!(vendor_cache_path("fake-lib.js")) =~ "Updated"
 
       historical =
         opts
         |> Keyword.put(:browser_hash, old_hash)
-        |> DuskmoonBundler.JS.Vendor.snapshot()
+        |> Vendor.snapshot()
 
       assert {:ok, lazy} =
-               DuskmoonBundler.JS.Vendor.bundle_on_demand("late-lib", @node_modules, historical)
+               Vendor.bundle_on_demand("late-lib", @node_modules, historical)
 
       assert lazy =~ "/@vendor/fake-lib.js?v=#{old_hash}&t=retained-vendor-server"
       refute lazy =~ "Updated"
-      assert {:ok, ^original} = DuskmoonBundler.JS.Vendor.read("fake-lib", historical)
-      assert {:ok, ^lazy} = DuskmoonBundler.JS.Vendor.read("late-lib", historical)
+      assert {:ok, ^original} = Vendor.read("fake-lib", historical)
+      assert {:ok, ^lazy} = Vendor.read("late-lib", historical)
     end
 
     test "rebuilds the current static graph together after dependency changes in either request order" do
@@ -1048,7 +1068,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
         File.write!(app, "import 'editor-a'; import 'editor-b';")
 
         assert {:ok, _} =
-                 DuskmoonBundler.JS.Vendor.bundle_on_demand("editor-a", @node_modules, opts)
+                 Vendor.bundle_on_demand("editor-a", @node_modules, opts)
 
         File.write!(singleton, "export const state = {value: 'later'};")
         write_package("editor-late", "1.0.0", %{"." => "./index.js"})
@@ -1061,18 +1081,18 @@ defmodule DuskmoonBundler.JS.VendorTest do
         File.write!(app, "import 'editor-a'; import 'editor-b'; import 'editor-late';")
 
         assert {:ok, _} =
-                 DuskmoonBundler.JS.Vendor.bundle_on_demand(first_request, @node_modules, opts)
+                 Vendor.bundle_on_demand(first_request, @node_modules, opts)
 
         chunks =
           for package <- ["editor-a", "editor-b", "editor-late"] do
-            assert {:ok, code} = DuskmoonBundler.JS.Vendor.read(package)
+            assert {:ok, code} = Vendor.read(package)
             assert [[chunk]] = Regex.scan(~r{\./chunks/[^"']+\.js}, code)
             chunk
           end
 
         assert [chunk] = Enum.uniq(chunks)
         chunk_specifier = chunk |> String.trim_leading("./") |> String.trim_trailing(".js")
-        assert {:ok, shared} = DuskmoonBundler.JS.Vendor.read(chunk_specifier)
+        assert {:ok, shared} = Vendor.read(chunk_specifier)
         assert shared =~ "later"
         refute shared =~ "first"
       end
@@ -1080,7 +1100,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
 
     test "refreshes optimized external URLs without replacing the compiled graph on restart" do
       assert {:ok, _} =
-               DuskmoonBundler.JS.Vendor.prebundle(
+               Vendor.prebundle(
                  root: Path.join(@fixture_dir, "src"),
                  node_modules: @node_modules
                )
@@ -1100,15 +1120,15 @@ defmodule DuskmoonBundler.JS.VendorTest do
       opts = [node_modules: @node_modules, browser_token: "old-server"]
 
       assert {:ok, code} =
-               DuskmoonBundler.JS.Vendor.bundle_on_demand("late-lib", @node_modules, opts)
+               Vendor.bundle_on_demand("late-lib", @node_modules, opts)
 
       assert code =~ "t=old-server"
-      assert {:ok, ^code} = DuskmoonBundler.JS.Vendor.read("late-lib", opts)
+      assert {:ok, ^code} = Vendor.read("late-lib", opts)
 
       cached = File.read!(vendor_cache_path("late-lib.js"))
 
       assert {:ok, refreshed} =
-               DuskmoonBundler.JS.Vendor.read(
+               Vendor.read(
                  "late-lib",
                  Keyword.put(opts, :browser_token, "new-server")
                )
@@ -1118,9 +1138,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
       assert File.read!(vendor_cache_path("late-lib.js")) == cached
 
       assert {:ok, restored} =
-               DuskmoonBundler.JS.Vendor.bundle_on_demand("late-lib", @node_modules,
-                 browser_token: "new-server"
-               )
+               Vendor.bundle_on_demand("late-lib", @node_modules, browser_token: "new-server")
 
       refute restored =~ "t=old-server"
       assert restored == refreshed
@@ -1148,7 +1166,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
       )
 
       assert {:ok, _} =
-               DuskmoonBundler.JS.Vendor.prebundle(
+               Vendor.prebundle(
                  root: Path.dirname(app),
                  node_modules: @node_modules
                )
@@ -1161,11 +1179,11 @@ defmodule DuskmoonBundler.JS.VendorTest do
         "export const greet = () => 'updated-current';"
       )
 
-      assert {:ok, code} = DuskmoonBundler.JS.Vendor.bundle_on_demand("fake-lib", @node_modules)
+      assert {:ok, code} = Vendor.bundle_on_demand("fake-lib", @node_modules)
       assert code =~ "updated-current"
 
       assert {:error, {:not_found, "removed-lib"}} =
-               DuskmoonBundler.JS.Vendor.bundle_on_demand("removed-lib", @node_modules)
+               Vendor.bundle_on_demand("removed-lib", @node_modules)
     end
 
     test "does not synthesize CommonJS exports for local ESM exports identifiers" do
@@ -1180,15 +1198,11 @@ defmodule DuskmoonBundler.JS.VendorTest do
       )
 
       assert [] ==
-               DuskmoonBundler.JS.PrebundleEntry.CommonJS.exports(
-                 Path.join(@node_modules, "fake-lib/index.js")
-               )
+               CommonJS.exports(Path.join(@node_modules, "fake-lib/index.js"))
 
-      refute DuskmoonBundler.JS.PrebundleEntry.CommonJS.common_js?(
-               Path.join(@node_modules, "fake-lib/index.js")
-             )
+      refute CommonJS.common_js?(Path.join(@node_modules, "fake-lib/index.js"))
 
-      assert {:ok, code} = DuskmoonBundler.JS.Vendor.bundle_on_demand("fake-lib", @node_modules)
+      assert {:ok, code} = Vendor.bundle_on_demand("fake-lib", @node_modules)
       assert code =~ "value"
     end
 
@@ -1200,12 +1214,12 @@ defmodule DuskmoonBundler.JS.VendorTest do
         "const key = 'dynamic'; exports[key] = 1; exports['literal'] = 2; Object.defineProperty(exports, key, {value: 3}); module.exports.object = {value: 4};"
       )
 
-      assert ["literal", "object"] == DuskmoonBundler.JS.PrebundleEntry.CommonJS.exports(path)
-      assert DuskmoonBundler.JS.PrebundleEntry.CommonJS.common_js?(path)
+      assert ["literal", "object"] == CommonJS.exports(path)
+      assert CommonJS.common_js?(path)
     end
 
     test "bundles a specifier not caught by prebundle" do
-      {:ok, code} = DuskmoonBundler.JS.Vendor.bundle_on_demand("fake-lib", @node_modules)
+      {:ok, code} = Vendor.bundle_on_demand("fake-lib", @node_modules)
       assert code =~ "greet"
     end
 
@@ -1223,7 +1237,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
 
       File.write!(Path.join(package_dir, "index.js"), "export const value = 'from ancestor';")
 
-      {:ok, code} = DuskmoonBundler.JS.Vendor.bundle_on_demand("ancestor-lib", app_node_modules)
+      {:ok, code} = Vendor.bundle_on_demand("ancestor-lib", app_node_modules)
 
       assert code =~ "from ancestor"
     end
@@ -1246,7 +1260,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
         "export const feature = 'dynamic';"
       )
 
-      {:ok, code} = DuskmoonBundler.JS.Vendor.bundle_on_demand("dynamic-lib", @node_modules)
+      {:ok, code} = Vendor.bundle_on_demand("dynamic-lib", @node_modules)
 
       assert code =~ "loadFeature"
       assert code =~ ~s(import("./chunks/)
@@ -1279,7 +1293,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
       File.write!(Path.join(@node_modules, "dep-lib/index.js"), "export const dep = 'dep';")
 
       {:ok, code} =
-        DuskmoonBundler.JS.Vendor.bundle_on_demand("source-lib/register", @node_modules,
+        Vendor.bundle_on_demand("source-lib/register", @node_modules,
           vendor_source: ["source-lib/register"],
           browser_token: "dev-token"
         )
@@ -1290,7 +1304,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
       refute code =~ "const dep ="
 
       {:ok, cached} =
-        DuskmoonBundler.JS.Vendor.read("source-lib/register",
+        Vendor.read("source-lib/register",
           node_modules: @node_modules,
           vendor_source: ["source-lib/register"],
           browser_token: "dev-token"
@@ -1301,31 +1315,31 @@ defmodule DuskmoonBundler.JS.VendorTest do
 
     test "uses a supplied browser hash for vendor URLs and stale checks" do
       url =
-        DuskmoonBundler.JS.Vendor.vendor_url("fake-lib",
+        Vendor.vendor_url("fake-lib",
           browser_hash: "fixedhash",
           browser_token: "dev-token"
         )
 
       assert url == "/@vendor/fake-lib.js?v=fixedhash&t=dev-token"
 
-      assert DuskmoonBundler.JS.Vendor.current_browser_hash?("fixedhash",
+      assert Vendor.current_browser_hash?("fixedhash",
                browser_hash: "fixedhash"
              )
 
-      refute DuskmoonBundler.JS.Vendor.current_browser_hash?("outdated",
+      refute Vendor.current_browser_hash?("outdated",
                browser_hash: "fixedhash"
              )
     end
 
     test "caches the result for subsequent read/1 calls" do
-      {:ok, _} = DuskmoonBundler.JS.Vendor.bundle_on_demand("fake-lib", @node_modules)
-      {:ok, code} = DuskmoonBundler.JS.Vendor.read("fake-lib")
+      {:ok, _} = Vendor.bundle_on_demand("fake-lib", @node_modules)
+      {:ok, code} = Vendor.read("fake-lib")
       assert code =~ "greet"
     end
 
     test "returns error for unknown specifier" do
       assert {:error, _} =
-               DuskmoonBundler.JS.Vendor.bundle_on_demand("nonexistent", @node_modules)
+               Vendor.bundle_on_demand("nonexistent", @node_modules)
     end
 
     test "outputs ESM for CJS packages" do
@@ -1341,7 +1355,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
         "'use strict';\nexports.hello = 'world';\n"
       )
 
-      {:ok, code} = DuskmoonBundler.JS.Vendor.bundle_on_demand("on-demand-cjs", @node_modules)
+      {:ok, code} = Vendor.bundle_on_demand("on-demand-cjs", @node_modules)
       assert code =~ "export"
       assert code =~ "hello"
     end
@@ -1349,17 +1363,17 @@ defmodule DuskmoonBundler.JS.VendorTest do
 
   describe "read/1" do
     test "reads pre-bundled vendor file" do
-      DuskmoonBundler.JS.Vendor.prebundle(
+      Vendor.prebundle(
         root: Path.join(@fixture_dir, "src"),
         node_modules: @node_modules
       )
 
-      {:ok, code} = DuskmoonBundler.JS.Vendor.read("fake-lib")
+      {:ok, code} = Vendor.read("fake-lib")
       assert code =~ "greet"
     end
 
     test "returns error for missing vendor" do
-      assert {:error, :not_found} = DuskmoonBundler.JS.Vendor.read("nonexistent")
+      assert {:error, :not_found} = Vendor.read("nonexistent")
     end
   end
 
@@ -1410,24 +1424,24 @@ defmodule DuskmoonBundler.JS.VendorTest do
 
   describe "vendor_url/1" do
     test "adds a stable browser hash when options are provided" do
-      url = DuskmoonBundler.JS.Vendor.vendor_url("vue", node_modules: @node_modules, plugins: [])
+      url = Vendor.vendor_url("vue", node_modules: @node_modules, plugins: [])
 
       assert url =~ "/@vendor/vue.js?v="
 
-      assert DuskmoonBundler.JS.Vendor.vendor_url("vue", node_modules: @node_modules, plugins: []) ==
+      assert Vendor.vendor_url("vue", node_modules: @node_modules, plugins: []) ==
                url
 
-      refute DuskmoonBundler.JS.Vendor.vendor_url("vue",
+      refute Vendor.vendor_url("vue",
                node_modules: @node_modules,
                plugins: [DuskmoonBundler.Plugin.React]
              ) == url
     end
 
     test "adds browser token without changing the dependency hash" do
-      hashed = DuskmoonBundler.JS.Vendor.vendor_url("vue", node_modules: @node_modules)
+      hashed = Vendor.vendor_url("vue", node_modules: @node_modules)
 
       tokenized =
-        DuskmoonBundler.JS.Vendor.vendor_url("vue",
+        Vendor.vendor_url("vue",
           node_modules: @node_modules,
           browser_token: "dev-token"
         )
@@ -1439,20 +1453,20 @@ defmodule DuskmoonBundler.JS.VendorTest do
     test "browser hash changes when lockfile changes" do
       lockfile = Path.join(@fixture_dir, "package-lock.json")
       File.write!(lockfile, ~s({"lockfileVersion":1}))
-      first = DuskmoonBundler.JS.Vendor.browser_hash(node_modules: @node_modules, plugins: [])
+      first = Vendor.browser_hash(node_modules: @node_modules, plugins: [])
 
       File.write!(lockfile, ~s({"lockfileVersion":2}))
-      second = DuskmoonBundler.JS.Vendor.browser_hash(node_modules: @node_modules, plugins: [])
+      second = Vendor.browser_hash(node_modules: @node_modules, plugins: [])
 
       refute first == second
     end
 
     test "generates URL path for specifier" do
-      assert DuskmoonBundler.JS.Vendor.vendor_url("vue") == "/@vendor/vue.js"
+      assert Vendor.vendor_url("vue") == "/@vendor/vue.js"
     end
 
     test "handles scoped packages" do
-      url = DuskmoonBundler.JS.Vendor.vendor_url("@vue/reactivity")
+      url = Vendor.vendor_url("@vue/reactivity")
       assert url =~ "/@vendor/"
       assert url =~ ".js"
 
@@ -1460,7 +1474,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
         url
         |> String.trim_leading("/@vendor/")
         |> String.trim_trailing(".js")
-        |> DuskmoonBundler.JS.Vendor.decode_specifier()
+        |> Vendor.decode_specifier()
 
       assert decoded == "@vue/reactivity"
     end
@@ -1485,7 +1499,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
             "@scope/pkg/dist/index.mjs",
             "chunks/shared-AbC123"
           ] do
-        assert DuskmoonBundler.JS.Vendor.request_specifier?(specifier), specifier
+        assert Vendor.request_specifier?(specifier), specifier
       end
     end
 
@@ -1510,7 +1524,7 @@ defmodule DuskmoonBundler.JS.VendorTest do
             "chunks/",
             "chunks//x"
           ] do
-        refute DuskmoonBundler.JS.Vendor.request_specifier?(specifier), inspect(specifier)
+        refute Vendor.request_specifier?(specifier), inspect(specifier)
       end
     end
   end

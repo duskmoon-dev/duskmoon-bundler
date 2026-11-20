@@ -92,6 +92,10 @@ defmodule DuskmoonBundler.JS.RuntimeTest do
     assert {:error, {:runtime_down, :noproc}} = Runtime.call(%Runtime{pid: pid}, "noop", [])
   end
 
+  test "call returns runtime_down when the runtime name is not registered", %{name: name} do
+    assert {:error, {:runtime_down, {:noproc, _reason}}} = Runtime.call(name, "noop")
+  end
+
   defp start_from_transient_creator(function, opts) do
     parent = self()
 

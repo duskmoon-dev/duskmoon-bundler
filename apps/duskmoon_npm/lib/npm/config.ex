@@ -6,6 +6,8 @@ defmodule NPM.Config do
   Environment variables take precedence over file configuration.
   """
 
+  alias NPM.Security.RegistryPolicy
+
   @doc """
   Read the effective registry URL.
 
@@ -76,7 +78,7 @@ defmodule NPM.Config do
   end
 
   defp trusted_token_registry?(registry_url) do
-    origin = NPM.Security.RegistryPolicy.origin(registry_url)
+    origin = RegistryPolicy.origin(registry_url)
 
     origin != nil and
       [
@@ -84,7 +86,7 @@ defmodule NPM.Config do
         System.get_env("NPM_REGISTRY"),
         Application.get_env(:duskmoon_npm, :registry)
       ]
-      |> Enum.map(&NPM.Security.RegistryPolicy.origin/1)
+      |> Enum.map(&RegistryPolicy.origin/1)
       |> Enum.member?(origin)
   end
 

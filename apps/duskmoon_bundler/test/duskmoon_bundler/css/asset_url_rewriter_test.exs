@@ -1,6 +1,8 @@
 defmodule DuskmoonBundler.CSS.AssetURLRewriterTest do
   use ExUnit.Case, async: true
 
+  alias DuskmoonBundler.CSS.AssetURLRewriter
+
   @fixture_dir Path.expand("../fixtures/css_asset_rewriter", __DIR__)
   @outdir Path.join(@fixture_dir, "dist")
 
@@ -19,7 +21,7 @@ defmodule DuskmoonBundler.CSS.AssetURLRewriterTest do
     source_path = Path.join(@fixture_dir, "src/app.css")
 
     {:ok, css} =
-      DuskmoonBundler.CSS.AssetURLRewriter.rewrite(
+      AssetURLRewriter.rewrite(
         ".logo { background: url('./icons/logo.svg') }",
         source_path,
         @outdir
@@ -35,7 +37,7 @@ defmodule DuskmoonBundler.CSS.AssetURLRewriterTest do
     source_path = Path.join(@fixture_dir, "src/app.css")
 
     {:ok, result} =
-      DuskmoonBundler.CSS.AssetURLRewriter.rewrite_with_assets(
+      AssetURLRewriter.rewrite_with_assets(
         ".a{background:url('./icons/logo.svg')} .b{background:url('./icons/logo.svg')}",
         source_path,
         @outdir
@@ -51,7 +53,7 @@ defmodule DuskmoonBundler.CSS.AssetURLRewriterTest do
     source_path = Path.join(@fixture_dir, "src/app.css")
 
     {:ok, css} =
-      DuskmoonBundler.CSS.AssetURLRewriter.rewrite(
+      AssetURLRewriter.rewrite(
         ".title::before { content: 'Привет'; }\n.logo { background: url('./icons/logo.svg') }",
         source_path,
         @outdir
@@ -67,7 +69,7 @@ defmodule DuskmoonBundler.CSS.AssetURLRewriterTest do
     source_path = Path.join(@fixture_dir, "src/app.css")
 
     {:ok, css} =
-      DuskmoonBundler.CSS.AssetURLRewriter.rewrite_dev(
+      AssetURLRewriter.rewrite_dev(
         ".logo { background: url('./icons/logo.svg?v=1') }",
         source_path,
         Path.join(@fixture_dir, "src"),
@@ -85,7 +87,7 @@ defmodule DuskmoonBundler.CSS.AssetURLRewriterTest do
     source_path = Path.join(@fixture_dir, "src/app.css")
 
     {:ok, css} =
-      DuskmoonBundler.CSS.AssetURLRewriter.rewrite_dev(
+      AssetURLRewriter.rewrite_dev(
         ".logo { background: url('../src-other/logo.svg') }",
         source_path,
         Path.join(@fixture_dir, "src"),
@@ -102,7 +104,7 @@ defmodule DuskmoonBundler.CSS.AssetURLRewriterTest do
     source_path = Path.join(@fixture_dir, "src/app.css")
 
     {:ok, css} =
-      DuskmoonBundler.CSS.AssetURLRewriter.rewrite(
+      AssetURLRewriter.rewrite(
         ".hero { background-image: image-set(url('./one.png?v=1#x') 1x, url('./two.png') 2x) }",
         source_path,
         @outdir
@@ -121,7 +123,7 @@ defmodule DuskmoonBundler.CSS.AssetURLRewriterTest do
         "@font-face{src:url(codicon.ttf)}"
 
     {:ok, result} =
-      DuskmoonBundler.CSS.AssetURLRewriter.rewrite_with_assets(css, source_path, @outdir)
+      AssetURLRewriter.rewrite_with_assets(css, source_path, @outdir)
 
     assert result.code =~ "calc(var(--vscode-sash-size)*-.5)"
     assert result.code =~ ~r/\/assets\/codicon-[a-f0-9]{8}\.ttf/
@@ -132,7 +134,7 @@ defmodule DuskmoonBundler.CSS.AssetURLRewriterTest do
     source_path = Path.join(@fixture_dir, "src/app.css")
 
     {:ok, css} =
-      DuskmoonBundler.CSS.AssetURLRewriter.rewrite(
+      AssetURLRewriter.rewrite(
         ".a{background:url('https://example.com/a.png')} .b{background:url('/logo.svg')} .c{background:url('data:image/svg+xml;base64,abc')} .d{background:url('./missing.svg')}",
         source_path,
         @outdir

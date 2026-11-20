@@ -120,7 +120,8 @@ defmodule HexSolver.PackageLister do
       |> MapSet.difference(lister.already_prefetched)
 
     if MapSet.size(prefetch) > 0 do
-      lister.registry.prefetch(Enum.to_list(prefetch))
+      packages = Enum.to_list(prefetch)
+      lister.registry.prefetch(packages)
     end
 
     # Dependencies already returned

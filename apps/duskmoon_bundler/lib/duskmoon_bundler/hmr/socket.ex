@@ -7,7 +7,7 @@ defmodule DuskmoonBundler.HMR.Socket do
   """
   @behaviour WebSock
   require Logger
-  alias DuskmoonBundler.HMR.CompileErrors
+  alias DuskmoonBundler.HMR.{CompileErrors, Message}
 
   @impl true
   def init(%{error_scope: scope}) do
@@ -30,7 +30,7 @@ defmodule DuskmoonBundler.HMR.Socket do
   # through the `DuskmoonBundler.HMR.Message` JSONCodec.
   @impl true
   def handle_in({text, opcode: :text}, state) do
-    case DuskmoonBundler.HMR.Message.decode(text) do
+    case Message.decode(text) do
       {:ok, %DuskmoonBundler.HMR.Message{type: :ping}} ->
         push(%DuskmoonBundler.HMR.Message{type: :pong}, state)
 
@@ -71,7 +71,7 @@ defmodule DuskmoonBundler.HMR.Socket do
   end
 
   defp encode(%DuskmoonBundler.HMR.Message{} = message) do
-    {:ok, {:text, message |> DuskmoonBundler.HMR.Message.dump() |> Jason.encode!()}}
+    {:ok, {:text, message |> Message.dump() |> Jason.encode!()}}
   rescue
     error ->
       Logger.warning(

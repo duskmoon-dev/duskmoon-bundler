@@ -31,6 +31,10 @@ defmodule DuskmoonBundler.Tailwind do
 
   use GenServer
 
+  alias DuskmoonBundler.JS.Runtime
+  alias DuskmoonBundler.Tailwind.Loader
+  alias NPM.Resolution.PackageResolver
+
   def start_link(opts \\ []) do
     server_opts = if name = Keyword.get(opts, :name, __MODULE__), do: [name: name], else: []
     GenServer.start_link(__MODULE__, opts, server_opts)
@@ -94,18 +98,18 @@ defmodule DuskmoonBundler.Tailwind do
   defp ensure_runtime(%{runtime: nil} = state) do
     local_tailwind_path = local_package_path("tailwindcss")
 
-    runtime_packages = DuskmoonBundler.Tailwind.Loader.runtime_packages()
+    runtime_packages = Loader.runtime_packages()
 
     runtime =
-      DuskmoonBundler.JS.Runtime.ensure!(
+      Runtime.ensure!(
         packages: runtime_packages,
         apis: [:browser, :node],
-        handlers: fn runtime -> DuskmoonBundler.Tailwind.Loader.handlers(runtime.node_modules) end,
+        handlers: fn runtime -> Loader.handlers(runtime.node_modules) end,
         define: fn runtime ->
           %{
             "TAILWIND_ROOT" =>
               local_tailwind_path ||
-                DuskmoonBundler.JS.Runtime.package_path!(runtime, "tailwindcss"),
+                Runtime.package_path!(runtime, "tailwindcss"),
             "TAILWIND_DEFAULT_BASE" => File.cwd!()
           }
         end,
@@ -126,7 +130,7 @@ defmodule DuskmoonBundler.Tailwind do
 
   defp local_package_path(package) do
     with node_modules when is_binary(node_modules) <-
-           NPM.Resolution.PackageResolver.find_node_modules(File.cwd!()),
+           PackageResolver.find_node_modules(File.cwd!()),
          path = Path.join(node_modules, package),
          true <- File.dir?(path) do
       path
@@ -209,7 +213,7 @@ defmodule DuskmoonBundler.Tailwind do
   def terminate(_reason, %{runtime: nil}), do: :ok
 
   def terminate(_reason, %{runtime: runtime}) do
-    DuskmoonBundler.JS.Runtime.stop(runtime)
+    Runtime.stop(runtime)
     :ok
   end
 
@@ -220,7 +224,7 @@ defmodule DuskmoonBundler.Tailwind do
 
   defp compile_css(state, css_input, sources, css_base, resolve_dirs) do
     with {:ok, css_sources} when is_list(css_sources) <-
-           DuskmoonBundler.JS.Runtime.call(state.runtime, "prepareTailwindCss", [
+           Runtime.call(state.runtime, "prepareTailwindCss", [
              css_input,
              Path.expand(css_base),
              resolve_dirs
@@ -232,7 +236,7 @@ defmodule DuskmoonBundler.Tailwind do
           do: state.scanner,
           else: build_scanner(scanner_sources)
 
-      case DuskmoonBundler.JS.Runtime.call(state.runtime, "buildTailwindCss", [
+      case Runtime.call(state.runtime, "buildTailwindCss", [
              Oxide.scan(scanner)
            ]) do
         {:ok, css} when is_binary(css) -> {:ok, css, scanner, scanner_sources}

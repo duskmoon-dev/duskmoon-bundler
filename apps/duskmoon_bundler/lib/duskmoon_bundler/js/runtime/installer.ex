@@ -3,6 +3,7 @@ defmodule DuskmoonBundler.JS.Runtime.Installer do
 
   require Logger
 
+  alias NPM.Install.Linker
   alias NPM.Lockfile
 
   defmodule Metadata do
@@ -47,7 +48,7 @@ defmodule DuskmoonBundler.JS.Runtime.Installer do
         {_nested, flat} = Map.pop(resolved, :nested, %{})
         lockfile = build_lockfile(flat)
         NPM.Lockfile.write(lockfile, lockfile_path)
-        NPM.Install.Linker.link(lockfile, node_modules)
+        Linker.link(lockfile, node_modules)
         warn_ignored_install_scripts(lockfile)
 
       {:error, message} ->

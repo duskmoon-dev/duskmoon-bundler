@@ -1,6 +1,8 @@
 defmodule DuskmoonBundler.HMR.GlobGraph do
   @moduledoc "Tracks `import.meta.glob()` ownership for HMR invalidation."
 
+  alias DuskmoonBundler.JS.Transforms.GlobImports
+
   @table :duskmoon_bundler_hmr_glob_graph
 
   @doc "Create the glob graph ETS table."
@@ -13,7 +15,7 @@ defmodule DuskmoonBundler.HMR.GlobGraph do
   def update_from_source(path, source) do
     globs =
       source
-      |> DuskmoonBundler.JS.Transforms.GlobImports.patterns(Path.basename(path))
+      |> GlobImports.patterns(Path.basename(path))
       |> Enum.map(&expand_glob_pattern(&1, Path.dirname(path)))
 
     update(path, globs)

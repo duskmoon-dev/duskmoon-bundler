@@ -136,12 +136,7 @@ defmodule OXC.NativeURL do
                __MODULE__
              ) do
           {:ok, {{_, 200, _}, _, body}} ->
-            assets =
-              for %{"name" => name, "url" => url} <- Map.get(JSON.decode!(body), "assets", []),
-                  is_binary(name) and is_binary(url),
-                  into: %{},
-                  do: {name, url}
-
+            assets = decode_release_assets(body)
             :persistent_term.put(key, assets)
             assets
 
@@ -152,6 +147,13 @@ defmodule OXC.NativeURL do
       assets ->
         assets
     end
+  end
+
+  defp decode_release_assets(body) do
+    for %{"name" => name, "url" => url} <- Map.get(JSON.decode!(body), "assets", []),
+        is_binary(name) and is_binary(url),
+        into: %{},
+        do: {name, url}
   end
 
   defp api_headers, do: [{~c"user-agent", ~c"duskmoon-native-url"}]
@@ -209,27 +211,31 @@ defmodule OXC.NativeURL do
     auth =
       proxies
       |> Enum.reverse()
-      |> Enum.find_value(fn {_, _, userinfo} ->
-        case userinfo && String.split(userinfo, ":", parts: 2) do
-          nil ->
-            nil
+      |> Enum.find_value(fn {_, _, userinfo} -> proxy_credentials(userinfo) end)
 
-          [user] ->
-            {String.to_charlist(URI.decode(user)), ~c""}
-
-          [user, password] ->
-            {String.to_charlist(URI.decode(user)), String.to_charlist(URI.decode(password))}
-        end
-      end)
-
-    family =
-      case System.get_env("RUSTLER_PRECOMPILED_IPFAMILY") do
-        value when value in [nil, "inet"] -> :inet
-        "inet6" -> :inet6
-        "inet6fb4" -> :inet6fb4
-        _ -> raise "Invalid RUSTLER_PRECOMPILED_IPFAMILY for native artifacts"
-      end
+    family = proxy_ip_family!(System.get_env("RUSTLER_PRECOMPILED_IPFAMILY"))
 
     {[{:ipfamily, family} | Enum.map(proxies, fn {key, value, _} -> {key, value} end)], auth}
+  end
+
+  defp proxy_credentials(nil), do: nil
+
+  defp proxy_credentials(userinfo) do
+    case String.split(userinfo, ":", parts: 2) do
+      [user] ->
+        {String.to_charlist(URI.decode(user)), ~c""}
+
+      [user, password] ->
+        {String.to_charlist(URI.decode(user)), String.to_charlist(URI.decode(password))}
+    end
+  end
+
+  defp proxy_ip_family!(value) do
+    case value do
+      value when value in [nil, "inet"] -> :inet
+      "inet6" -> :inet6
+      "inet6fb4" -> :inet6fb4
+      _ -> raise "Invalid RUSTLER_PRECOMPILED_IPFAMILY for native artifacts"
+    end
   end
 end

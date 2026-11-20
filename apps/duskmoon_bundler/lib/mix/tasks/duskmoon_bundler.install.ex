@@ -26,11 +26,13 @@ if Code.ensure_loaded?(Igniter) do
 
     use Igniter.Mix.Task
 
+    alias DuskmoonBundler.JS.Format
     alias Igniter.Code.Common
     alias Igniter.Code.Function
     alias Igniter.Code.Keyword, as: CodeKeyword
     alias Igniter.Code.List
     alias Igniter.Code.Tuple
+    alias Igniter.Libs.Phoenix, as: IgniterPhoenix
     alias Igniter.Project.Config, as: ProjectConfig
     alias Igniter.Project.Deps, as: ProjectDeps
     alias Igniter.Project.Formatter, as: ProjectFormatter
@@ -163,7 +165,7 @@ if Code.ensure_loaded?(Igniter) do
     end
 
     defp add_format_config(igniter) do
-      opts = DuskmoonBundler.JS.Format.load_json_config()
+      opts = Format.load_json_config()
 
       format_kw =
         Keyword.merge(
@@ -242,7 +244,7 @@ if Code.ensure_loaded?(Igniter) do
 
     defp add_dev_server_plug(igniter) do
       {igniter, endpoint} =
-        Igniter.Libs.Phoenix.select_endpoint(
+        IgniterPhoenix.select_endpoint(
           igniter,
           nil,
           "Which endpoint should serve DuskmoonBundler assets?"

@@ -15,6 +15,8 @@ defmodule DuskmoonBundler.JS.Transforms.DynamicImports do
   the emitted JavaScript remains parser-validated.
   """
 
+  alias DuskmoonBundler.JS.Patch
+
   @doc """
   Transforms relative template-literal dynamic imports in `source`.
 
@@ -82,10 +84,10 @@ defmodule DuskmoonBundler.JS.Transforms.DynamicImports do
           ")"
         ]
 
-        DuskmoonBundler.JS.Patch.new(rewrite.start, rewrite.end, replacement)
+        Patch.new(rewrite.start, rewrite.end, replacement)
       end)
 
-    IO.iodata_to_binary([helpers, "\n", DuskmoonBundler.JS.Patch.apply(source, patches)])
+    IO.iodata_to_binary([helpers, "\n", Patch.apply(source, patches)])
   end
 
   defp helper(rewrite) do

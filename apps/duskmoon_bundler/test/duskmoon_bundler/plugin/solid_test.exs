@@ -1,6 +1,8 @@
 defmodule DuskmoonBundler.Plugin.SolidTest do
   use ExUnit.Case, async: true
 
+  alias DuskmoonBundler.Plugin.Solid
+
   @tag :integration
   test "compiles Solid TSX through the Solid compiler" do
     source = """
@@ -12,7 +14,7 @@ defmodule DuskmoonBundler.Plugin.SolidTest do
     """
 
     assert {:ok, %{code: code, sourcemap: sourcemap}} =
-             DuskmoonBundler.Plugin.Solid.compile("App.tsx", source, [])
+             Solid.compile("App.tsx", source, [])
 
     assert code =~ "solid-js/web"
     assert code =~ "template"
@@ -28,7 +30,7 @@ defmodule DuskmoonBundler.Plugin.SolidTest do
     """
 
     assert {:ok, %{imports: imports, workers: []}} =
-             DuskmoonBundler.Plugin.Solid.extract_imports("App.tsx", source, [])
+             Solid.extract_imports("App.tsx", source, [])
 
     assert {:static, "solid-js"} in imports
     assert {:static, "solid-js/web"} in imports
@@ -48,7 +50,7 @@ defmodule DuskmoonBundler.Plugin.SolidTest do
     }
     """
 
-    assert {:ok, %{code: code}} = DuskmoonBundler.Plugin.Solid.compile("App.tsx", source, [])
+    assert {:ok, %{code: code}} = Solid.compile("App.tsx", source, [])
 
     refute code =~ "./types"
     assert code =~ "solid-js"
@@ -64,7 +66,7 @@ defmodule DuskmoonBundler.Plugin.SolidTest do
     """
 
     assert {:ok, %{imports: imports, workers: workers}} =
-             DuskmoonBundler.Plugin.Solid.extract_imports("App.tsx", source, [])
+             Solid.extract_imports("App.tsx", source, [])
 
     assert {:static, "./helper"} in imports
     assert {:static, "solid-js/web"} in imports
@@ -78,7 +80,7 @@ defmodule DuskmoonBundler.Plugin.SolidTest do
     """
 
     assert {:ok, %{code: code, sourcemap: nil}} =
-             DuskmoonBundler.Plugin.Solid.compile("App.tsx", source, target: :es2019)
+             Solid.compile("App.tsx", source, target: :es2019)
 
     refute code =~ "??"
   end

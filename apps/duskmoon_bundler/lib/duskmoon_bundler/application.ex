@@ -2,15 +2,19 @@ defmodule DuskmoonBundler.Application do
   @moduledoc false
   use Application
 
+  alias DuskmoonBundler.DevServer.ConfigCache
+  alias DuskmoonBundler.HMR.{CompileErrors, GlobGraph, ImportGraph, ModuleGraph}
+  alias DuskmoonBundler.JS.Vendor
+
   @impl true
   def start(_type, _args) do
     DuskmoonBundler.Cache.create_table()
-    DuskmoonBundler.JS.Vendor.create_table()
-    DuskmoonBundler.HMR.ImportGraph.create_table()
-    DuskmoonBundler.HMR.GlobGraph.create_table()
-    DuskmoonBundler.HMR.ModuleGraph.create_table()
-    DuskmoonBundler.HMR.CompileErrors.create_table()
-    DuskmoonBundler.DevServer.ConfigCache.create_table()
+    Vendor.create_table()
+    ImportGraph.create_table()
+    GlobGraph.create_table()
+    ModuleGraph.create_table()
+    CompileErrors.create_table()
+    ConfigCache.create_table()
 
     children = [
       {Registry, keys: :duplicate, name: DuskmoonBundler.HMR.Registry},

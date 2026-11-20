@@ -1,6 +1,9 @@
 defmodule DuskmoonBundler.Builder.Writer do
   @moduledoc "Writes production JavaScript, CSS, assets, sourcemaps, and manifests."
 
+  alias DuskmoonBundler.Builder.ManifestEntry
+  alias DuskmoonBundler.CSS.AssetURLRewriter
+
   def write_js(outdir, filename, code, sourcemap, opts \\ []) do
     hidden = Keyword.get(opts, :hidden, false)
 
@@ -94,7 +97,7 @@ defmodule DuskmoonBundler.Builder.Writer do
   end
 
   defp rewrite_css_part({source_path, css}, outdir, bundle_opts) do
-    DuskmoonBundler.CSS.AssetURLRewriter.rewrite_with_assets(css, source_path, outdir,
+    AssetURLRewriter.rewrite_with_assets(css, source_path, outdir,
       prefix: Keyword.get(bundle_opts, :asset_url_prefix, DuskmoonBundler.Paths.prefix()),
       root: Keyword.get(bundle_opts, :root)
     )
@@ -119,7 +122,7 @@ defmodule DuskmoonBundler.Builder.Writer do
     manifest = %{
       "#{name}.js" =>
         "#{name}.js"
-        |> DuskmoonBundler.Builder.ManifestEntry.js(js_filename, entry: true)
+        |> ManifestEntry.js(js_filename, entry: true)
         |> add_js_assets(assets)
     }
 
@@ -140,7 +143,7 @@ defmodule DuskmoonBundler.Builder.Writer do
     |> update_in(["#{name}.js"], &%{&1 | css: [css_filename]})
     |> Map.put(
       "#{name}.css",
-      DuskmoonBundler.Builder.ManifestEntry.css(
+      ManifestEntry.css(
         "#{name}.css",
         css_filename,
         css_assets(css_filename, css_result)
@@ -172,10 +175,10 @@ defmodule DuskmoonBundler.Builder.Writer do
   def add_asset_entries(manifest, assets) do
     Enum.reduce(assets, manifest, fn
       %{src: src, file: file}, acc ->
-        Map.put_new(acc, src, DuskmoonBundler.Builder.ManifestEntry.asset(src, file))
+        Map.put_new(acc, src, ManifestEntry.asset(src, file))
 
       %{"src" => src, "file" => file}, acc ->
-        Map.put_new(acc, src, DuskmoonBundler.Builder.ManifestEntry.asset(src, file))
+        Map.put_new(acc, src, ManifestEntry.asset(src, file))
 
       _file, acc ->
         acc

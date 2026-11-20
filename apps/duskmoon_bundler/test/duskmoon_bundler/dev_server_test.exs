@@ -4,6 +4,9 @@ defmodule DuskmoonBundler.DevServerTest do
   import Plug.Conn
   import ExUnit.CaptureLog
 
+  alias DuskmoonBundler.HMR.ModuleGraph
+  alias DuskmoonBundler.JS.Vendor
+
   @fixture_dir Path.expand("fixtures", __DIR__)
 
   defmodule GenerationBarrier do
@@ -36,7 +39,7 @@ defmodule DuskmoonBundler.DevServerTest do
 
     DuskmoonBundler.Cache.clear()
     DuskmoonBundler.ETS.clear(:duskmoon_bundler_vendor_prebundles)
-    DuskmoonBundler.HMR.ModuleGraph.clear()
+    ModuleGraph.clear()
 
     on_exit(fn -> File.rm_rf!(@fixture_dir) end)
     :ok
@@ -188,7 +191,7 @@ defmodule DuskmoonBundler.DevServerTest do
         File.write!(singleton, "export const state = { value: 'updated-generation' };")
 
         current_hash =
-          DuskmoonBundler.JS.Vendor.browser_hash(
+          Vendor.browser_hash(
             node_modules: config.node_modules,
             plugins: config.plugins
           )
@@ -811,8 +814,8 @@ defmodule DuskmoonBundler.DevServerTest do
       call_dev_server("/assets/app.ts")
       call_dev_server("/assets/dep.ts")
 
-      node = DuskmoonBundler.HMR.ModuleGraph.get_by_url("/assets/app.ts")
-      dep = DuskmoonBundler.HMR.ModuleGraph.get_by_url("/assets/dep.ts")
+      node = ModuleGraph.get_by_url("/assets/app.ts")
+      dep = ModuleGraph.get_by_url("/assets/dep.ts")
 
       assert node.file == Path.join(@fixture_dir, "src/app.ts")
       assert node.type == :js
@@ -825,7 +828,7 @@ defmodule DuskmoonBundler.DevServerTest do
       call_dev_server("/assets/style.css?import")
 
       nodes =
-        DuskmoonBundler.HMR.ModuleGraph.get_by_file(Path.join(@fixture_dir, "src/style.css"))
+        ModuleGraph.get_by_file(Path.join(@fixture_dir, "src/style.css"))
 
       assert Enum.map(nodes, & &1.url) |> Enum.sort() == [
                "/assets/style.css",
@@ -1245,7 +1248,7 @@ defmodule DuskmoonBundler.DevServerTest do
         ["chunks" | ups]
         |> Enum.join("/")
         |> Path.join(target)
-        |> DuskmoonBundler.JS.Vendor.encode_specifier()
+        |> Vendor.encode_specifier()
 
       for path <- [
             "/@vendor/#{encoded}.js",
@@ -1464,8 +1467,8 @@ defmodule DuskmoonBundler.DevServerTest do
       call_dev_server("/assets/entry.ts")
       call_dev_server("/assets/style.css?import")
 
-      entry = DuskmoonBundler.HMR.ModuleGraph.get_by_url("/assets/entry.ts")
-      style = DuskmoonBundler.HMR.ModuleGraph.get_by_url("/assets/style.css?import")
+      entry = ModuleGraph.get_by_url("/assets/entry.ts")
+      style = ModuleGraph.get_by_url("/assets/style.css?import")
 
       assert MapSet.member?(entry.imports, "/assets/style.css?import")
       assert MapSet.member?(style.importers, "/assets/entry.ts")
@@ -1479,7 +1482,7 @@ defmodule DuskmoonBundler.DevServerTest do
       """)
 
       assert call_dev_server("/assets/typed.ts").status == 200
-      assert DuskmoonBundler.HMR.ModuleGraph.get_by_url("/assets/typed.ts").self_accepting
+      assert ModuleGraph.get_by_url("/assets/typed.ts").self_accepting
     end
   end
 end

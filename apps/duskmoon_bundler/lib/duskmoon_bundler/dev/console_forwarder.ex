@@ -3,6 +3,8 @@ defmodule DuskmoonBundler.Dev.ConsoleForwarder do
 
   require Logger
 
+  alias DuskmoonBundler.JS.Asset
+
   @endpoint "/@duskmoon_bundler/console"
 
   @spec endpoint() :: String.t()
@@ -10,7 +12,7 @@ defmodule DuskmoonBundler.Dev.ConsoleForwarder do
 
   @spec inject(String.t()) :: String.t()
   def inject(code) when is_binary(code) do
-    DuskmoonBundler.JS.Asset.compiled!("dev/console-forwarder.ts") <> "\n" <> code
+    Asset.compiled!("dev/console-forwarder.ts") <> "\n" <> code
   end
 
   @spec log(binary() | map()) :: :ok

@@ -562,39 +562,41 @@ defmodule DuskmoonBundler.Builder.Output do
 
         facade_requirements = requirements[chunk_id]
 
-        with nil <- facade_requirements_error(chunk_id, chunk, facade_requirements) do
-          chunk_js =
-            chunk_js
-            |> add_chunk_facade(chunk_id, chunk, facade_requirements, export_aliases)
-            |> rewrite_chunk_specifiers(chunk, graph, module_labels, dep_map)
+        case facade_requirements_error(chunk_id, chunk, facade_requirements) do
+          nil ->
+            chunk_js =
+              chunk_js
+              |> add_chunk_facade(chunk_id, chunk, facade_requirements, export_aliases)
+              |> rewrite_chunk_specifiers(chunk, graph, module_labels, dep_map)
 
-          {chunk_js, dynamic_import_placeholder} = Rewriter.protect_dynamic_imports(chunk_js)
+            {chunk_js, dynamic_import_placeholder} = Rewriter.protect_dynamic_imports(chunk_js)
 
-          external =
-            Rewriter.external_chunk_imports(
-              chunk_js,
-              chunk_import_map(chunk, graph, module_labels, dep_map)
-            )
+            external =
+              Rewriter.external_chunk_imports(
+                chunk_js,
+                chunk_import_map(chunk, graph, module_labels, dep_map)
+              )
 
-          bundle_opts =
-            bundle_opts
-            |> Keyword.put(
-              :entry,
-              chunk_entry_label(chunk_js, chunk, graph, module_labels, dep_map)
-            )
-            |> put_external_imports(external)
+            bundle_opts =
+              bundle_opts
+              |> Keyword.put(
+                :entry,
+                chunk_entry_label(chunk_js, chunk, graph, module_labels, dep_map)
+              )
+              |> put_external_imports(external)
 
-          case bundle_js_files(chunk_js, bundle_opts) do
-            {:ok, result} ->
-              {code, sourcemap} = extract_bundle_result(result)
-              code = Rewriter.restore_dynamic_imports(code, dynamic_import_placeholder)
-              {:cont, {:ok, Map.put(acc, chunk_id, {code, sourcemap})}}
+            case bundle_js_files(chunk_js, bundle_opts) do
+              {:ok, result} ->
+                {code, sourcemap} = extract_bundle_result(result)
+                code = Rewriter.restore_dynamic_imports(code, dynamic_import_placeholder)
+                {:cont, {:ok, Map.put(acc, chunk_id, {code, sourcemap})}}
 
-            {:error, errors} ->
-              {:halt, {:error, {:chunk_bundle_failed, chunk_id, errors}}}
-          end
-        else
-          reason -> {:halt, {:error, {:invalid_chunk_links, [reason]}}}
+              {:error, errors} ->
+                {:halt, {:error, {:chunk_bundle_failed, chunk_id, errors}}}
+            end
+
+          reason ->
+            {:halt, {:error, {:invalid_chunk_links, [reason]}}}
         end
       end
     end)

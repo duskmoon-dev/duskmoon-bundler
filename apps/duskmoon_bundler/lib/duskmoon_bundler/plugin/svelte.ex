@@ -3,6 +3,14 @@ defmodule DuskmoonBundler.Plugin.Svelte do
   Built-in Svelte support for DuskmoonBundler.
   """
 
+  alias DuskmoonBundler.JS.Extensions
+  alias DuskmoonBundler.JS.PrebundleEntry.Export
+  alias DuskmoonBundler.JS.Resolution
+  alias DuskmoonBundler.JS.Runtime.Installer
+  alias DuskmoonBundler.Plugin.Helpers
+  alias DuskmoonBundler.Plugin.Svelte.CompilerOptions
+  alias NPM.Resolution.PackageResolver
+
   @behaviour DuskmoonBundler.Plugin
 
   @runtime_packages %{"svelte" => "^5.0.0"}
@@ -24,8 +32,8 @@ defmodule DuskmoonBundler.Plugin.Svelte do
   def prebundle_entry("svelte") do
     {:proxy, "svelte.js",
      exports: [
-       DuskmoonBundler.JS.PrebundleEntry.Export.all_from("svelte"),
-       DuskmoonBundler.JS.PrebundleEntry.Export.all_from("svelte/internal/client")
+       Export.all_from("svelte"),
+       Export.all_from("svelte/internal/client")
      ]}
   end
 
@@ -37,11 +45,11 @@ defmodule DuskmoonBundler.Plugin.Svelte do
   def resolve(_, _), do: nil
 
   defp resolve_svelte(specifier, _importer) do
-    install = DuskmoonBundler.JS.Runtime.Installer.install!(@runtime_packages)
+    install = Installer.install!(@runtime_packages)
 
-    case NPM.Resolution.PackageResolver.resolve(specifier, install.install_dir,
+    case PackageResolver.resolve(specifier, install.install_dir,
            extensions: @resolve_extensions,
-           conditions: DuskmoonBundler.JS.Resolution.browser_conditions()
+           conditions: Resolution.browser_conditions()
          ) do
       {:ok, path} -> {:ok, path}
       {:builtin, _} -> :skip
@@ -81,7 +89,7 @@ defmodule DuskmoonBundler.Plugin.Svelte do
   defp do_compile(path, source, opts, plugin_opts) do
     compile_options =
       path
-      |> DuskmoonBundler.Plugin.Svelte.CompilerOptions.new(opts, plugin_opts)
+      |> CompilerOptions.new(opts, plugin_opts)
       |> Jason.encode!()
 
     case DuskmoonBundler.JS.Runtime.ensure_and_call(runtime_opts(), "compileSvelte", [
@@ -134,7 +142,7 @@ defmodule DuskmoonBundler.Plugin.Svelte do
       filename =
         path
         |> Path.basename()
-        |> DuskmoonBundler.JS.Extensions.apply_loader(loaders)
+        |> Extensions.apply_loader(loaders)
         |> Kernel.<>(".script#{index}#{extension}")
 
       case OXC.select(script, filename, :import_sources) do
@@ -174,5 +182,5 @@ defmodule DuskmoonBundler.Plugin.Svelte do
   defp empty_to_nil(""), do: nil
   defp empty_to_nil(value), do: value
 
-  defp hash(value), do: DuskmoonBundler.Plugin.Helpers.cache_hash(value)
+  defp hash(value), do: Helpers.cache_hash(value)
 end

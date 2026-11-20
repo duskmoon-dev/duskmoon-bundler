@@ -2,6 +2,7 @@ defmodule DuskmoonBundler.InstallTest do
   use ExUnit.Case
 
   alias Igniter.Test
+  alias Mix.Tasks.DuskmoonBundler.Install
 
   describe "duskmoon_bundler.install" do
     test "removes esbuild and tailwind config and updates aliases" do
@@ -101,7 +102,7 @@ defmodule DuskmoonBundler.InstallTest do
             """
           }
         )
-        |> Mix.Tasks.DuskmoonBundler.Install.igniter()
+        |> Install.igniter()
 
       config_content =
         igniter.rewrite.sources["config/config.exs"]

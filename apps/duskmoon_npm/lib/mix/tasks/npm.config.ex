@@ -12,6 +12,7 @@ defmodule Mix.Tasks.Npm.Config do
   use Mix.Task
 
   alias NPM.Config
+  alias NPM.Install.Linker
 
   @impl true
   def run([]) do
@@ -34,5 +35,5 @@ defmodule Mix.Tasks.Npm.Config do
     if System.get_env("NPM_TOKEN"), do: "token set", else: "none"
   end
 
-  defp link_strategy, do: to_string(NPM.Install.Linker.strategy())
+  defp link_strategy, do: to_string(Linker.strategy())
 end

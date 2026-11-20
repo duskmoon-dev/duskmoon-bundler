@@ -7,6 +7,8 @@ defmodule DuskmoonBundler.JS.PrebundleEntry do
   produce malformed JavaScript syntax.
   """
 
+  alias DuskmoonBundler.JS.AST
+
   def source({:proxy, _filename, opts}) do
     code =
       opts
@@ -24,7 +26,7 @@ defmodule DuskmoonBundler.JS.PrebundleEntry do
     "import $name from \"__specifier__\";"
     |> OXC.parse!("prebundle-import.js")
     |> OXC.bind(name: identifier!(name))
-    |> DuskmoonBundler.JS.AST.replace_literal("__specifier__", specifier)
+    |> AST.replace_literal("__specifier__", specifier)
     |> OXC.codegen!()
     |> String.trim()
   end
@@ -46,7 +48,7 @@ defmodule DuskmoonBundler.JS.PrebundleEntry do
 
         ["export { ", names, " } from \"__specifier__\";"]
         |> OXC.parse!("prebundle-export-named.js")
-        |> DuskmoonBundler.JS.AST.replace_literal("__specifier__", specifier)
+        |> AST.replace_literal("__specifier__", specifier)
         |> OXC.codegen!()
         |> String.trim()
 
@@ -94,7 +96,7 @@ defmodule DuskmoonBundler.JS.PrebundleEntry do
   defp export_all_statement(specifier) do
     "export * from \"__specifier__\";"
     |> OXC.parse!("prebundle-export-all.js")
-    |> DuskmoonBundler.JS.AST.replace_literal("__specifier__", specifier)
+    |> AST.replace_literal("__specifier__", specifier)
     |> OXC.codegen!()
     |> String.trim()
   end

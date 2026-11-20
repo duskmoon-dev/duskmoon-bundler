@@ -2,6 +2,7 @@ defmodule DuskmoonBundler.JS.Runtime.Bundler do
   @moduledoc "Bundles QuickBEAM runtime entry files and their dependencies."
 
   alias DuskmoonBundler.JS.Transforms.Specifiers
+  alias NPM.Resolution.PackageResolver
 
   @resolve_opts [
     extensions: DuskmoonBundler.JS.Extensions.node_resolvable(),
@@ -14,7 +15,7 @@ defmodule DuskmoonBundler.JS.Runtime.Bundler do
 
     node_modules =
       Keyword.get(opts, :node_modules) ||
-        NPM.Resolution.PackageResolver.find_node_modules(Path.dirname(entry_path))
+        PackageResolver.find_node_modules(Path.dirname(entry_path))
 
     project_root = project_root(entry_path, node_modules)
     entry_label = posix_relative_to(entry_path, project_root)
@@ -70,13 +71,13 @@ defmodule DuskmoonBundler.JS.Runtime.Bundler do
   defp rewrite_specifier(specifier, importer, project_root) do
     from_dir = Path.dirname(importer)
 
-    case NPM.Resolution.PackageResolver.resolve(specifier, from_dir, @resolve_opts) do
+    case PackageResolver.resolve(specifier, from_dir, @resolve_opts) do
       {:builtin, _} ->
         :skip
 
       {:ok, resolved_path} ->
         replacement =
-          NPM.Resolution.PackageResolver.relative_import_path(
+          PackageResolver.relative_import_path(
             importer,
             resolved_path,
             project_root

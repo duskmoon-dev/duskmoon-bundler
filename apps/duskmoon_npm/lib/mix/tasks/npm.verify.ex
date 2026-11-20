@@ -13,6 +13,8 @@ defmodule Mix.Tasks.Npm.Verify do
 
   use Mix.Task
 
+  alias NPM.Install.Linker
+
   @impl true
   def run([]) do
     NPM.MixBootstrap.ensure_started!()
@@ -25,7 +27,7 @@ defmodule Mix.Tasks.Npm.Verify do
         with {:ok, _dependencies, local_links} <- NPM.Workspace.frozen_dependencies([]),
              {:ok, manifests} <- NPM.Workspace.manifests() do
           expected = expected_packages(lockfile, local_links)
-          skipped = NPM.Install.Linker.skipped_packages(lockfile)
+          skipped = Linker.skipped_packages(lockfile)
           shadowing = workspace_shadowing_packages(manifests, nested_lockfile)
           {missing_nested, mismatched} = nested_diff(nested_lockfile)
           {missing, extra} = expected |> NPM.NodeModules.diff() |> ignore_missing(skipped)

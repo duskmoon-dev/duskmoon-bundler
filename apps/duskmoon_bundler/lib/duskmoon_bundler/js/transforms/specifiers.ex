@@ -1,6 +1,8 @@
 defmodule DuskmoonBundler.JS.Transforms.Specifiers do
   @moduledoc "Rewrites JavaScript import and require specifiers while collecting resolved paths."
 
+  alias DuskmoonBundler.JS.{AST, Patch}
+
   @type rewrite_result :: :skip | {:ok, String.t() | nil, String.t()} | {:error, term()}
   @type rewrite_fun :: (String.t(), String.t(), term() -> rewrite_result())
 
@@ -10,7 +12,7 @@ defmodule DuskmoonBundler.JS.Transforms.Specifiers do
     case OXC.parse(source, Path.basename(importer)) do
       {:ok, ast} ->
         {patches, resolved_paths} = collect_patches(ast, importer, context, rewrite_fun)
-        {:ok, DuskmoonBundler.JS.Patch.apply(source, patches), resolved_paths}
+        {:ok, Patch.apply(source, patches), resolved_paths}
 
       {:error, errors} ->
         {:error, {:parse_error, importer, errors}}
@@ -30,7 +32,7 @@ defmodule DuskmoonBundler.JS.Transforms.Specifiers do
           {node, maybe_accumulate_patch(source, importer, context, rewrite_fun, acc)}
 
         node, acc ->
-          case DuskmoonBundler.JS.AST.call_arguments(node, "require") do
+          case AST.call_arguments(node, "require") do
             {:ok, [source | _]} ->
               {node, maybe_accumulate_patch(source, importer, context, rewrite_fun, acc)}
 
@@ -43,7 +45,7 @@ defmodule DuskmoonBundler.JS.Transforms.Specifiers do
   end
 
   defp maybe_accumulate_patch(source, importer, context, rewrite_fun, acc) do
-    case DuskmoonBundler.JS.AST.string_literal_span(source) do
+    case AST.string_literal_span(source) do
       {:ok, specifier, start_pos, end_pos} ->
         accumulate_patch(specifier, start_pos, end_pos, importer, context, rewrite_fun, acc)
 
@@ -70,10 +72,10 @@ defmodule DuskmoonBundler.JS.Transforms.Specifiers do
 
       {:ok, replacement, resolved_path} ->
         patch =
-          DuskmoonBundler.JS.Patch.new(
+          Patch.new(
             start_pos,
             end_pos,
-            DuskmoonBundler.JS.AST.string_literal(replacement)
+            AST.string_literal(replacement)
           )
 
         {[patch | patches], [resolved_path | paths]}

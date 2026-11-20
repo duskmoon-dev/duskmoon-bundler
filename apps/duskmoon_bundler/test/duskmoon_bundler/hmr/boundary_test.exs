@@ -1,7 +1,7 @@
 defmodule DuskmoonBundler.HMR.BoundaryTest do
   use ExUnit.Case, async: true
 
-  alias DuskmoonBundler.HMR.Boundary
+  alias DuskmoonBundler.HMR.{Boundary, ImportGraph, ModuleGraph}
 
   describe "self_accepting?/1" do
     test "detects import.meta.hot.accept()" do
@@ -113,8 +113,8 @@ defmodule DuskmoonBundler.HMR.BoundaryTest do
 
   describe "find_boundary/2" do
     setup do
-      DuskmoonBundler.HMR.ImportGraph.clear()
-      DuskmoonBundler.HMR.ModuleGraph.clear()
+      ImportGraph.clear()
+      ModuleGraph.clear()
       :ok
     end
 
@@ -125,7 +125,7 @@ defmodule DuskmoonBundler.HMR.BoundaryTest do
     end
 
     test "detects dependency accepts in type-annotated TypeScript importers" do
-      DuskmoonBundler.HMR.ImportGraph.update("/app/main.ts", ["./dep"])
+      ImportGraph.update("/app/main.ts", ["./dep"])
 
       read = fn
         "/app/main.ts" ->
@@ -147,7 +147,7 @@ defmodule DuskmoonBundler.HMR.BoundaryTest do
 
       test "finds dependency acceptance in raw .#{extension} importers" do
         importer = "/app/Widget.#{@extension}"
-        DuskmoonBundler.HMR.ImportGraph.update(importer, ["./dep.ts"])
+        ImportGraph.update(importer, ["./dep.ts"])
 
         read = fn
           ^importer ->
@@ -188,14 +188,14 @@ defmodule DuskmoonBundler.HMR.BoundaryTest do
     end
 
     test "finds dependency-accepting boundary in parent module through HMR module graph" do
-      DuskmoonBundler.HMR.ModuleGraph.update_module(
+      ModuleGraph.update_module(
         "/assets/App.tsx",
         "/assets/App.tsx",
         "/app/App.tsx",
         ["/assets/Button.tsx"]
       )
 
-      DuskmoonBundler.HMR.ModuleGraph.update_module(
+      ModuleGraph.update_module(
         "/assets/Button.tsx",
         "/assets/Button.tsx",
         "/app/Button.tsx",
@@ -215,7 +215,7 @@ defmodule DuskmoonBundler.HMR.BoundaryTest do
     end
 
     test "finds boundary in parent module through HMR module graph" do
-      DuskmoonBundler.HMR.ModuleGraph.update_module(
+      ModuleGraph.update_module(
         "/assets/App.tsx",
         "/assets/App.tsx",
         "/app/App.tsx",
@@ -223,7 +223,7 @@ defmodule DuskmoonBundler.HMR.BoundaryTest do
         self_accepting: true
       )
 
-      DuskmoonBundler.HMR.ModuleGraph.update_module(
+      ModuleGraph.update_module(
         "/assets/Button.tsx",
         "/assets/Button.tsx",
         "/app/Button.tsx",
@@ -243,7 +243,7 @@ defmodule DuskmoonBundler.HMR.BoundaryTest do
     end
 
     test "prefers current source over stale graph self-accepting flag" do
-      DuskmoonBundler.HMR.ModuleGraph.update_module(
+      ModuleGraph.update_module(
         "/assets/App.tsx",
         "/assets/App.tsx",
         "/app/App.tsx",
@@ -257,7 +257,7 @@ defmodule DuskmoonBundler.HMR.BoundaryTest do
     end
 
     test "falls back to raw import graph" do
-      DuskmoonBundler.HMR.ImportGraph.update("/app/App.tsx", ["./Button"])
+      ImportGraph.update("/app/App.tsx", ["./Button"])
 
       read = fn
         "/app/App.tsx" ->
@@ -303,9 +303,9 @@ defmodule DuskmoonBundler.HMR.BoundaryTest do
     end
 
     test "fallback propagation full-reloads when any importer path reaches an entry" do
-      DuskmoonBundler.HMR.ImportGraph.update("/app/Accepting.ts", ["./util"])
-      DuskmoonBundler.HMR.ImportGraph.update("/app/Plain.ts", ["./util"])
-      DuskmoonBundler.HMR.ImportGraph.update("/app/main.ts", ["./Accepting", "./Plain"])
+      ImportGraph.update("/app/Accepting.ts", ["./util"])
+      ImportGraph.update("/app/Plain.ts", ["./util"])
+      ImportGraph.update("/app/main.ts", ["./Accepting", "./Plain"])
 
       read = fn
         "/app/Accepting.ts" -> "import './util'\nimport.meta.hot.accept()"
@@ -316,8 +316,8 @@ defmodule DuskmoonBundler.HMR.BoundaryTest do
     end
 
     test "fallback propagation collects every boundary" do
-      DuskmoonBundler.HMR.ImportGraph.update("/app/A.ts", ["./util"])
-      DuskmoonBundler.HMR.ImportGraph.update("/app/B.ts", ["./util.ts"])
+      ImportGraph.update("/app/A.ts", ["./util"])
+      ImportGraph.update("/app/B.ts", ["./util.ts"])
 
       read = fn
         path when path in ["/app/A.ts", "/app/B.ts"] -> "import.meta.hot.accept()"
@@ -329,8 +329,8 @@ defmodule DuskmoonBundler.HMR.BoundaryTest do
     end
 
     test "fallback importer lookup resolves full paths, not basenames" do
-      DuskmoonBundler.HMR.ImportGraph.update("/app/main.ts", ["./b/index"])
-      DuskmoonBundler.HMR.ImportGraph.update("/app/lib.ts", ["lib/index", "@/a/index"])
+      ImportGraph.update("/app/main.ts", ["./b/index"])
+      ImportGraph.update("/app/lib.ts", ["lib/index", "@/a/index"])
 
       read = fn
         path when path in ["/app/main.ts", "/app/lib.ts"] -> "import.meta.hot.accept()"
@@ -342,8 +342,8 @@ defmodule DuskmoonBundler.HMR.BoundaryTest do
     end
 
     test "fallback importer lookup resolves directory index and parent specifiers" do
-      DuskmoonBundler.HMR.ImportGraph.update("/app/main.ts", ["./a"])
-      DuskmoonBundler.HMR.ImportGraph.update("/app/pages/page.ts", ["../shared/util.js"])
+      ImportGraph.update("/app/main.ts", ["./a"])
+      ImportGraph.update("/app/pages/page.ts", ["../shared/util.js"])
 
       read = fn
         path when path in ["/app/main.ts", "/app/pages/page.ts"] -> "import.meta.hot.accept()"
@@ -362,6 +362,6 @@ defmodule DuskmoonBundler.HMR.BoundaryTest do
   end
 
   defp graph_module(file, imports) do
-    DuskmoonBundler.HMR.ModuleGraph.update_module(file, file, file, imports)
+    ModuleGraph.update_module(file, file, file, imports)
   end
 end

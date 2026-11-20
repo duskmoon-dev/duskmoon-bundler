@@ -1,6 +1,10 @@
 defmodule Mix.Tasks.DuskmoonBundler.Js.Format do
   use Mix.Task
 
+  alias DuskmoonBundler.Config.Profile
+  alias DuskmoonBundler.JS.Format, as: JSFormat
+  alias DuskmoonBundler.JS.Helpers
+
   @shortdoc "Format DuskmoonBundler TypeScript assets"
 
   @moduledoc """
@@ -18,16 +22,16 @@ defmodule Mix.Tasks.DuskmoonBundler.Js.Format do
   def run(args) do
     Mix.Task.run("app.config")
 
-    profile = DuskmoonBundler.Config.Profile.from_args(args)
-    files = DuskmoonBundler.JS.Helpers.discover_format_files(profile: profile)
+    profile = Profile.from_args(args)
+    files = Helpers.discover_format_files(profile: profile)
 
     if files == [] do
       Mix.shell().info("No formattable files found")
     else
       %{changed: changed, total: total} =
-        DuskmoonBundler.JS.Format.format_files(
+        JSFormat.format_files(
           files,
-          DuskmoonBundler.JS.Format.load_config(profile)
+          JSFormat.load_config(profile)
         )
 
       if changed == 0 do

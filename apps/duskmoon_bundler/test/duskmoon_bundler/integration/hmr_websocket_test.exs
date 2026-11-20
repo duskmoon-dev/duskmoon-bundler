@@ -19,6 +19,8 @@ defmodule DuskmoonBundler.Integration.HMRWebSocketTest do
     @moduledoc false
     @behaviour Plug
 
+    alias Plug.Conn
+
     @impl true
     def init(opts), do: opts
 
@@ -26,7 +28,7 @@ defmodule DuskmoonBundler.Integration.HMRWebSocketTest do
     def call(conn, opts) do
       case DuskmoonBundler.DevServer.call(conn, opts[:dev_server]) do
         %{halted: true} = conn -> conn
-        conn -> Elixir.Plug.Conn.send_resp(conn, 404, "not found")
+        conn -> Conn.send_resp(conn, 404, "not found")
       end
     end
   end

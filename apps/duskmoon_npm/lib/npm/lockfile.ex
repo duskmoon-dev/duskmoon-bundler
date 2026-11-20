@@ -784,13 +784,15 @@ defmodule NPM.Lockfile do
     manifests
     |> Enum.reject(& &1.root?)
     |> Enum.reduce(packages, fn manifest, acc ->
-      with name when is_binary(name) and name != "" <- manifest.data["name"] do
-        Map.put(acc, "node_modules/#{name}", %{
-          "resolved" => relative_path(manifest.dir),
-          "link" => true
-        })
-      else
-        _ -> acc
+      case manifest.data["name"] do
+        name when is_binary(name) and name != "" ->
+          Map.put(acc, "node_modules/#{name}", %{
+            "resolved" => relative_path(manifest.dir),
+            "link" => true
+          })
+
+        _ ->
+          acc
       end
     end)
   end

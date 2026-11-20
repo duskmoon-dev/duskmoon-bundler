@@ -35,6 +35,9 @@ defmodule Mix.Tasks.DuskmoonBundler.Build do
   """
   use Mix.Task
 
+  alias DuskmoonBundler.Builder.Writer
+  alias DuskmoonBundler.Config.Profile
+
   @impl true
   def run(args) do
     Mix.Task.run("compile")
@@ -217,7 +220,7 @@ defmodule Mix.Tasks.DuskmoonBundler.Build do
                  resolve_dirs: resolve_dirs,
                  minify: false
                ) do
-          DuskmoonBundler.Builder.Writer.build_style_entry(
+          Writer.build_style_entry(
             "app",
             css,
             Path.join(outdir, "css"),
@@ -234,7 +237,7 @@ defmodule Mix.Tasks.DuskmoonBundler.Build do
     case result do
       {:ok, %{css: %{path: path, size: size}, manifest: manifest}} ->
         css_outdir = Path.dirname(path)
-        DuskmoonBundler.Builder.Writer.write_manifest(css_outdir, manifest)
+        Writer.write_manifest(css_outdir, manifest)
 
         Mix.shell().info("  #{Path.basename(path)}  #{DuskmoonBundler.Format.format_size(size)}")
         Mix.shell().info("  manifest.json  #{map_size(manifest)} entries")
@@ -260,7 +263,7 @@ defmodule Mix.Tasks.DuskmoonBundler.Build do
   defp parse_sourcemap(nil, default), do: default
   defp parse_sourcemap(_, default), do: default
 
-  defp parse_profile(args), do: DuskmoonBundler.Config.Profile.from_args(args)
+  defp parse_profile(args), do: Profile.from_args(args)
 
   defp format_file(path) do
     DuskmoonBundler.Format.format_with_gzip(File.read!(path))

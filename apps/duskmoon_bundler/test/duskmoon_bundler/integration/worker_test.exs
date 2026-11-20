@@ -1,6 +1,7 @@
 defmodule DuskmoonBundler.Integration.WorkerTest do
   use ExUnit.Case, async: false
 
+  alias DuskmoonBundler.HMR.{ImportGraph, ModuleGraph}
   alias DuskmoonBundler.Integration.CDPBrowser
 
   @moduletag :integration
@@ -34,8 +35,8 @@ defmodule DuskmoonBundler.Integration.WorkerTest do
   setup %{tmp_dir: root, browser: browser} do
     write_fixture(root)
     DuskmoonBundler.Cache.clear()
-    DuskmoonBundler.HMR.ModuleGraph.clear()
-    DuskmoonBundler.HMR.ImportGraph.clear()
+    ModuleGraph.clear()
+    ImportGraph.clear()
 
     config =
       DuskmoonBundler.DevServer.init(

@@ -2,6 +2,7 @@ defmodule DuskmoonBundler.Builder.Collector do
   @moduledoc "Walks the dependency graph from entry files, collecting modules and workers."
 
   alias DuskmoonBundler.Builder.Resolver
+  alias DuskmoonBundler.JS.{Extensions, ImportExtractor}
 
   @doc """
   Walk the dependency graph from an entry file.
@@ -260,7 +261,7 @@ defmodule DuskmoonBundler.Builder.Collector do
 
   defp extract_typed_imports(source, path, content_type, loaders, plugins, compiled?) do
     ext = Path.extname(path)
-    filename = DuskmoonBundler.JS.Extensions.apply_loader(Path.basename(path), loaders)
+    filename = Extensions.apply_loader(Path.basename(path), loaders)
 
     case if(compiled?,
            do: nil,
@@ -272,7 +273,7 @@ defmodule DuskmoonBundler.Builder.Collector do
           content_type in ~w(application/javascript text/javascript) ->
             extract_js_typed_imports(source, filename)
 
-          ext == ".json" or ext in DuskmoonBundler.JS.Extensions.css() ->
+          ext == ".json" or ext in Extensions.css() ->
             {:ok, %DuskmoonBundler.JS.ImportExtractor.Result{imports: [], workers: []}}
 
           true ->
@@ -285,7 +286,7 @@ defmodule DuskmoonBundler.Builder.Collector do
   end
 
   defp extract_js_typed_imports(source, filename) do
-    DuskmoonBundler.JS.ImportExtractor.extract_typed(source, filename, include_require: true)
+    ImportExtractor.extract_typed(source, filename, include_require: true)
   end
 
   defp resolve_workers(worker_specs, importer, state) do
@@ -362,7 +363,7 @@ defmodule DuskmoonBundler.Builder.Collector do
 
     cond do
       Path.extname(label) == ".json" -> json_label(label, Map.get(compiled, resolved_path))
-      Path.extname(label) in DuskmoonBundler.JS.Extensions.css() -> label <> ".js"
+      Path.extname(label) in Extensions.css() -> label <> ".js"
       query != "" -> label <> ".js"
       true -> label
     end

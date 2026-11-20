@@ -16,9 +16,8 @@ defmodule DuskmoonBundler.StaticPath do
   def resolve(endpoint_or_conn, path, %Config{} = config) do
     case fetch_entry(endpoint_or_conn, path, config) do
       {:ok, %{entry: entry, manifest_prefix: manifest_prefix}} ->
-        with {:ok, file} <- Entry.file(entry) do
-          {:ok, URL.join(manifest_prefix, file)}
-        else
+        case Entry.file(entry) do
+          {:ok, file} -> {:ok, URL.join(manifest_prefix, file)}
           :error -> {:error, missing_asset_error(path, [])}
         end
 

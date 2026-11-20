@@ -20,6 +20,9 @@ defmodule DuskmoonBundler.JS.Runtime do
           entry: String.t() | nil
         }
 
+  @type call_result ::
+          QuickBEAM.js_result() | {:error, {:runtime_down, :noproc | {:noproc, term()}}}
+
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
     id = Keyword.get(opts, :id) || Keyword.get(opts, :name) || __MODULE__
@@ -76,12 +79,12 @@ defmodule DuskmoonBundler.JS.Runtime do
     end
   end
 
-  @spec ensure_and_call(keyword(), String.t(), list(), keyword()) :: QuickBEAM.js_result()
+  @spec ensure_and_call(keyword(), String.t(), list(), keyword()) :: call_result()
   def ensure_and_call(opts, function, args \\ [], call_opts \\ []) do
     do_ensure_and_call(opts, function, args, call_opts, 2)
   end
 
-  @spec call(t() | GenServer.server(), String.t(), list(), keyword()) :: QuickBEAM.js_result()
+  @spec call(t() | GenServer.server(), String.t(), list(), keyword()) :: call_result()
   def call(runtime, function, args \\ [], opts \\ [])
 
   def call(%__MODULE__{pid: pid}, function, args, opts) do

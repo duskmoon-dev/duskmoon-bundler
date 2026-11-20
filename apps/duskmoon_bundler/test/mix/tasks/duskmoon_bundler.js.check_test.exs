@@ -3,6 +3,8 @@ defmodule DuskmoonBundler.JsCheckTest do
 
   import ExUnit.CaptureIO
 
+  alias Mix.Tasks.DuskmoonBundler.Js.Format
+
   @tmp_dir "tmp/js_check_test_#{:erlang.unique_integer([:positive])}"
 
   setup do
@@ -68,7 +70,7 @@ defmodule DuskmoonBundler.JsCheckTest do
       lint: [rules: %{"no-debugger" => :deny}]
     )
 
-    capture_io(fn -> Mix.Tasks.DuskmoonBundler.Js.Format.run(["js_check_profile"]) end)
+    capture_io(fn -> Format.run(["js_check_profile"]) end)
     assert File.read!(source) == "export const value = {answer: 42};\n"
     assert File.read!(Path.join(vendor, "untouched.mjs")) == "const = ;\n"
 

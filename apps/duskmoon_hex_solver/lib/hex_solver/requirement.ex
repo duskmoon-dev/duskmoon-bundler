@@ -1,8 +1,10 @@
 defmodule HexSolver.Requirement do
   @moduledoc false
 
-  alias HexSolver.Constraints.{Range, Util}
+  alias HexSolver.Constraints.{Empty, Range, Union, Util}
   alias HexSolver.Requirement.Parser
+
+  @type t :: Version.t() | %Empty{} | %Range{} | %Union{}
 
   @allowed_range_ops [:>, :>=, :<, :<=, :~>]
 

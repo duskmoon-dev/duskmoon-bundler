@@ -1,4 +1,5 @@
 defmodule NPM.Registry do
+  alias NPM.Registry.URL
   alias NPM.Security.RegistryPolicy
 
   @moduledoc """
@@ -266,7 +267,7 @@ defmodule NPM.Registry do
         tarball
 
       is_binary(policy.registry) ->
-        NPM.Registry.URL.tarball_url(name, version, policy.registry)
+        URL.tarball_url(name, version, policy.registry)
 
       true ->
         RegistryPolicy.validate_url!(tarball)

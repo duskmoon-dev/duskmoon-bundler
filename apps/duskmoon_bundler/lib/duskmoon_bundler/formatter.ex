@@ -44,9 +44,11 @@ defmodule DuskmoonBundler.Formatter do
 
   @behaviour Mix.Tasks.Format
 
+  alias DuskmoonBundler.JS.Extensions
+
   @impl true
   def features(_opts) do
-    [extensions: DuskmoonBundler.JS.Extensions.formattable()]
+    [extensions: Extensions.formattable()]
   end
 
   @impl true

@@ -1,22 +1,24 @@
 defmodule DuskmoonBundler.CSS.ModulesTest do
   use ExUnit.Case, async: true
 
+  alias DuskmoonBundler.CSS.Modules
+
   describe "css_module?/1" do
     test "identifies .module.css files" do
-      assert DuskmoonBundler.CSS.Modules.css_module?("button.module.css")
-      assert DuskmoonBundler.CSS.Modules.css_module?("path/to/style.module.css")
+      assert Modules.css_module?("button.module.css")
+      assert Modules.css_module?("path/to/style.module.css")
     end
 
     test "rejects non-module CSS" do
-      refute DuskmoonBundler.CSS.Modules.css_module?("app.css")
-      refute DuskmoonBundler.CSS.Modules.css_module?("module.css.bak")
+      refute Modules.css_module?("app.css")
+      refute Modules.css_module?("module.css.bak")
     end
   end
 
   describe "compile/2" do
     test "generates scoped class names" do
       {:ok, js, css} =
-        DuskmoonBundler.CSS.Modules.compile(".primary { color: blue }", "button.module.css")
+        Modules.compile(".primary { color: blue }", "button.module.css")
 
       assert js =~ "export default"
       assert js =~ "primary"
@@ -32,7 +34,7 @@ defmodule DuskmoonBundler.CSS.ModulesTest do
       .active { color: green }
       """
 
-      {:ok, js, css} = DuskmoonBundler.CSS.Modules.compile(source, "heading.module.css")
+      {:ok, js, css} = Modules.compile(source, "heading.module.css")
 
       mapping = extract_mapping(js)
 
@@ -46,8 +48,8 @@ defmodule DuskmoonBundler.CSS.ModulesTest do
     end
 
     test "different files produce different scoped names" do
-      {:ok, js1, _css1} = DuskmoonBundler.CSS.Modules.compile(".box { }", "a.module.css")
-      {:ok, js2, _css2} = DuskmoonBundler.CSS.Modules.compile(".box { }", "b.module.css")
+      {:ok, js1, _css1} = Modules.compile(".box { }", "a.module.css")
+      {:ok, js2, _css2} = Modules.compile(".box { }", "b.module.css")
 
       map1 = extract_mapping(js1)
       map2 = extract_mapping(js2)
@@ -59,7 +61,7 @@ defmodule DuskmoonBundler.CSS.ModulesTest do
   describe "compile/2 errors" do
     test "returns the CSS errors instead of a partial module" do
       assert {:error, [error | _]} =
-               DuskmoonBundler.CSS.Modules.compile(
+               Modules.compile(
                  ".a { color: red; } }}} .b {",
                  "broken.module.css"
                )

@@ -28,12 +28,10 @@ defmodule DuskmoonBundler.CSS.AssetURLRewriter do
   def rewrite_with_assets(css, source_path, outdir, opts) do
     prefix = Keyword.get(opts, :prefix, DuskmoonBundler.Paths.prefix())
 
-    with {:ok, code, {assets, _emitted}} <-
-           rewrite_urls(css, [filename: source_path], {[], %{}}, fn url, state ->
-             rewrite_build_url(url, state, source_path, outdir, prefix, opts)
-           end) do
-      {:ok, %{code: code, assets: Enum.reverse(assets)}}
-    else
+    case rewrite_urls(css, [filename: source_path], {[], %{}}, fn url, state ->
+           rewrite_build_url(url, state, source_path, outdir, prefix, opts)
+         end) do
+      {:ok, code, {assets, _emitted}} -> {:ok, %{code: code, assets: Enum.reverse(assets)}}
       {:error, reason} -> {:error, {:css_parse_failed, reason}}
     end
   end
@@ -43,15 +41,13 @@ defmodule DuskmoonBundler.CSS.AssetURLRewriter do
   def rewrite_dev(css, nil, _root, _prefix), do: {:ok, css}
 
   def rewrite_dev(css, source_path, root, prefix) do
-    with {:ok, css} <-
-           Vize.CSS.rewrite_urls(css, [filename: source_path], fn url ->
-             case dev_url(url, source_path, root, prefix) do
-               {:ok, ^url} -> :keep
-               {:ok, rewritten} -> {:rewrite, rewritten}
-             end
-           end) do
-      {:ok, css}
-    else
+    case Vize.CSS.rewrite_urls(css, [filename: source_path], fn url ->
+           case dev_url(url, source_path, root, prefix) do
+             {:ok, ^url} -> :keep
+             {:ok, rewritten} -> {:rewrite, rewritten}
+           end
+         end) do
+      {:ok, css} -> {:ok, css}
       {:error, reason} -> {:error, {:css_parse_failed, reason}}
     end
   end

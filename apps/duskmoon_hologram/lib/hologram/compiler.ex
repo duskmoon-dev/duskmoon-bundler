@@ -158,6 +158,7 @@ defmodule Hologram.Compiler do
   bundles were built with (see `Hologram.Compiler.Cache.forget_bundles/0`).
   """
   @spec build_bundle_inputs(PLT.t(), T.opts()) :: %{
+          bundler_version: charlist,
           client_stacktraces?: boolean,
           hologram_modules: [{module, integer}],
           js_sources: [{String.t(), integer, non_neg_integer}],

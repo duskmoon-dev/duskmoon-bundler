@@ -1,6 +1,7 @@
 defmodule DuskmoonBundler.DevServer.ConfigCacheTest do
   use ExUnit.Case, async: true
   alias DuskmoonBundler.DevServer.ConfigCache
+  alias DuskmoonBundler.JS.TSConfig
   @moduletag :tmp_dir
 
   test "reuses resolved config but detects equal-size edits with unchanged timestamps", %{
@@ -12,7 +13,7 @@ defmodule DuskmoonBundler.DevServer.ConfigCacheTest do
 
     resolve = fn ->
       send(self(), :resolved)
-      DuskmoonBundler.JS.TSConfig.read_paths(path)
+      TSConfig.read_paths(path)
     end
 
     assert %{"@" => first} = ConfigCache.fetch([], resolve, dir)

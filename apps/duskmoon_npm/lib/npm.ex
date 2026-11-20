@@ -758,7 +758,7 @@ defmodule NPM do
                  strategy,
                  skipped
                ) do
-          NPM.Install.Linker.link_local_packages(local_links, @node_modules)
+          Linker.link_local_packages(local_links, @node_modules)
         end
       end)
 

@@ -3,6 +3,8 @@ defmodule DuskmoonBundler.LintTest do
 
   import ExUnit.CaptureIO
 
+  alias Mix.Tasks.DuskmoonBundler.Lint
+
   @tmp_dir "tmp/lint_test_#{:erlang.unique_integer([:positive])}"
 
   setup do
@@ -29,7 +31,7 @@ defmodule DuskmoonBundler.LintTest do
     File.write!(Path.join(@tmp_dir, "clean.ts"), "export const x = 1;\n")
     Application.put_env(:duskmoon_bundler, :lint, plugins: [:typescript])
 
-    output = capture_io(fn -> Mix.Tasks.DuskmoonBundler.Lint.run([]) end)
+    output = capture_io(fn -> Lint.run([]) end)
     assert output =~ "No issues found"
   end
 
@@ -39,7 +41,7 @@ defmodule DuskmoonBundler.LintTest do
 
     output =
       capture_io(fn ->
-        catch_exit(Mix.Tasks.DuskmoonBundler.Lint.run([]))
+        catch_exit(Lint.run([]))
       end)
 
     assert output =~ "eqeqeq"
@@ -54,7 +56,7 @@ defmodule DuskmoonBundler.LintTest do
       rules: %{"typescript/no-explicit-any" => :warn}
     )
 
-    output = capture_io(fn -> Mix.Tasks.DuskmoonBundler.Lint.run([]) end)
+    output = capture_io(fn -> Lint.run([]) end)
     assert output =~ "no-explicit-any"
   end
 
@@ -66,7 +68,7 @@ defmodule DuskmoonBundler.LintTest do
       rules: %{"typescript/no-explicit-any" => :warn}
     )
 
-    output = capture_io(fn -> Mix.Tasks.DuskmoonBundler.Lint.run(["--plugin", "typescript"]) end)
+    output = capture_io(fn -> Lint.run(["--plugin", "typescript"]) end)
     assert output =~ "no-explicit-any"
   end
 
@@ -75,7 +77,7 @@ defmodule DuskmoonBundler.LintTest do
     File.write!(Path.join([@tmp_dir, "node_modules", "pkg", "bad.js"]), "debugger;\n")
     Application.put_env(:duskmoon_bundler, :lint, rules: %{"no-debugger" => :deny})
 
-    output = capture_io(fn -> Mix.Tasks.DuskmoonBundler.Lint.run([]) end)
+    output = capture_io(fn -> Lint.run([]) end)
     assert output =~ "No lintable files"
   end
 
@@ -85,7 +87,7 @@ defmodule DuskmoonBundler.LintTest do
 
     output =
       capture_io(fn ->
-        catch_exit(Mix.Tasks.DuskmoonBundler.Lint.run([]))
+        catch_exit(Lint.run([]))
       end)
 
     assert strip_ansi(output) =~ "loc.js:2:"
@@ -121,7 +123,7 @@ defmodule DuskmoonBundler.LintTest do
 
     output =
       capture_io(fn ->
-        catch_exit(Mix.Tasks.DuskmoonBundler.Lint.run([]))
+        catch_exit(Lint.run([]))
       end)
 
     assert output =~ "custom debugger ban"

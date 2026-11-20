@@ -1,10 +1,12 @@
 defmodule DuskmoonBundler.JS.Runtime.Entry do
   @moduledoc "Materializes JavaScript runtime entry assets for QuickBEAM."
 
+  alias DuskmoonBundler.JS.Asset
+
   @spec materialize(term(), String.t()) :: String.t()
   def materialize({:duskmoon_bundler_asset, filename}, install_dir) do
     filename
-    |> DuskmoonBundler.JS.Asset.path_for()
+    |> Asset.path_for()
     |> copy_to_runtime_dir(install_dir)
   end
 

@@ -1,6 +1,8 @@
 defmodule DuskmoonBundler.JS.Helpers do
   @moduledoc "Shared JavaScript file discovery helpers for Mix tasks."
 
+  alias DuskmoonBundler.JS.Extensions
+
   def discover_files(opts \\ []) do
     config = DuskmoonBundler.Config.build(Keyword.get(opts, :profile))
     root = config.root
@@ -33,6 +35,6 @@ defmodule DuskmoonBundler.JS.Helpers do
   end
 
   def discover_format_files(opts \\ []) do
-    discover_files(Keyword.put(opts, :only, DuskmoonBundler.JS.Extensions.formattable()))
+    discover_files(Keyword.put(opts, :only, Extensions.formattable()))
   end
 end

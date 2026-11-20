@@ -99,6 +99,8 @@ defmodule DuskmoonBundler.Config do
   aliases take precedence over tsconfig paths.
   """
 
+  alias DuskmoonBundler.JS.TSConfig
+
   @defaults %DuskmoonBundler.Config.Build{}
   @build_keys @defaults |> Map.from_struct() |> Map.keys()
 
@@ -152,7 +154,7 @@ defmodule DuskmoonBundler.Config do
       |> Map.merge(overrides |> Keyword.take(@build_keys) |> Map.new())
       |> then(&struct!(DuskmoonBundler.Config.Build, &1))
 
-    tsconfig_paths = DuskmoonBundler.JS.TSConfig.discover_paths()
+    tsconfig_paths = TSConfig.discover_paths()
     %{config | aliases: Map.merge(tsconfig_paths, config.aliases)}
   end
 

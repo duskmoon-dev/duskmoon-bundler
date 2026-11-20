@@ -21,6 +21,7 @@ defmodule Mix.Tasks.Npm.Publish do
   use Mix.Task
 
   alias NPM.Package.PublishConfig
+  alias NPM.Security.RegistryPolicy
 
   @impl true
   def run(args) do
@@ -104,7 +105,7 @@ defmodule Mix.Tasks.Npm.Publish do
     name = artifact.data["name"]
     version = artifact.data["version"]
     registry = settings.registry
-    NPM.Security.RegistryPolicy.validate_url!(registry)
+    RegistryPolicy.validate_url!(registry)
     token = NPM.Config.auth_token(registry)
 
     if is_nil(token) or token == "", do: Mix.raise("Publish failed: no auth token for registry")

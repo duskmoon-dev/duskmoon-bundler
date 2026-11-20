@@ -1,10 +1,12 @@
 defmodule DuskmoonBundler.WatcherTest do
   use ExUnit.Case, async: false
 
+  alias DuskmoonBundler.HMR.ImportGraph
+
   setup %{test: test_name} do
     watch_dir = Path.expand("fixtures/watcher_test/#{test_name}", __DIR__)
     File.mkdir_p!(watch_dir)
-    DuskmoonBundler.HMR.ImportGraph.clear()
+    ImportGraph.clear()
     DuskmoonBundler.Cache.clear()
     on_exit(fn -> File.rm_rf!(watch_dir) end)
     {:ok, watch_dir: watch_dir}

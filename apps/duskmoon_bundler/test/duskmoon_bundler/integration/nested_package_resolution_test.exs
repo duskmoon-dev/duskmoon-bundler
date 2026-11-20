@@ -1,6 +1,9 @@
 defmodule DuskmoonBundler.NestedPackageResolutionTest do
   use ExUnit.Case, async: false
 
+  alias DuskmoonBundler.Builder.Resolver
+  alias DuskmoonBundler.JS.Vendor
+
   @moduletag :tmp_dir
   @package "@fixture/nested-consumer"
   @dependency "@fixture/core/components/pin-input"
@@ -57,7 +60,7 @@ defmodule DuskmoonBundler.NestedPackageResolutionTest do
 
   test "dev prebundle honors nested exports before the root version", ctx do
     assert {:ok, vendors} =
-             DuskmoonBundler.JS.Vendor.prebundle(
+             Vendor.prebundle(
                root: ctx.src_dir,
                node_modules: ctx.node_modules,
                force: true
@@ -69,7 +72,7 @@ defmodule DuskmoonBundler.NestedPackageResolutionTest do
 
   test "on-demand dev bundle honors nested exports before the root version", ctx do
     assert {:ok, source} =
-             DuskmoonBundler.JS.Vendor.bundle_on_demand(@package, ctx.node_modules)
+             Vendor.bundle_on_demand(@package, ctx.node_modules)
 
     assert_vendor_runtime(source)
   end
@@ -92,7 +95,7 @@ defmodule DuskmoonBundler.NestedPackageResolutionTest do
     resolver_ctx = %DuskmoonBundler.Builder.Context{node_modules: ctx.node_modules}
 
     assert {:error, {:not_found, @dependency}} =
-             DuskmoonBundler.Builder.Resolver.resolve(
+             Resolver.resolve(
                @dependency,
                Path.join(consumer_dir, "index.js"),
                resolver_ctx

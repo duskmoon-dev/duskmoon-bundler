@@ -2,8 +2,10 @@ defmodule DuskmoonBundler.Dev.ConsoleForwarderTest do
   use ExUnit.Case, async: true
   import ExUnit.CaptureLog
 
+  alias DuskmoonBundler.Dev.ConsoleForwarder
+
   test "injects forwarding preamble" do
-    code = DuskmoonBundler.Dev.ConsoleForwarder.inject("console.log('ok')")
+    code = ConsoleForwarder.inject("console.log('ok')")
     assert code =~ "__duskmoon_bundlerConsoleForwarderInstalled"
     assert code =~ "console.log('ok')"
   end
@@ -11,7 +13,7 @@ defmodule DuskmoonBundler.Dev.ConsoleForwarderTest do
   test "logs browser payloads" do
     log =
       capture_log(fn ->
-        DuskmoonBundler.Dev.ConsoleForwarder.log(%{
+        ConsoleForwarder.log(%{
           "level" => "error",
           "source" => "/assets/app.js",
           "args" => ["boom", %{"code" => 500}]

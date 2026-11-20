@@ -45,6 +45,7 @@ defmodule DuskmoonBundler.Integration.HMRTest do
 
   @moduletag :integration
 
+  alias DuskmoonBundler.HMR.{GlobGraph, ImportGraph, ModuleGraph}
   alias DuskmoonBundler.Integration.CDPBrowser
 
   @fixture_dir Path.expand("../fixtures/integration_hmr", __DIR__)
@@ -61,9 +62,9 @@ defmodule DuskmoonBundler.Integration.HMRTest do
     File.rm_rf!(@fixture_dir)
     File.mkdir_p!(@fixture_dir)
     DuskmoonBundler.Cache.clear()
-    DuskmoonBundler.HMR.GlobGraph.clear()
-    DuskmoonBundler.HMR.ImportGraph.clear()
-    DuskmoonBundler.HMR.ModuleGraph.clear()
+    GlobGraph.clear()
+    ImportGraph.clear()
+    ModuleGraph.clear()
 
     write_fixture("index.html", """
     <!DOCTYPE html>

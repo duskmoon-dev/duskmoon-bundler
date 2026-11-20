@@ -22,6 +22,7 @@ defmodule Mix.Tasks.DuskmoonBundler.Dev do
   use Mix.Task
 
   alias DuskmoonBundler.Config
+  alias DuskmoonBundler.Config.Profile
   alias DuskmoonBundler.Paths
 
   @impl true
@@ -96,7 +97,7 @@ defmodule Mix.Tasks.DuskmoonBundler.Dev do
     end
   end
 
-  defp parse_profile(args), do: DuskmoonBundler.Config.Profile.from_args(args)
+  defp parse_profile(args), do: Profile.from_args(args)
 
   defp watcher_name(nil), do: DuskmoonBundler.Watcher
 

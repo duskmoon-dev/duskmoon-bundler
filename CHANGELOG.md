@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Keep hashed split imports, preload URLs and manifest links consistent across
+  shared chunk cycles, with regression coverage for deterministic rebuilds and
+  dependency invalidation (#42).
+- Upgrade Hackney and its IDNA dependency to address CVE-2026-117678 without
+  ignoring security advisories.
+- Correct JavaScript runtime-down, solver constraint and compiler input type
+  contracts; include optional backend and generated-native helpers in audit PLTs.
+- Simplify static-only vendor import extraction and retain dynamic imports for
+  on-demand loading, including plugin-provided imports.
+- Refactor solver term branches and native download helpers while retaining
+  constraint semantics, strict native mode, proxy handling and header limits.
+
 ## 10.1.10 - 2026-11-18
 
 - Resolve overlapping npm export patterns using Node's specificity rules,

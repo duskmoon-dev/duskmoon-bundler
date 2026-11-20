@@ -35,6 +35,8 @@ defmodule Mix.Tasks.DuskmoonBundler.Lint do
   """
   use Mix.Task
 
+  alias DuskmoonBundler.JS.Helpers
+
   @category_colors [
     correctness: :yellow,
     typescript: :blue,
@@ -79,7 +81,7 @@ defmodule Mix.Tasks.DuskmoonBundler.Lint do
     custom_rules = Keyword.get(config, :custom_rules, [])
     fix = Keyword.get(parsed, :fix, false)
 
-    files = DuskmoonBundler.JS.Helpers.discover_files(only: ~w(.js .ts .jsx .tsx))
+    files = Helpers.discover_files(only: ~w(.js .ts .jsx .tsx))
 
     if files == [] do
       Mix.shell().info("No lintable files found")
