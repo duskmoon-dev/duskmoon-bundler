@@ -160,8 +160,9 @@ defmodule HexSolver.PartialSolution do
   def unsatisfied(%PartialSolution{} = solution) do
     solution.positive
     |> Map.values()
-    |> Enum.reject(&Map.has_key?(solution.decisions, &1.term.package_range.name))
-    |> Enum.reject(& &1.term.optional)
+    |> Enum.reject(
+      &(Map.has_key?(solution.decisions, &1.term.package_range.name) or &1.term.optional)
+    )
     |> Enum.map(& &1.term.package_range)
   end
 end

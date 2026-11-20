@@ -1447,9 +1447,8 @@ defmodule DuskmoonBundler.JS.Vendor do
   end
 
   defp package_exports?(package_dir) do
-    with {:ok, package} <- NPM.JSON.read_file(Path.join(package_dir, "package.json")) do
-      not is_nil(Exports.parse(package))
-    else
+    case NPM.JSON.read_file(Path.join(package_dir, "package.json")) do
+      {:ok, package} -> not is_nil(Exports.parse(package))
       _ -> false
     end
   end

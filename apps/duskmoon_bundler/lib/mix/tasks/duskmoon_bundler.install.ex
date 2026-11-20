@@ -27,6 +27,7 @@ if Code.ensure_loaded?(Igniter) do
     use Igniter.Mix.Task
 
     alias DuskmoonBundler.JS.Format
+    alias DuskmoonBundler.Paths
     alias Igniter.Code.Common
     alias Igniter.Code.Function
     alias Igniter.Code.Keyword, as: CodeKeyword
@@ -36,7 +37,6 @@ if Code.ensure_loaded?(Igniter) do
     alias Igniter.Project.Config, as: ProjectConfig
     alias Igniter.Project.Deps, as: ProjectDeps
     alias Igniter.Project.Formatter, as: ProjectFormatter
-    alias DuskmoonBundler.Paths
     alias Igniter.Project.TaskAliases
 
     @impl Igniter.Mix.Task

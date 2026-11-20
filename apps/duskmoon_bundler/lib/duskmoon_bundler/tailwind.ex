@@ -223,29 +223,32 @@ defmodule DuskmoonBundler.Tailwind do
   end
 
   defp compile_css(state, css_input, sources, css_base, resolve_dirs) do
-    with {:ok, css_sources} when is_list(css_sources) <-
-           Runtime.call(state.runtime, "prepareTailwindCss", [
-             css_input,
-             Path.expand(css_base),
-             resolve_dirs
-           ]) do
-      scanner_sources = Enum.map(sources ++ css_sources, &to_oxide_source/1)
+    case Runtime.call(state.runtime, "prepareTailwindCss", [
+           css_input,
+           Path.expand(css_base),
+           resolve_dirs
+         ]) do
+      {:ok, css_sources} when is_list(css_sources) ->
+        scanner_sources = Enum.map(sources ++ css_sources, &to_oxide_source/1)
 
-      scanner =
-        if scanner_sources == state.scanner_sources,
-          do: state.scanner,
-          else: build_scanner(scanner_sources)
+        scanner =
+          if scanner_sources == state.scanner_sources,
+            do: state.scanner,
+            else: build_scanner(scanner_sources)
 
-      case Runtime.call(state.runtime, "buildTailwindCss", [
-             Oxide.scan(scanner)
-           ]) do
-        {:ok, css} when is_binary(css) -> {:ok, css, scanner, scanner_sources}
-        {:ok, _} -> {:error, :unexpected_result}
-        {:error, _} = error -> error
-      end
-    else
-      {:ok, _} -> {:error, :unexpected_result}
-      {:error, _} = error -> error
+        case Runtime.call(state.runtime, "buildTailwindCss", [
+               Oxide.scan(scanner)
+             ]) do
+          {:ok, css} when is_binary(css) -> {:ok, css, scanner, scanner_sources}
+          {:ok, _} -> {:error, :unexpected_result}
+          {:error, _} = error -> error
+        end
+
+      {:ok, _} ->
+        {:error, :unexpected_result}
+
+      {:error, _} = error ->
+        error
     end
   end
 

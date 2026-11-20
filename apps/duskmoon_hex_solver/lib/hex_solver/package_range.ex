@@ -1,8 +1,8 @@
 defmodule HexSolver.PackageRange do
   @moduledoc false
 
-  alias HexSolver.PackageRange
   alias HexSolver.Constraints.Range
+  alias HexSolver.PackageRange
 
   defstruct repo: nil,
             name: nil,

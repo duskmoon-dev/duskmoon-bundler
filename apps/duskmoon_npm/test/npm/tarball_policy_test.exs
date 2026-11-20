@@ -3,6 +3,8 @@ defmodule NPM.TarballPolicyTest do
 
   import ExUnit.CaptureIO
 
+  alias Mix.Tasks.Npm.Ci
+
   @moduletag :tmp_dir
 
   defmodule Server do
@@ -351,7 +353,7 @@ defmodule NPM.TarballPolicyTest do
 
       capture_io(:stderr, fn ->
         capture_io(fn ->
-          assert_raise Mix.Error, ~r/missing_integrity/, fn -> Mix.Tasks.Npm.Ci.run([]) end
+          assert_raise Mix.Error, ~r/missing_integrity/, fn -> Ci.run([]) end
         end)
       end)
     end

@@ -1,6 +1,8 @@
 defmodule NPM.RegistryTest do
   use ExUnit.Case, async: false
 
+  alias NPM.Security.Age
+
   defmodule Server do
     @moduledoc false
     import Plug.Conn
@@ -74,7 +76,7 @@ defmodule NPM.RegistryTest do
     configure_http_registry(dir)
 
     assert {:ok, %{versions: %{"1.0.0" => info}}} = NPM.Registry.get_packument("recent")
-    assert [%{type: :new_package}, %{type: :new_version}] = NPM.Security.Age.warnings(info)
+    assert [%{type: :new_package}, %{type: :new_version}] = Age.warnings(info)
     assert_received {:registry_request, "/recent", headers}
     assert {"accept", "application/json"} in headers
 
@@ -119,7 +121,7 @@ defmodule NPM.RegistryTest do
     assert {:ok, %{versions: %{"1.0.0" => full_info}}} =
              NPM.Registry.get_packument("changing-age-policy")
 
-    assert [%{type: :new_package}, %{type: :new_version}] = NPM.Security.Age.warnings(full_info)
+    assert [%{type: :new_package}, %{type: :new_version}] = Age.warnings(full_info)
     assert_received {:registry_request, "/changing-age-policy", full_headers}
     assert {"accept", "application/json"} in full_headers
 

@@ -62,9 +62,8 @@ defmodule DuskmoonBundler.JS.PrebundleEntry.CommonJS do
       collect(rest, seen, names)
     else
       entries =
-        with {:ok, ast} <- parse_common_js(path) do
-          scan(ast)
-        else
+        case parse_common_js(path) do
+          {:ok, ast} -> scan(ast)
           _ -> []
         end
 

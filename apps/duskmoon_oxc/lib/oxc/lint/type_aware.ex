@@ -105,7 +105,7 @@ defmodule OXC.Lint.TypeAware do
           "sh",
           [
             "-c",
-            "payload=$1; stderr=$2; shift 2; exec \"$@\" < \"$payload\" 2> \"$stderr\""
+            ~s(payload=$1; stderr=$2; shift 2; exec "$@" < "$payload" 2> "$stderr")
             | command_args
           ],
           cd: Keyword.get(opts, :cwd, File.cwd!()),

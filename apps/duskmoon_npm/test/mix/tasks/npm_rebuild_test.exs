@@ -3,6 +3,8 @@ defmodule Mix.Tasks.Npm.RebuildTest do
 
   import ExUnit.CaptureIO
 
+  alias Mix.Tasks.Npm.Rebuild
+
   setup do
     old_cwd = File.cwd!()
 
@@ -46,7 +48,7 @@ defmodule Mix.Tasks.Npm.RebuildTest do
 
     output =
       capture_io(fn ->
-        assert :ok = Mix.Tasks.Npm.Rebuild.run([])
+        assert :ok = Rebuild.run([])
       end)
 
     refute File.exists?(root_node_modules)
@@ -72,7 +74,7 @@ defmodule Mix.Tasks.Npm.RebuildTest do
     File.mkdir_p!(Path.join(outside_node_modules, "preserved"))
 
     assert_raise Mix.Error, ~r/npm\.rebuild refused workspace outside root/, fn ->
-      Mix.Tasks.Npm.Rebuild.run([])
+      Rebuild.run([])
     end
 
     assert File.exists?(root_node_modules)

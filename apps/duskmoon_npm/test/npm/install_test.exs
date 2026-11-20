@@ -7,6 +7,8 @@ defmodule NPM.InstallTest do
 
   import ExUnit.CaptureIO
 
+  alias Mix.Tasks.Npm.Ci
+
   setup do
     old_cwd = File.cwd!()
     old_cache_dir = Application.get_env(:duskmoon_npm, :cache_dir)
@@ -1147,7 +1149,7 @@ defmodule NPM.InstallTest do
     output =
       capture_io(:stderr, fn ->
         assert_raise Mix.Error, ~r/npm\.ci failed: :no_lockfile/, fn ->
-          Mix.Tasks.Npm.Ci.run([])
+          Ci.run([])
         end
       end)
 
@@ -1168,7 +1170,7 @@ defmodule NPM.InstallTest do
     Mix.Task.reenable("npm.ci")
 
     capture_io(fn ->
-      assert :ok = Mix.Tasks.Npm.Ci.run([])
+      assert :ok = Ci.run([])
     end)
 
     assert {:ssl, _description, _version} =

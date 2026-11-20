@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 10.1.11 - 2026-11-21
 
 - Keep hashed split imports, preload URLs and manifest links consistent across
   shared chunk cycles, with regression coverage for deterministic rebuilds and

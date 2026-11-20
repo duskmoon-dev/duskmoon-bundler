@@ -4,10 +4,13 @@ defmodule DuskmoonToolchain.MixProject do
   def project do
     [
       apps_path: "apps",
-      version: "10.1.10",
+      version: "10.1.11",
       elixir: ">= 1.18.0",
       start_permanent: Mix.env() == :prod,
-      dialyzer: [plt_add_apps: [:ex_unit, :gaoxy_http, :iex, :mix, :wallaby, :zigler]],
+      dialyzer: [
+        plt_add_apps: [:ex_unit, :gaoxy_http, :iex, :mix, :wallaby, :zigler],
+        flags: [:no_opaque]
+      ],
       deps: deps(),
       aliases: [setup: ["deps.get"], "package.stage": "cmd elixir scripts/stage-packages.exs"]
     ]

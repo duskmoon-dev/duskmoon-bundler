@@ -3,6 +3,9 @@ defmodule Mix.Tasks.Npm.PublishTest do
 
   import ExUnit.CaptureIO
 
+  alias Mix.Tasks.Npm.Pack
+  alias Mix.Tasks.Npm.Publish
+
   @moduletag :tmp_dir
 
   defmodule Server do
@@ -66,7 +69,7 @@ defmodule Mix.Tasks.Npm.PublishTest do
   test "uploads version metadata and the matching tarball before reporting success", %{
     registry: registry
   } do
-    output = capture_io(fn -> assert :ok = Mix.Tasks.Npm.Publish.run(["--tag", "beta"]) end)
+    output = capture_io(fn -> assert :ok = Publish.run(["--tag", "beta"]) end)
     assert output =~ "Published publish-fixture@1.2.3"
     assert_received {:publish_request, "PUT", "/publish-fixture", headers, body}
     assert {"authorization", "Bearer publish-token"} in headers
@@ -95,7 +98,7 @@ defmodule Mix.Tasks.Npm.PublishTest do
   end
 
   test "--dry-run packs the same file set without contacting the registry" do
-    output = capture_io(fn -> Mix.Tasks.Npm.Publish.run(["--dry-run", "--tag", "beta"]) end)
+    output = capture_io(fn -> Publish.run(["--dry-run", "--tag", "beta"]) end)
 
     assert output =~ "Dry run"
     assert output =~ "publish-fixture"
@@ -106,7 +109,7 @@ defmodule Mix.Tasks.Npm.PublishTest do
   end
 
   test "mix npm.pack uses the same tarball contents as publish dry-run" do
-    capture_io(fn -> Mix.Tasks.Npm.Pack.run([]) end)
+    capture_io(fn -> Pack.run([]) end)
 
     assert {:ok, entries} =
              :erl_tar.extract(~c"publish-fixture-1.2.3.tgz", [:compressed, :memory])
@@ -122,7 +125,7 @@ defmodule Mix.Tasks.Npm.PublishTest do
       update_package(%{"name" => name})
 
       {error, output} =
-        with_io(fn -> assert_raise Mix.Error, fn -> Mix.Tasks.Npm.Publish.run([]) end end)
+        with_io(fn -> assert_raise Mix.Error, fn -> Publish.run([]) end end)
 
       assert Exception.message(error) =~ Integer.to_string(status)
       refute output =~ "Published"
@@ -135,7 +138,7 @@ defmodule Mix.Tasks.Npm.PublishTest do
   test "private packages and invalid versions are rejected before network access" do
     for data <- [%{"private" => true}, %{"private" => false, "version" => "../../secret"}] do
       update_package(data)
-      assert_raise Mix.Error, fn -> Mix.Tasks.Npm.Publish.run([]) end
+      assert_raise Mix.Error, fn -> Publish.run([]) end
       refute_received {:publish_request, _, _, _, _}
     end
   end
@@ -155,7 +158,7 @@ defmodule Mix.Tasks.Npm.PublishTest do
 
     Application.put_env(:duskmoon_npm, :registry, "https://registry.npmjs.org")
 
-    capture_io(fn -> assert :ok = Mix.Tasks.Npm.Publish.run([]) end)
+    capture_io(fn -> assert :ok = Publish.run([]) end)
     assert_received {:publish_request, "PUT", "/scoped/@fixture%2fscoped", headers, body}
     assert {"authorization", "Bearer scoped-token"} in headers
     refute {"authorization", "Bearer publish-token"} in headers
@@ -168,7 +171,7 @@ defmodule Mix.Tasks.Npm.PublishTest do
     Application.put_env(:duskmoon_npm, :allowed_registries, [registry])
     File.rm!(".npmrc")
 
-    assert_raise Mix.Error, ~r/no.*token/i, fn -> Mix.Tasks.Npm.Publish.run([]) end
+    assert_raise Mix.Error, ~r/no.*token/i, fn -> Publish.run([]) end
     refute_received {:publish_request, _, _, _, _}
   end
 

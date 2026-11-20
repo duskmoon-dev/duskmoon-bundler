@@ -1,6 +1,8 @@
 defmodule NPM.HTTPClientTest do
   use ExUnit.Case, async: true
 
+  alias NPM.Security.Compromised.OSV
+
   defmodule Server do
     @moduledoc false
     import Plug.Conn
@@ -179,9 +181,7 @@ defmodule NPM.HTTPClientTest do
 
   test "OSV single and batch queries retain their JSON contracts", %{url: url} do
     assert {:ok, [%{"id" => "MAL-123"}]} =
-             NPM.Security.Compromised.OSV.query_package("example", "1.0.0",
-               endpoint: url <> "/osv"
-             )
+             OSV.query_package("example", "1.0.0", endpoint: url <> "/osv")
 
     assert_received {:osv_request,
                      %{
@@ -190,7 +190,7 @@ defmodule NPM.HTTPClientTest do
                      }}
 
     assert {:ok, %{"example" => [%{"id" => "MAL-123"}]}} =
-             NPM.Security.Compromised.OSV.query_packages(
+             OSV.query_packages(
                [{"example", "1.0.0"}, {"example", "1.0.0"}],
                batch_endpoint: url <> "/osv-batch"
              )

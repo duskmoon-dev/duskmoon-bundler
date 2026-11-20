@@ -59,14 +59,9 @@ defmodule HexSolver.PackageLister do
     dependencies =
       dependencies
       |> Enum.sort()
-      |> Enum.reject(fn {_dependency, %{label: label}} ->
-        package not in ["$root", "$lock"] and label in lister.overrides
-      end)
-      |> Enum.reject(fn {dependency, _} ->
-        case Map.fetch(already_returned, dependency) do
-          {:ok, returned_constraint} -> Constraint.allows?(returned_constraint, version)
-          :error -> false
-        end
+      |> Enum.reject(fn {dependency, %{label: label}} ->
+        (package not in ["$root", "$lock"] and label in lister.overrides) or
+          returned_dependency?(already_returned, dependency, version)
       end)
 
     incompatibilities =
@@ -145,6 +140,13 @@ defmodule HexSolver.PackageLister do
     }
 
     {lister, incompatibilities}
+  end
+
+  defp returned_dependency?(already_returned, dependency, version) do
+    case Map.fetch(already_returned, dependency) do
+      {:ok, returned_constraint} -> Constraint.allows?(returned_constraint, version)
+      :error -> false
+    end
   end
 
   defp lower_bound(versions_dependencies, version, constraint) do

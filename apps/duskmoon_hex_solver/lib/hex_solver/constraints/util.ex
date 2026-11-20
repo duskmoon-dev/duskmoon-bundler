@@ -4,7 +4,7 @@ defmodule HexSolver.Constraints.Util do
   alias HexSolver.{Constraint, Util}
   alias HexSolver.Constraints.{Empty, Range, Union, Version}
 
-  def any(), do: %Range{}
+  def any, do: %Range{}
 
   def from_list([]), do: %Empty{}
   def from_list([single]), do: Range.normalize(single)

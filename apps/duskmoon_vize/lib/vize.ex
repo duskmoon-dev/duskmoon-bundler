@@ -45,6 +45,8 @@ defmodule Vize do
   requires a major version.
   """
 
+  alias Vize.Vapor.Result
+
   @type macro_artifact :: %{
           required(:kind) => String.t(),
           required(:name) => String.t(),
@@ -73,7 +75,7 @@ defmodule Vize do
           diagnostics: [Vize.Diagnostic.input()]
         }
 
-  @type vapor_result :: Vize.Vapor.Result.t()
+  @type vapor_result :: Result.t()
 
   @type ssr_result :: %{
           code: String.t(),
@@ -317,7 +319,7 @@ defmodule Vize do
       opts |> Keyword.get(:template_syntax, :standard) |> normalize_template_syntax()
 
     case Vize.Native.compile_vapor_nif(source, ssr, diagnostics, template_syntax) do
-      {:ok, result} -> {:ok, Vize.Vapor.Result.new(result)}
+      {:ok, result} -> {:ok, Result.new(result)}
       {:error, errors} -> {:error, error("Vize vapor compile error", errors)}
     end
   end

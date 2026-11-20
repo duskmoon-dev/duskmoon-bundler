@@ -14,6 +14,8 @@ defmodule OXC.Format do
       # "const x = 1\n"
   """
 
+  alias OXC.Format.Native
+
   @type sort_imports_opts :: %{
           optional(:ignore_case) => boolean(),
           optional(:sort_side_effects) => boolean(),
@@ -132,7 +134,7 @@ defmodule OXC.Format do
           {k, v}
       end)
 
-    OXC.Format.Native.format(source, filename, opts_map)
+    Native.format(source, filename, opts_map)
   end
 
   # The native formatter narrows these to u16/u8, so out-of-range values would

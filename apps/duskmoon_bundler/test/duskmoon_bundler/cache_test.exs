@@ -7,7 +7,7 @@ defmodule DuskmoonBundler.CacheTest do
   end
 
   test "get returns nil on miss" do
-    assert DuskmoonBundler.Cache.get("/app.ts", 12345) == nil
+    assert DuskmoonBundler.Cache.get("/app.ts", 12_345) == nil
   end
 
   test "put and get round-trip" do

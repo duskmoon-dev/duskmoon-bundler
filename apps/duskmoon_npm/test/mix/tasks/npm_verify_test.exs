@@ -3,6 +3,8 @@ defmodule Mix.Tasks.Npm.VerifyTest do
 
   import ExUnit.CaptureIO
 
+  alias Mix.Tasks.Npm.Verify
+
   setup do
     old_cwd = File.cwd!()
 
@@ -37,7 +39,7 @@ defmodule Mix.Tasks.Npm.VerifyTest do
 
     output =
       capture_io(fn ->
-        assert :ok = Mix.Tasks.Npm.Verify.run([])
+        assert :ok = Verify.run([])
       end)
 
     assert output =~ "node_modules matches lockfile (1 packages)"
@@ -58,7 +60,7 @@ defmodule Mix.Tasks.Npm.VerifyTest do
 
     output =
       capture_io(fn ->
-        assert :ok = Mix.Tasks.Npm.Verify.run([])
+        assert :ok = Verify.run([])
       end)
 
     assert output =~ "node_modules matches lockfile (1 packages)"
@@ -71,7 +73,7 @@ defmodule Mix.Tasks.Npm.VerifyTest do
     output =
       capture_io(:stderr, fn ->
         assert_raise Mix.Error, ~r/node_modules does not match lockfile/, fn ->
-          Mix.Tasks.Npm.Verify.run([])
+          Verify.run([])
         end
       end)
 
@@ -86,7 +88,7 @@ defmodule Mix.Tasks.Npm.VerifyTest do
     output =
       capture_io(:stderr, fn ->
         assert_raise Mix.Error, ~r/node_modules does not match lockfile/, fn ->
-          Mix.Tasks.Npm.Verify.run([])
+          Verify.run([])
         end
       end)
 
@@ -129,7 +131,7 @@ defmodule Mix.Tasks.Npm.VerifyTest do
     output =
       capture_io(:stderr, fn ->
         assert_raise Mix.Error, ~r/node_modules does not match lockfile/, fn ->
-          Mix.Tasks.Npm.Verify.run([])
+          Verify.run([])
         end
       end)
 
@@ -140,7 +142,7 @@ defmodule Mix.Tasks.Npm.VerifyTest do
     File.mkdir_p!("package-lock.json")
 
     assert_raise Mix.Error, ~r/npm\.verify failed: :eisdir/, fn ->
-      Mix.Tasks.Npm.Verify.run([])
+      Verify.run([])
     end
   end
 

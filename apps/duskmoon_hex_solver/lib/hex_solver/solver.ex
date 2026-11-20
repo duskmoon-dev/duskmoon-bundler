@@ -331,7 +331,7 @@ defmodule HexSolver.Solver do
     end
   end
 
-  defp new_resolution_state() do
+  defp new_resolution_state do
     %{
       # The term in incompatibility.terms that was most recently satisfied by the solution.
       most_recent_term: nil,

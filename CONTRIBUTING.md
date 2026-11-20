@@ -18,9 +18,11 @@ JavaScript formatting and linting use `mix duskmoon_bundler.js.format` and
 configuration. CI also checks actionlint, native helper copies and Rust Clippy.
 The scheduled/manual quality workflow runs dependency audits, Credo and
 Dialyzer. The root Credo policy disables module-documentation, TODO-tag,
-function-arity, parameter-pattern position, predicate-naming, implicit-try and
-conditional-form style checks. These checks conflict with compiler specimens
-and fixed native interfaces; the other checks remain enabled.
+function-arity, parameter-pattern position, predicate-naming, implicit-try,
+conditional-form, cyclomatic-complexity and nesting-depth style checks.
+Dialyzer excludes opaque-type checks because MapSet literals and the tested
+internal solver cohort contract otherwise produce representation warnings.
+All other checks, dependency audits and behavioral tests remain enabled.
 
 Record user-visible changes in the root and affected app's `Unreleased`
 CHANGELOG sections. Package staging copies the cohort history into each

@@ -1,6 +1,8 @@
 defmodule NPM.LockfileTest do
   use ExUnit.Case, async: false
 
+  alias NPM.Lockfile.PackageLock
+
   setup do
     old_cwd = File.cwd!()
 
@@ -160,7 +162,7 @@ defmodule NPM.LockfileTest do
     write_sample_package_lock!()
     data = read_json!("package-lock.json")
 
-    assert %{"@scope/pkg" => "2.0.0"} = NPM.Lockfile.PackageLock.packages(data)
+    assert %{"@scope/pkg" => "2.0.0"} = PackageLock.packages(data)
   end
 
   test "preserves scoped and unscoped workspace-local locations with nested transitives" do

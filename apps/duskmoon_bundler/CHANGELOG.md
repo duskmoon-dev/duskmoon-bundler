@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 10.1.11 - 2026-11-21
 
 - Keep hashed split chunk imports, preload URLs and manifest entries consistent
   when shared chunks form cycles; verify deterministic output and invalidation

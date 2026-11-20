@@ -56,18 +56,19 @@ defmodule DuskmoonBundler.Tailwind.Loader do
   end
 
   defp bundle_module_source!(entry_path, runtime_node_modules) do
-    with {:ok, files} <- collect_bundle_files(entry_path, runtime_node_modules) do
-      case OXC.bundle(files, entry: entry_path, format: :cjs) do
-        {:ok, code} when is_binary(code) ->
-          code
+    case collect_bundle_files(entry_path, runtime_node_modules) do
+      {:ok, files} ->
+        case OXC.bundle(files, entry: entry_path, format: :cjs) do
+          {:ok, code} when is_binary(code) ->
+            code
 
-        {:ok, %{code: code}} when is_binary(code) ->
-          code
+          {:ok, %{code: code}} when is_binary(code) ->
+            code
 
-        {:error, errors} ->
-          raise "Could not bundle Tailwind module #{inspect(entry_path)}: #{inspect(errors)}"
-      end
-    else
+          {:error, errors} ->
+            raise "Could not bundle Tailwind module #{inspect(entry_path)}: #{inspect(errors)}"
+        end
+
       {:error, reason} ->
         raise "Could not collect Tailwind module graph for #{inspect(entry_path)}: #{inspect(reason)}"
     end

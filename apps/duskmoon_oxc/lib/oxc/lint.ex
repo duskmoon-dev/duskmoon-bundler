@@ -15,6 +15,9 @@ defmodule OXC.Lint do
       {:ok, []} = OXC.Lint.run("export const x = 1;\\n", "test.ts")
   """
 
+  alias OXC.Lint.Native
+  alias OXC.Lint.TypeAware
+
   @type severity :: :allow | :warn | :deny
   @type diagnostic :: %{
           rule: String.t(),
@@ -77,11 +80,11 @@ defmodule OXC.Lint do
       )
   """
   @spec run([String.t()], keyword()) ::
-          {:ok, [OXC.Lint.TypeAware.Diagnostic.t()]} | {:error, [String.t()]}
+          {:ok, [TypeAware.Diagnostic.t()]} | {:error, [String.t()]}
   @spec run(iodata(), String.t(), keyword()) :: {:ok, [diagnostic()]} | {:error, [String.t()]}
   def run(files, opts) when is_list(files) and is_list(opts) do
     if Keyword.get(opts, :type_aware, false) do
-      OXC.Lint.TypeAware.run(files, opts)
+      TypeAware.run(files, opts)
     else
       {:error, ["OXC.Lint.run/2 with a file list requires type_aware: true"]}
     end
@@ -100,7 +103,7 @@ defmodule OXC.Lint do
     custom_rules = Keyword.get(opts, :custom_rules, [])
     settings = Keyword.get(opts, :settings, %{})
 
-    case OXC.Lint.Native.lint(source, filename, plugins, rules, fix) do
+    case Native.lint(source, filename, plugins, rules, fix) do
       {:ok, builtin_diags} ->
         custom =
           case custom_rules do

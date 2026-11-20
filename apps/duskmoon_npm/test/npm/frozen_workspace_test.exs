@@ -3,6 +3,8 @@ defmodule NPM.FrozenWorkspaceTest do
 
   import ExUnit.CaptureIO
 
+  alias Mix.Tasks.Npm.Rebuild
+  alias Mix.Tasks.Npm.Verify
   alias NPM.Resolution.PackageResolver
 
   defmodule Server do
@@ -96,8 +98,8 @@ defmodule NPM.FrozenWorkspaceTest do
 
     refute_received {:tarball_request, _}
 
-    capture_io(fn -> assert :ok = Mix.Tasks.Npm.Verify.run([]) end)
-    capture_io(fn -> assert :ok = Mix.Tasks.Npm.Rebuild.run([]) end)
+    capture_io(fn -> assert :ok = Verify.run([]) end)
+    capture_io(fn -> assert :ok = Rebuild.run([]) end)
     assert File.read!("package-lock.json") == original
     assert File.exists?("apps/web/node_modules/@scope/core/node_modules/child/index.js")
     refute_received {:tarball_request, _}
@@ -110,7 +112,7 @@ defmodule NPM.FrozenWorkspaceTest do
     output =
       capture_io(:stderr, fn ->
         assert_raise Mix.Error, ~r/node_modules does not match lockfile/, fn ->
-          Mix.Tasks.Npm.Verify.run([])
+          Verify.run([])
         end
       end)
 

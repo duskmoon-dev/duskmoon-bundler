@@ -26,6 +26,8 @@ defmodule Vize.CSS do
           warnings: [String.t()]
         }
 
+  alias Vize.CSS.URL
+
   @type ast :: map() | list() | String.t() | number() | boolean() | nil
 
   @type ast_result :: %{
@@ -41,7 +43,7 @@ defmodule Vize.CSS do
           exports: %{optional(String.t()) => String.t()} | nil
         }
 
-  @type url_ref :: Vize.CSS.URL.t()
+  @type url_ref :: URL.t()
 
   @doc """
   Compile CSS using LightningCSS.
@@ -196,7 +198,7 @@ defmodule Vize.CSS do
   @spec collect_urls(String.t(), keyword()) :: {:ok, [url_ref()]} | {:error, Vize.Error.t()}
   def collect_urls(source, opts \\ []) do
     case select(source, :urls, opts) do
-      {:ok, urls} -> {:ok, Enum.map(urls, &Vize.CSS.URL.new/1)}
+      {:ok, urls} -> {:ok, Enum.map(urls, &URL.new/1)}
       {:error, _} = error -> error
     end
   end
@@ -246,7 +248,7 @@ defmodule Vize.CSS do
   def rewrite_urls(source, opts, fun) when is_function(fun, 1) do
     with {:ok, urls} <- collect_urls(source, opts) do
       patches =
-        Enum.reduce(urls, [], fn %Vize.CSS.URL{url: url, range: range}, acc ->
+        Enum.reduce(urls, [], fn %URL{url: url, range: range}, acc ->
           case fun.(url) do
             {:rewrite, replacement} ->
               [%{start: range.start, end: range.end, change: replacement} | acc]

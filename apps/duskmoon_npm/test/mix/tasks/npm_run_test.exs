@@ -3,13 +3,15 @@ defmodule Mix.Tasks.Npm.RunTest do
 
   import ExUnit.CaptureIO
 
+  alias Mix.Tasks.Npm.Run
+
   @moduletag :tmp_dir
 
   defp run_script(dir, scripts, args) do
     File.write!(Path.join(dir, "package.json"), :json.encode(%{"scripts" => scripts}))
 
     capture_io(fn ->
-      File.cd!(dir, fn -> Mix.Tasks.Npm.Run.run(args) end)
+      File.cd!(dir, fn -> Run.run(args) end)
     end)
   end
 

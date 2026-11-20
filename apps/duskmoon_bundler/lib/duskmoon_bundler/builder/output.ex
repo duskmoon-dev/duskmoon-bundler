@@ -1,7 +1,8 @@
 defmodule DuskmoonBundler.Builder.Output do
   @moduledoc "Builds final production output files from compiled module graphs."
 
-  alias DuskmoonBundler.Builder.{Writer, Rewriter}
+  alias DuskmoonBundler.Builder.{ManifestEntry, Rewriter, Writer}
+  alias DuskmoonBundler.JS.Transforms.Imports
 
   @doc "Bundle modules into a single JS file and write output."
   def build_single(entry, name, {js_files, css_parts, assets}, build_ctx) do
@@ -433,7 +434,7 @@ defmodule DuskmoonBundler.Builder.Output do
   defp chunk_output_name(chunk, name), do: "#{name}-#{chunk.id}"
 
   defp chunk_manifest_entry(src, filename, chunk, chunk_url_map) do
-    entry = DuskmoonBundler.Builder.ManifestEntry.js(src, filename, entry: chunk.type == :entry)
+    entry = ManifestEntry.js(src, filename, entry: chunk.type == :entry)
 
     %{
       entry
@@ -514,7 +515,7 @@ defmodule DuskmoonBundler.Builder.Output do
         if rewrites == %{},
           do: code,
           else:
-            DuskmoonBundler.JS.Transforms.Imports.rewrite!(code, label, fn specifier ->
+            Imports.rewrite!(code, label, fn specifier ->
               case Map.fetch(rewrites, specifier) do
                 {:ok, replacement} -> {:rewrite, replacement}
                 :error -> :keep
