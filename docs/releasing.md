@@ -116,6 +116,12 @@ when changing the release toolchain. Version pins do not replace the complete
 platform build and published-consumer gates, and historical artifacts stay
 immutable.
 
+The Rust action receives `use-cross` as a string. Pass an empty string for
+native builds: the string `false` is truthy in its composite step conditions
+and would install the Linux-only `cross` binary on macOS and Windows.
+QuickBEAM jobs install the root toolchain's Clippy and rustfmt components before
+Mix compilation, so parallel Cargo metadata calls cannot race their installation.
+
 The CI download regression additionally pins OTP `28.5.0.8` on the consumer
 environments `ubuntu-26.04`, `ubuntu-26.04-arm`, `macos-26-intel` and `macos-26`.
 These consumers run directly on their hosted runners.

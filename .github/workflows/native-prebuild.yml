@@ -81,7 +81,7 @@ jobs:
           project-version: ${{ inputs.version }}
           target: ${{ inputs.target }}
           nif-version: '2.15'
-          use-cross: ${{ inputs.use_cross }}
+          use-cross: ${{ inputs.use_cross && 'true' || '' }}
           cross-version: v0.2.5
           cargo-args: --locked
           project-dir: ${{ matrix.crate.project-dir }}
@@ -142,6 +142,7 @@ jobs:
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: '1.99.0'
+          components: clippy, rustfmt
 
       - name: Install Elixir dependencies
         run: mix deps.get --check-locked
