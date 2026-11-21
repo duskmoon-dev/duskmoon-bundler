@@ -1055,7 +1055,7 @@ dependencies = [
  "oxc_ecmascript",
  "oxc_index",
  "oxc_semantic",
- "oxc_sourcemap",
+ "oxc_sourcemap 9.0.0",
  "oxc_span",
  "oxc_str",
  "oxc_syntax",
@@ -1150,7 +1150,7 @@ dependencies = [
  "oxc_minifier",
  "oxc_parser",
  "oxc_semantic",
- "oxc_sourcemap",
+ "oxc_sourcemap 10.0.0",
  "oxc_span",
  "oxc_str",
  "oxc_syntax",
@@ -1339,6 +1339,19 @@ name = "oxc_sourcemap"
 version = "9.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1133371a5fadc14b9f66a8fec14be3564a77647c7ab21b1ef0ec973bd82613ce"
+dependencies = [
+ "base64-simd",
+ "json-escape-simd",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "oxc_sourcemap"
+version = "10.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ca9998ccb8eabb05099c5827ce983cca9f5dfc008c6c47d7dcc034cee301e91"
 dependencies = [
  "base64-simd",
  "json-escape-simd",
@@ -1831,7 +1844,7 @@ dependencies = [
  "oxc_ecmascript",
  "oxc_index",
  "oxc_resolver",
- "oxc_sourcemap",
+ "oxc_sourcemap 9.0.0",
  "oxc_str",
  "percent-encoding",
  "rolldown_ecmascript",
@@ -1909,7 +1922,7 @@ checksum = "c9d8518292b7fd80875ea8ca0fe5672794ac62c72453977158dea9ebb77339b5"
 dependencies = [
  "arcstr",
  "oxc",
- "oxc_sourcemap",
+ "oxc_sourcemap 9.0.0",
  "oxc_str",
  "rolldown_error",
  "self_cell",
@@ -2129,7 +2142,7 @@ checksum = "f627e9bde5c724e17fe651e2cce79cb8cbd9cb6c3e0d06945a2cbfc689e70983"
 dependencies = [
  "memchr",
  "oxc",
- "oxc_sourcemap",
+ "oxc_sourcemap 9.0.0",
 ]
 
 [[package]]
@@ -2438,7 +2451,7 @@ checksum = "976ef6e05706363938c870c7c6194c4e5d662ce2617c3ca0e2be6649509fddb0"
 dependencies = [
  "memchr",
  "oxc_index",
- "oxc_sourcemap",
+ "oxc_sourcemap 9.0.0",
  "regex",
  "rustc-hash",
  "serde",
