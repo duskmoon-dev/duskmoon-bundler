@@ -1,5 +1,12 @@
 # Changelog
 
+## 10.1.12 - 2026-11-21
+
+- Preserve browser-side HTTP(S) dynamic imports in Hologram bundles while
+  tracking local JavaScript inputs for incremental rebuilds (#43).
+- Keep the configured standalone output format when all dynamic imports
+  are external.
+
 ## 10.1.11 - 2026-11-21
 
 - Keep hashed split chunk imports, preload URLs and manifest entries consistent
