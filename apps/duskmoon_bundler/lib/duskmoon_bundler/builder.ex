@@ -266,7 +266,9 @@ defmodule DuskmoonBundler.Builder do
   end
 
   defp has_dynamic_imports?(dep_map) do
-    Enum.any?(dep_map, fn {_, %{dynamic: dyn}} -> dyn != [] end)
+    Enum.any?(dep_map, fn {_, %{dynamic: specifiers}} ->
+      Enum.any?(specifiers, &Map.has_key?(dep_map, &1))
+    end)
   end
 
   defp warn_unmatched_chunk_patterns(graph, entry) do

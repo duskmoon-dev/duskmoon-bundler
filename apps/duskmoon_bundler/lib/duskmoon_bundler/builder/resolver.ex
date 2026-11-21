@@ -8,7 +8,8 @@ defmodule DuskmoonBundler.Builder.Resolver do
   @doc """
   Resolve an import specifier to an absolute file path.
 
-  Returns `{:ok, path}`, `:skip` (for externals/node builtins), or `{:error, reason}`.
+  Returns `{:ok, path}`, `:skip` (for externals, HTTP(S) URLs, or Node builtins),
+  or `{:error, reason}`.
   """
   def resolve(specifier, importer, ctx) do
     {path_specifier, query} = DuskmoonBundler.URL.split_query(specifier)
@@ -56,6 +57,10 @@ defmodule DuskmoonBundler.Builder.Resolver do
 
   defp resolve_by_type(specifier, importer, ctx) do
     cond do
+      # Rolldown treats HTTP(S) imports as external and preserves dynamic imports.
+      String.starts_with?(specifier, ["http://", "https://"]) ->
+        :skip
+
       PackageResolver.node_builtin?(specifier) ->
         :skip
 

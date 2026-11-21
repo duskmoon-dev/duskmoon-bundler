@@ -755,6 +755,25 @@ defmodule DuskmoonBundler.BuilderTest do
       assert File.read!(result.js.path) =~ "Hello"
     end
 
+    test "remote dynamic imports alone keep the standalone format" do
+      entry = Path.join(@fixture_dir, "src/remote.js")
+      File.write!(entry, ~s|export const load = () => import("https://example.test/remote.js");|)
+
+      assert {:ok, result} =
+               DuskmoonBundler.Builder.build(
+                 entry: entry,
+                 outdir: @outdir,
+                 tree_shaking: false,
+                 minify: false,
+                 sourcemap: false
+               )
+
+      assert result.chunks == []
+      js = File.read!(result.js.path)
+      assert js =~ "https://example.test/remote.js"
+      assert {:ok, _ast} = OXC.parse(js, "remote.cjs")
+    end
+
     test "external imports become global access in IIFE" do
       File.write!(Path.join(@fixture_dir, "src/vue_app.ts"), """
       import { ref, computed } from 'vue'
