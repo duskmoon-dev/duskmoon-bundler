@@ -1,5 +1,12 @@
 # Changelog
 
+## 10.1.13 - 2026-11-24
+
+- Serve embedded OXC helpers when the npm runtime is absent, so lowered
+  TypeScript class fields load in development with an ES2020 target (#46).
+- Use patched Phoenix versions in Hologram and update OXC's Rust `url`
+  dependency to `2.5.9`.
+
 ## 10.1.12 - 2026-11-21
 
 - Preserve browser-side HTTP(S) dynamic imports in Hologram bundles while

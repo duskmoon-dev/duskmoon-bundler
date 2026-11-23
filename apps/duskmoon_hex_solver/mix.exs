@@ -1,7 +1,7 @@
 defmodule DuskmoonHexSolver.MixProject do
   use Mix.Project
 
-  @version "10.1.12"
+  @version "10.1.13"
   @source_url "https://github.com/duskmoon-dev/duskmoon-bundler"
 
   def project do

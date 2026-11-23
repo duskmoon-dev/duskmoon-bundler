@@ -2,7 +2,7 @@
 defmodule DuskmoonHologram.MixProject do
   use Mix.Project
 
-  @version "10.1.12"
+  @version "10.1.13"
 
   def aliases do
     [
@@ -68,7 +68,7 @@ defmodule DuskmoonHologram.MixProject do
       {:jason, "~> 1.0"},
       {:mix_audit, "~> 2.0", only: [:dev, :test], runtime: false},
       {:mox, "~> 1.0", only: :test},
-      {:phoenix, "~> 1.7"},
+      {:phoenix, "~> 1.7.25 or >= 1.8.17 and < 2.0.0"},
       {:phoenix_pubsub, "~> 2.0"},
       {:plug_crypto, "~> 2.0"},
       {:recode, "~> 0.7", only: :dev, runtime: false},
