@@ -952,10 +952,30 @@ defmodule DuskmoonBundler.JS.Vendor do
             end
 
           :error ->
-            {:error, {:not_found, specifier}}
+            embedded_vendor_entry(specifier)
         end
     end
   end
+
+  defp embedded_vendor_entry("@oxc-project/runtime/helpers/" <> _ = specifier) do
+    if request_specifier?(specifier) do
+      # OXC adds these imports during lowering. Rolldown bundles the embedded
+      # helper and its dependencies even when no npm runtime is installed.
+      name = encode_specifier(specifier)
+      filename = "__duskmoon_oxc__#{name}.mjs"
+
+      source =
+        PrebundleEntry.source(
+          {:proxy, filename, exports: [Export.named_from(specifier, ["default"])]}
+        )
+
+      {:ok, specifier, %{name: name, import: filename, source: source}}
+    else
+      {:error, {:not_found, specifier}}
+    end
+  end
+
+  defp embedded_vendor_entry(specifier), do: {:error, {:not_found, specifier}}
 
   defp proxy_source({:proxy, filename, opts}, module_dirs) do
     {exports, _names} =

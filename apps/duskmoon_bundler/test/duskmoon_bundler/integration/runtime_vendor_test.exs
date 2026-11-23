@@ -13,7 +13,13 @@ defmodule DuskmoonBundler.Integration.RuntimeVendorTest do
 
     def call(conn, opts) do
       # Match Phoenix's :plug_init_mode, :runtime, including pass-through requests.
-      config = DuskmoonBundler.DevServer.init(root: opts[:root], prefix: "/assets")
+      config =
+        DuskmoonBundler.DevServer.init(
+          root: opts[:root],
+          prefix: "/assets",
+          target: :es2020,
+          vendor_prebundle: Keyword.get(opts, :vendor_prebundle, true)
+        )
 
       case DuskmoonBundler.DevServer.call(conn, config) do
         %{halted: true} = conn ->
@@ -24,6 +30,39 @@ defmodule DuskmoonBundler.Integration.RuntimeVendorTest do
           |> Plug.Conn.put_resp_content_type("text/html")
           |> Plug.Conn.send_resp(200, ~s(<script type="module" src="/assets/app.ts"></script>))
       end
+    end
+  end
+
+  for prebundle <- [true, false] do
+    @tag vendor_prebundle: prebundle
+    test "browser modules execute lowered TypeScript class fields (prebundle=#{prebundle})",
+         %{tmp_dir: root, vendor_prebundle: prebundle} do
+      File.write!(Path.join(root, "app.ts"), """
+      import { AudioEndpoint } from './audio-endpoint.ts';
+      window.endpointValues = new AudioEndpoint().values();
+      """)
+
+      File.write!(Path.join(root, "audio-endpoint.ts"), """
+      export class AudioEndpoint {
+        private context: string | null = null;
+        #sampleRate = 48000;
+        values() { return [this.context, this.#sampleRate]; }
+      }
+      """)
+
+      server =
+        start_supervised!(
+          {Gaoxy.HTTP,
+           plug: {RuntimePlug, root: root, vendor_prebundle: prebundle},
+           port: 0,
+           ip: {127, 0, 0, 1}}
+        )
+
+      %{local: {:ok, {_ip, port}}} = Gaoxy.info(server, :http)
+      browser = start_supervised!(CDPBrowser)
+      {:ok, page} = CDPBrowser.new_page(browser)
+      assert :ok = CDPBrowser.goto(page, "http://127.0.0.1:#{port}/")
+      assert {:ok, [nil, 48_000]} = CDPBrowser.evaluate(page, "window.endpointValues")
     end
   end
 
