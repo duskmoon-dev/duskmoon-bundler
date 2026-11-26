@@ -146,7 +146,11 @@ defmodule Mix.Tasks.Npm.CheckUpdatesTest do
     assert {:ok, ^manifest} = NPM.JSON.read_file("package.json")
   end
 
-  defp run(args), do: Mix.Task.rerun("npm.check-updates", args)
+  defp run(args) do
+    # Umbrella test runs redirect non-recursive Mix tasks to the project root.
+    task = Mix.Task.get!("npm.check-updates")
+    task.run(args)
+  end
 
   defp write_manifest!(path, manifest) do
     File.mkdir_p!(Path.dirname(path))
