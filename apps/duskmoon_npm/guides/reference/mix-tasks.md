@@ -26,6 +26,8 @@ npm_ex exposes npm-like workflows as Mix tasks.
 | `mix npm.tree` | show dependency tree |
 | `mix npm.why package` | explain why a package is installed |
 | `mix npm.outdated` | show newer package versions |
+| `mix npm.check-updates` | preview newer versions for declared dependencies |
+| `mix npm.check-updates -w -u` | update dependency declarations in the root and all workspace manifests |
 | `mix npm.dedupe` | re-resolve to minimize duplicates |
 | `mix npm.deprecations` | show deprecated packages |
 | `mix npm.licenses` | list dependency licenses |
