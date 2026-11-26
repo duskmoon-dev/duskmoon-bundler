@@ -1,5 +1,10 @@
 # Changelog
 
+## 10.1.14 - 2026-11-26
+
+- Add `mix npm.check-updates` to preview new npm dependency versions.
+  Use `-w` to include workspaces and `-u` to update the manifests.
+
 ## 10.1.13 - 2026-11-24
 
 - Serve embedded OXC helpers when the npm runtime is absent, so lowered
