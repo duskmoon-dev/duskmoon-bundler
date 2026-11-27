@@ -1,5 +1,13 @@
 # Changelog
 
+## 10.1.15 - 2026-11-27
+
+- Start a runtime with `promise_wait: :infinity` to let the host own its
+  execution budget across top-level `await`, async function calls, and host
+  callbacks. The default retains the 10,000-iteration Promise wait.
+- Pass `timeout: milliseconds` to `QuickBEAM.load_module/4` to bound module
+  execution, including time spent awaiting a Promise (#47).
+
 ## 10.1.10 - 2026-11-18
 
 - Add `sandbox: :strict` for runtimes and pooled contexts. Only explicitly

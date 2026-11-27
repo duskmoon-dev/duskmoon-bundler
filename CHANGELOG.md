@@ -1,5 +1,11 @@
 # Changelog
 
+## 10.1.15 - 2026-11-27
+
+- Add `promise_wait: :infinity` to let QuickBEAM hosts control how long
+  modules and function calls wait for a Promise. Explicit execution timeouts
+  still interrupt evaluation, including top-level `await` in `load_module/4` (#47).
+
 ## 10.1.14 - 2026-11-26
 
 - Add `mix npm.check-updates` to preview new npm dependency versions.
