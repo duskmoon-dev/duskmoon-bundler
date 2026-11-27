@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 [dependencies]
 rustler = { version = "0.38", default-features = false, features = ["derive", "nif_version_2_15", "serde"] }
 rustler_match_spec = { version = "0.1", default-features = false }
-oxc_allocator = "0.157"
+oxc_allocator = "0.158"
 oxc_ast = { version = "0.157", features = ["serialize"] }
 oxc_ast_visit = "0.157"
 oxc_codegen = { version = "0.157", features = ["sourcemap"] }
