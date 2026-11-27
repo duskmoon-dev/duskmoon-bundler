@@ -178,7 +178,7 @@ defmodule QuickBEAM.Native do
       eval: 4,
       compile: 2,
       call_function: 4,
-      load_module: 3,
+      load_module: 4,
       load_bytecode: 2,
       reset_runtime: 1,
       stop_runtime: 1,
@@ -235,4 +235,6 @@ defmodule QuickBEAM.Native do
       get_coverage: 1,
       reset_coverage: 1
     ]
+
+  def load_module(resource, name, code), do: load_module(resource, name, code, 0)
 end

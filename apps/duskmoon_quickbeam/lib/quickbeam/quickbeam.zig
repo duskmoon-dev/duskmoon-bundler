@@ -104,6 +104,7 @@ pub fn start_runtime(owner_pid: beam.pid, opts: beam.term) !RuntimeResource {
 
     const env = beam.context.env orelse return error.NoEnv;
     data.restricted = (get_map_uint(env, opts.v, "restricted") orelse 0) != 0;
+    data.unbounded_promise_wait = (get_map_uint(env, opts.v, "unbounded_promise_wait") orelse 0) != 0;
     if (get_map_uint(env, opts.v, "memory_limit")) |v| {
         data.memory_limit = v;
     }
@@ -236,7 +237,7 @@ pub fn call_function(resource: RuntimeResource, name: []const u8, args: beam.ter
     return beam.term{ .v = e.enif_make_copy(env, ref_term) };
 }
 
-pub fn load_module(resource: RuntimeResource, name: []const u8, code: []const u8) beam.term {
+pub fn load_module(resource: RuntimeResource, name: []const u8, code: []const u8, timeout_ms: u64) beam.term {
     const data = resource.unpack();
     const env = beam.context.env orelse return beam.make(.{ .@"error", "no env" }, .{});
 
@@ -256,6 +257,7 @@ pub fn load_module(resource: RuntimeResource, name: []const u8, code: []const u8
         .caller_pid = caller_pid,
         .ref_env = ref_env,
         .ref_term = ref_term,
+        .timeout_ns = @as(i128, timeout_ms) * std.time.ns_per_ms,
     } });
 
     return beam.term{ .v = e.enif_make_copy(env, ref_term) };

@@ -44,6 +44,7 @@ pub const RuntimeData = struct {
     lifecycle_cond: sync.Condition = .{},
     lifecycle: LifecycleState = .running,
     restricted: bool = false,
+    unbounded_promise_wait: bool = false,
     memory_limit: usize = 256 * 1024 * 1024,
     max_stack_size: usize = 8 * 1024 * 1024,
     // WASM operand stack / heap for the JS `WebAssembly.instantiate` path
@@ -120,6 +121,7 @@ pub const AsyncModulePayload = struct {
     caller_pid: beam.pid,
     ref_env: ?*e.ErlNifEnv,
     ref_term: e.ErlNifTerm,
+    timeout_ns: i128 = 0,
 };
 
 pub const AsyncMemoryPayload = struct {

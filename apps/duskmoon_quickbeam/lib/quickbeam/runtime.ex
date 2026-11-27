@@ -36,7 +36,12 @@ defmodule QuickBEAM.Runtime do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    with {:ok, opts} <- QuickBEAM.Sandbox.options(opts), do: start_runtime(opts)
+    with {:ok, opts} <- QuickBEAM.Sandbox.options(opts) do
+      case Keyword.get(opts, :promise_wait, :bounded) do
+        mode when mode in [:bounded, :infinity] -> start_runtime(opts)
+        value -> {:error, {:invalid_option, :promise_wait, value}}
+      end
+    end
   end
 
   defp start_runtime(opts) do
@@ -101,10 +106,17 @@ defmodule QuickBEAM.Runtime do
     GenServer.call(server, {:load_bytecode, bytecode}, :infinity)
   end
 
-  @spec load_module(GenServer.server(), String.t(), String.t()) ::
-          :ok | {:error, String.t()}
-  def load_module(server, name, code) when is_binary(name) and is_binary(code) do
-    GenServer.call(server, {:load_module, name, code}, :infinity)
+  @spec load_module(GenServer.server(), String.t(), String.t(), keyword()) ::
+          :ok | {:error, QuickBEAM.JSError.t()}
+  def load_module(server, name, code, opts \\ []) when is_binary(name) and is_binary(code) do
+    case Keyword.get(opts, :timeout, 0) do
+      timeout when is_integer(timeout) and timeout in 0..0xFFFFFFFFFFFFFFFF ->
+        GenServer.call(server, {:load_module, name, code, timeout}, :infinity)
+
+      value ->
+        raise ArgumentError,
+              "expected :timeout in unsigned 64-bit milliseconds, got: #{inspect(value)}"
+    end
   end
 
   @spec load_addon(GenServer.server(), String.t(), keyword()) :: {:ok, term()} | {:error, term()}
@@ -331,6 +343,7 @@ defmodule QuickBEAM.Runtime do
       ])
       |> Map.new()
       |> Map.put(:restricted, if(sandbox == :strict, do: 1, else: 0))
+      |> Map.put(:unbounded_promise_wait, if(opts[:promise_wait] == :infinity, do: 1, else: 0))
 
     resource = QuickBEAM.Native.start_runtime(self(), nif_opts)
     state = %__MODULE__{resource: resource, handlers: merged_handlers, sandbox: sandbox}
@@ -548,8 +561,8 @@ defmodule QuickBEAM.Runtime do
     {:noreply, put_pending(state, ref, from)}
   end
 
-  def handle_call({:load_module, name, code}, from, state) do
-    ref = QuickBEAM.Native.load_module(state.resource, name, code)
+  def handle_call({:load_module, name, code, timeout}, from, state) do
+    ref = QuickBEAM.Native.load_module(state.resource, name, code, timeout)
 
     transform = fn
       {:ok, _} -> :ok

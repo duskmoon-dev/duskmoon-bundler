@@ -90,6 +90,12 @@ defmodule QuickBEAM do
 
           QuickBEAM.start(script: "build.ts", define: %{"outputDir" => "/tmp/site"})
 
+    * `:promise_wait` — defaults to `:bounded`, which allows 10,000 event-loop
+      iterations for a pending Promise when no execution timeout is set.
+      Set it to `:infinity` when the host owns the execution budget. Module
+      evaluation and Promise-returning calls then process callbacks until the
+      Promise settles, the runtime stops, or an explicit timeout expires.
+
     * `:memory_limit` — maximum JS heap in bytes (default: 256 MB)
     * `:max_stack_size` — maximum JS call stack in bytes (default: 8 MB)
     * `:wasm_stack_size` — WASM operand stack in bytes for guests started via the JS
@@ -119,7 +125,8 @@ defmodule QuickBEAM do
 
   ## Options
 
-    * `:timeout` — maximum execution time in milliseconds (default: no limit).
+    * `:timeout` — maximum execution time in milliseconds. When omitted,
+      pending Promises use the runtime's `:promise_wait` setting.
       If exceeded, the JS execution is interrupted and an error is returned.
       The runtime remains usable after a timeout.
 
@@ -158,7 +165,8 @@ defmodule QuickBEAM do
 
   ## Options
 
-    * `:timeout` — maximum execution time in milliseconds (default: no limit)
+    * `:timeout` — maximum execution time in milliseconds. When omitted,
+      pending Promises use the runtime's `:promise_wait` setting.
   """
   @spec call(runtime(), String.t(), list(), keyword()) :: js_result()
   def call(runtime, fn_name, args \\ [], opts \\ []) do
@@ -225,6 +233,9 @@ defmodule QuickBEAM do
   @doc """
   Load an ES module into the runtime.
 
+  A positive `:timeout` in milliseconds bounds evaluation, including top-level
+  `await`. When omitted, pending Promises use the runtime's `:promise_wait` setting.
+
       iex> {:ok, rt} = QuickBEAM.start()
       iex> code = "export function add(a, b) { return a + b; }"
       iex> QuickBEAM.load_module(rt, "math", code)
@@ -232,9 +243,10 @@ defmodule QuickBEAM do
       iex> QuickBEAM.stop(rt)
       :ok
   """
-  @spec load_module(runtime(), String.t(), String.t()) :: :ok | {:error, String.t()}
-  def load_module(runtime, name, code) do
-    QuickBEAM.Runtime.load_module(runtime, name, code)
+  @spec load_module(runtime(), String.t(), String.t(), keyword()) ::
+          :ok | {:error, QuickBEAM.JSError.t()}
+  def load_module(runtime, name, code, opts \\ []) do
+    QuickBEAM.Runtime.load_module(runtime, name, code, opts)
   end
 
   @doc """

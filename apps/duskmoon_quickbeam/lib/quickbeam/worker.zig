@@ -651,7 +651,7 @@ pub const WorkerState = struct {
         defer deferred.restore(self.rd);
 
         var iterations: usize = 0;
-        while (!promise_wait_expired(deadline, iterations)) : (iterations += 1) {
+        while (!self.promise_wait_expired(deadline, iterations)) : (iterations +|= 1) {
             if (self.rd.shutting_down.load(.acquire)) {
                 result.ok = false;
                 result.json = "Runtime stopped";
@@ -695,7 +695,6 @@ pub const WorkerState = struct {
                     .call_fn_sync => |p| {
                         var nested_result: Result = .{};
                         const outer_deadline = self.rd.deadline;
-                        self.clear_deadline();
                         self.set_deadline(p.timeout_ns);
                         self.do_call(p.name, p.args_env, p.args_term, &nested_result);
                         self.rd.deadline = outer_deadline;
@@ -779,12 +778,12 @@ pub const WorkerState = struct {
         };
     }
 
-    fn promise_wait_expired(deadline: ?i128, iterations: usize) bool {
+    fn promise_wait_expired(self: *WorkerState, deadline: ?i128, iterations: usize) bool {
         if (deadline) |value| {
             return sync.nowNanoseconds() > value;
         }
 
-        return iterations >= 10000;
+        return !self.rd.unbounded_promise_wait and iterations >= 10_000;
     }
 
     fn set_ok_term(self: *WorkerState, val: qjs.JSValue, result: *Result) void {
@@ -1049,9 +1048,10 @@ pub const WorkerState = struct {
         };
     }
 
-    pub fn set_deadline(self: *WorkerState, timeout_ns: u64) void {
+    pub fn set_deadline(self: *WorkerState, timeout_ns: i128) void {
         if (timeout_ns > 0) {
-            self.rd.deadline = sync.nowNanoseconds() + @as(i128, timeout_ns);
+            const deadline = sync.nowNanoseconds() + timeout_ns;
+            self.rd.deadline = @min(self.rd.deadline orelse deadline, deadline);
         }
     }
 
@@ -1159,7 +1159,9 @@ pub fn worker_main(rd: *types.RuntimeData, owner_pid: beam.pid) void {
                 },
                 .load_module => |p| {
                     var result = Result{};
+                    state.set_deadline(p.timeout_ns);
                     state.do_load_module(p.name, p.code, &result);
+                    state.clear_deadline();
                     gpa.free(p.name);
                     gpa.free(p.code);
                     types.send_reply(p.caller_pid, p.ref_env, p.ref_term, result.ok, result.env, result.term, result.json);
