@@ -245,7 +245,7 @@ jobs:
           VERIFICATION_RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           elixir -r .github/scripts/release_support.exs -e 'File.write!("verified-release.json", JSON.encode!(%{version: System.fetch_env!("VERSION"), source_sha: System.fetch_env!("SOURCE_SHA"), validation_sha: System.fetch_env!("VALIDATION_SHA"), release_run: System.fetch_env!("RELEASE_RUN"), verification_run: System.fetch_env!("VERIFICATION_RUN"), packages: ReleaseSupport.cohort(System.fetch_env!("VERSION")), public_assets_verified: true, native_download_consumers_verified: true, registry_consumer_verified: true, musl_amd64_verified: true, musl_arm64_verified: true}))'
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verified-toolchain-release-v${{ needs.published-context.outputs.version }}
           path: toolchain/verified-release.json
